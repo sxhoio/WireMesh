@@ -28,6 +28,17 @@ npm run dev
 
 Open `http://localhost:5173` and use the development account above. Create a project, then a network, then nodes, and publish a configuration version.
 
+## Docker
+
+The multi-stage image caches npm and Go build inputs separately, compiles a static stripped server, and runs it as a non-root user in a distroless image. The Go process serves both the API and the compiled Vue console.
+
+```powershell
+docker build -t wiremesh:local .
+docker run --rm -p 8080:8080 -e WIREMESH_MASTER_KEY=replace-with-a-secret wiremesh:local
+```
+
+Open `http://localhost:8080`. For production, inject `WIREMESH_MASTER_KEY` from a secret manager and mount the TLS certificate/key files referenced by `WIREMESH_TLS_CERT_FILE` and `WIREMESH_TLS_KEY_FILE`.
+
 To exercise enrollment, create an Agent token in the Nodes view and run:
 
 ```powershell

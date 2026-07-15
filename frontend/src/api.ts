@@ -7,7 +7,7 @@ export interface Node { id: string; network_id: string; name: string; address: s
 export interface Delivery { id: string; node_id: string; version: number; state: string; message: string; updated_at: string }
 export interface AuditEvent { id: string; action: string; resource_type: string; resource_id: string; created_at: string }
 
-const base = import.meta.env.VITE_API_URL || 'http://localhost:8080'
+const base = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8080' : '')
 let token = localStorage.getItem('wiremesh.token') || ''
 export const session = { get token() { return token }, set token(value: string) { token = value; localStorage.setItem('wiremesh.token', value) }, clear() { token = ''; localStorage.removeItem('wiremesh.token') } }
 
