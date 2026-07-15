@@ -38,6 +38,7 @@ type Store interface {
 	ListAudit(string) []AuditEvent
 	GetUserByEmail(string) (User, error)
 	GetUser(string) (User, error)
+	EnsureUser(User) error
 }
 
 type MemoryStore struct {
@@ -55,9 +56,10 @@ type MemoryStore struct {
 }
 
 func NewMemoryStore(seed User) *MemoryStore {
-	return &MemoryStore{
+	store := &MemoryStore{
 		projects: map[string]Project{}, networks: map[string]Network{}, nodes: map[string]Node{}, peers: map[string]PeerRelation{}, revisions: map[string][]ConfigRevision{}, deliveries: map[string]ConfigDelivery{}, enrollments: map[string]EnrollmentToken{}, identities: map[string]AgentIdentity{}, users: map[string]User{seed.ID: seed},
 	}
+	return store
 }
 func (s *MemoryStore) CreateProject(v Project) error {
 	s.mu.Lock()
@@ -284,4 +286,12 @@ func (s *MemoryStore) GetUser(id string) (User, error) {
 		return User{}, errNotFound
 	}
 	return u, nil
+}
+func (s *MemoryStore) EnsureUser(user User) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.users[user.ID]; !exists {
+		s.users[user.ID] = user
+	}
+	return nil
 }

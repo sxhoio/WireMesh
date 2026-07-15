@@ -17,12 +17,36 @@ func main() {
 		address = ":8080"
 	}
 
-	app, err := control.NewApp(control.Config{MasterKey: os.Getenv("WIREMESH_MASTER_KEY")})
+	databaseDriver := envOrDefault("WIREMESH_DATABASE_DRIVER", "sqlite")
+	databaseDSN := os.Getenv("WIREMESH_DATABASE_DSN")
+	if databaseDSN == "" {
+		if databaseDriver == "sqlite" {
+			databaseDSN = "file:wiremesh.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+		} else {
+			log.Fatal("WIREMESH_DATABASE_DSN is required for PostgreSQL")
+		}
+	}
+	store, err := control.OpenSQLStore(databaseDriver, databaseDSN)
+	if err != nil {
+		log.Fatalf("open database: %v", err)
+	}
+	defer store.Close()
+
+	app, err := control.NewApp(control.Config{
+		MasterKey:            os.Getenv("WIREMESH_MASTER_KEY"),
+		Store:                store,
+		InitialAdminEmail:    os.Getenv("WIREMESH_ADMIN_EMAIL"),
+		InitialAdminName:     os.Getenv("WIREMESH_ADMIN_NAME"),
+		InitialAdminPassword: os.Getenv("WIREMESH_ADMIN_PASSWORD"),
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("WireMesh control plane listening on %s", address)
-	log.Printf("development login: admin@wiremesh.local / wiremesh-dev")
+	log.Printf("database driver: %s", databaseDriver)
+	if os.Getenv("WIREMESH_ADMIN_PASSWORD") == "" {
+		log.Printf("development login: admin@wiremesh.local / wiremesh-dev")
+	}
 	handler := withFrontend(app.Router(), os.Getenv("WIREMESH_WEB_DIR"))
 	certFile, keyFile := os.Getenv("WIREMESH_TLS_CERT_FILE"), os.Getenv("WIREMESH_TLS_KEY_FILE")
 	if certFile != "" && keyFile != "" {
@@ -37,6 +61,13 @@ func main() {
 	if err := http.ListenAndServe(address, handler); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func withFrontend(api http.Handler, directory string) http.Handler {

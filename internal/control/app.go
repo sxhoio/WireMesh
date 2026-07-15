@@ -22,8 +22,11 @@ import (
 )
 
 type Config struct {
-	MasterKey string
-	Store     Store
+	MasterKey            string
+	Store                Store
+	InitialAdminEmail    string
+	InitialAdminName     string
+	InitialAdminPassword string
 }
 type App struct {
 	store Store
@@ -38,10 +41,29 @@ func NewApp(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	seed := User{ID: "usr_admin", TenantID: "tenant_demo", Email: "admin@wiremesh.local", Name: "WireMesh Administrator", Role: RoleAdmin, PasswordHash: hashPassword("wiremesh-dev"), CreatedAt: time.Now()}
+	adminEmail := cfg.InitialAdminEmail
+	if adminEmail == "" {
+		adminEmail = "admin@wiremesh.local"
+	}
+	adminName := cfg.InitialAdminName
+	if adminName == "" {
+		adminName = "WireMesh Administrator"
+	}
+	adminPassword := cfg.InitialAdminPassword
+	if adminPassword == "" {
+		adminPassword = "wiremesh-dev"
+	}
+	passwordHash, err := hashPassword(adminPassword)
+	if err != nil {
+		return nil, fmt.Errorf("hash development password: %w", err)
+	}
+	seed := User{ID: "usr_admin", TenantID: "tenant_demo", Email: strings.ToLower(adminEmail), Name: adminName, Role: RoleAdmin, PasswordHash: passwordHash, CreatedAt: time.Now()}
 	store := cfg.Store
 	if store == nil {
 		store = NewMemoryStore(seed)
+	}
+	if err := store.EnsureUser(seed); err != nil {
+		return nil, fmt.Errorf("seed administrator: %w", err)
 	}
 	app := &App{store: store, box: box}
 	app.auth = newAuthenticator(store, cfg.MasterKey+"-auth")
@@ -122,7 +144,10 @@ func (a *App) projects(w http.ResponseWriter, r *http.Request, c claims) {
 		return
 	}
 	v := Project{ID: newID("prj"), TenantID: c.TenantID, Name: in.Name, Description: in.Description, CreatedAt: time.Now()}
-	a.store.CreateProject(v)
+	if err := a.store.CreateProject(v); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create project")
+		return
+	}
 	a.auditEvent(c.TenantID, c.Subject, "project.create", "project", v.ID, nil)
 	writeJSON(w, 201, v)
 }
@@ -157,7 +182,10 @@ func (a *App) networks(w http.ResponseWriter, r *http.Request, c claims) {
 		return
 	}
 	v := Network{ID: newID("net"), TenantID: c.TenantID, ProjectID: in.ProjectID, Name: in.Name, CIDR: in.CIDR, DNS: in.DNS, Topology: in.Topology, CreatedAt: time.Now()}
-	a.store.CreateNetwork(v)
+	if err := a.store.CreateNetwork(v); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create network")
+		return
+	}
 	a.auditEvent(c.TenantID, c.Subject, "network.create", "network", v.ID, nil)
 	writeJSON(w, 201, v)
 }
@@ -217,7 +245,10 @@ func (a *App) addPeer(w http.ResponseWriter, r *http.Request, c claims) {
 		return
 	}
 	v := PeerRelation{ID: newID("peer"), TenantID: c.TenantID, NetworkID: networkID, SourceNodeID: source.ID, TargetNodeID: target.ID, CreatedAt: time.Now()}
-	a.store.AddPeer(v)
+	if err := a.store.AddPeer(v); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create peer")
+		return
+	}
 	a.auditEvent(c.TenantID, c.Subject, "peer.create", "network", networkID, nil)
 	writeJSON(w, 201, v)
 }
@@ -240,9 +271,15 @@ func (a *App) publish(w http.ResponseWriter, r *http.Request, c claims) {
 	}
 	previous, _ := a.store.LatestRevision(c.TenantID, network.ID)
 	revision := ConfigRevision{ID: newID("rev"), TenantID: c.TenantID, ProjectID: network.ProjectID, NetworkID: network.ID, Version: previous.Version + 1, Configs: configs, CreatedAt: time.Now()}
-	a.store.CreateRevision(revision)
+	if err := a.store.CreateRevision(revision); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to publish configuration")
+		return
+	}
 	for _, node := range nodes {
-		a.store.CreateDelivery(ConfigDelivery{ID: newID("delivery"), TenantID: c.TenantID, NodeID: node.ID, Version: revision.Version, State: "pending", UpdatedAt: time.Now()})
+		if err := a.store.CreateDelivery(ConfigDelivery{ID: newID("delivery"), TenantID: c.TenantID, NodeID: node.ID, Version: revision.Version, State: "pending", UpdatedAt: time.Now()}); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create configuration delivery")
+			return
+		}
 	}
 	a.auditEvent(c.TenantID, c.Subject, "config.publish", "network", network.ID, map[string]string{"version": fmt.Sprint(revision.Version)})
 	writeJSON(w, 201, revision)
@@ -273,7 +310,10 @@ func (a *App) createEnrollment(w http.ResponseWriter, r *http.Request, c claims)
 	}
 	token := base64.RawURLEncoding.EncodeToString(randomBytes(32))
 	v := EnrollmentToken{ID: newID("enroll"), TenantID: c.TenantID, ProjectID: in.ProjectID, NetworkID: in.NetworkID, Token: token, ExpiresAt: time.Now().Add(time.Duration(in.TTLMinutes) * time.Minute)}
-	a.store.CreateEnrollment(v)
+	if err := a.store.CreateEnrollment(v); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create enrollment token")
+		return
+	}
 	a.auditEvent(c.TenantID, c.Subject, "agent.enrollment_token.create", "network", in.NetworkID, nil)
 	writeJSON(w, 201, map[string]any{"token": token, "expires_at": v.ExpiresAt, "network_id": in.NetworkID})
 }
@@ -311,7 +351,10 @@ func (a *App) enroll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "failed to issue agent certificate")
 		return
 	}
-	a.store.CreateIdentity(AgentIdentity{NodeID: node.ID, CertificatePEM: cert, CertificateFingerprint: fingerprint, ExpiresAt: expires})
+	if err := a.store.CreateIdentity(AgentIdentity{NodeID: node.ID, CertificatePEM: cert, CertificateFingerprint: fingerprint, ExpiresAt: expires}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist agent identity")
+		return
+	}
 	a.auditEvent(enrollment.TenantID, node.ID, "agent.enroll", "node", node.ID, nil)
 	writeJSON(w, 201, map[string]any{"node": node, "certificate_pem": cert, "private_key_pem": key, "certificate_fingerprint": fingerprint, "expires_at": expires, "ca_pem": a.caPEM()})
 }

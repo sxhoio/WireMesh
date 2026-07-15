@@ -2,3 +2,6 @@ frontend/node_modules/
 frontend/dist/
 wiremesh-agent-identity.json
 wiremesh-desired-config.json
+*.db
+*.db-shm
+*.db-wal

@@ -3,12 +3,13 @@ package control
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 type claims struct {
@@ -27,17 +28,9 @@ func newAuthenticator(store Store, secret string) *Authenticator {
 	return &Authenticator{secret: sum[:], store: store}
 }
 
-func hashPassword(password string) string {
-	// PBKDF2-HMAC-SHA256 is retained locally to avoid an external dependency.
-	// Passwords are seeded only for development; production should use an IdP or migrate hashes.
-	block := []byte(password)
-	key := []byte("wiremesh-local-password-v1")
-	for i := 0; i < 120000; i++ {
-		h := hmac.New(sha256.New, key)
-		h.Write(block)
-		block = h.Sum(nil)
-	}
-	return base64.RawStdEncoding.EncodeToString(block)
+func hashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	return string(hash), err
 }
 
 func (a *Authenticator) Login(email, password string) (string, User, error) {
@@ -45,8 +38,7 @@ func (a *Authenticator) Login(email, password string) (string, User, error) {
 	if err != nil {
 		return "", User{}, errors.New("invalid credentials")
 	}
-	expected, actual := []byte(user.PasswordHash), []byte(hashPassword(password))
-	if subtle.ConstantTimeCompare(expected, actual) != 1 {
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
 		return "", User{}, errors.New("invalid credentials")
 	}
 	return a.issue(user), user, nil

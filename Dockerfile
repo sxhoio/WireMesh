@@ -13,7 +13,8 @@ RUN npm run build
 
 FROM golang:${GO_VERSION} AS server-build
 WORKDIR /src
-COPY go.mod ./
+RUN mkdir -p /out/data
+COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 COPY cmd/ ./cmd/
@@ -28,7 +29,11 @@ FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 WORKDIR /app
 COPY --from=server-build --chown=nonroot:nonroot /out/wiremesh-server /app/wiremesh-server
 COPY --from=frontend-build --chown=nonroot:nonroot /src/frontend/dist/ /app/web/
+COPY --from=server-build --chown=nonroot:nonroot /out/data/ /data/
 ENV WIREMESH_ADDR=:8080 \
-    WIREMESH_WEB_DIR=/app/web
+    WIREMESH_WEB_DIR=/app/web \
+    WIREMESH_DATABASE_DRIVER=sqlite \
+    WIREMESH_DATABASE_DSN="file:/data/wiremesh.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+VOLUME ["/data"]
 EXPOSE 8080
 ENTRYPOINT ["/app/wiremesh-server"]
