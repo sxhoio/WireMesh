@@ -1,0 +1,67 @@
+package control
+
+import (
+	"fmt"
+	"net/netip"
+	"sort"
+)
+
+func AllocateAddress(cidr string, allocated []string) (string, error) {
+	prefix, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return "", fmt.Errorf("invalid network CIDR: %w", err)
+	}
+	if !prefix.Addr().Is4() {
+		return "", fmt.Errorf("only IPv4 address pools are currently supported")
+	}
+	used := map[netip.Addr]bool{}
+	for _, raw := range allocated {
+		if addr, err := netip.ParseAddr(raw); err == nil {
+			used[addr] = true
+		}
+	}
+	for candidate := prefix.Masked().Addr().Next(); prefix.Contains(candidate); candidate = candidate.Next() {
+		if !used[candidate] {
+			return candidate.String(), nil
+		}
+	}
+	return "", fmt.Errorf("address pool %s is exhausted", cidr)
+}
+
+func CompileTopology(network Network, nodes []Node, relations []PeerRelation, box *SecretBox) (map[string]NodeConfig, error) {
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	configs := make(map[string]NodeConfig, len(nodes))
+	for _, node := range nodes {
+		privateKey, err := box.Decrypt(node.PrivateKey)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt node %s key: %w", node.ID, err)
+		}
+		configs[node.ID] = NodeConfig{NodeID: node.ID, NetworkID: network.ID, Address: node.Address, PrivateKey: string(privateKey), ListenPort: 51820}
+	}
+	linked := func(a, b Node) bool {
+		switch network.Topology {
+		case TopologyFullMesh:
+			return true
+		case TopologyHubSpoke:
+			return a.Labels["wiremesh.role"] == "hub" || b.Labels["wiremesh.role"] == "hub"
+		case TopologyCustom:
+			for _, relation := range relations {
+				if (relation.SourceNodeID == a.ID && relation.TargetNodeID == b.ID) || (relation.SourceNodeID == b.ID && relation.TargetNodeID == a.ID) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, node := range nodes {
+		config := configs[node.ID]
+		for _, peer := range nodes {
+			if node.ID == peer.ID || !linked(node, peer) {
+				continue
+			}
+			config.Peers = append(config.Peers, PeerConfig{NodeID: peer.ID, PublicKey: peer.PublicKey, Endpoint: peer.Endpoint, AllowedIPs: []string{peer.Address + "/32"}})
+		}
+		configs[node.ID] = config
+	}
+	return configs, nil
+}

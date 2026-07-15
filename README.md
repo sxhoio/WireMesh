@@ -1,2 +1,39 @@
 # WireMesh
-WireMesh 是一个面向多服务器环境的 WireGuard 网络管理平台，用于统一管理节点、Peer 配置与节点间连接拓扑。它帮助运维人员以可视化、可审计的方式构建和维护 WireGuard Mesh 网络，自动协调配置变更，清晰掌握连接状态与网络关系。
+
+WireMesh is a Go control plane and Vue console for managing multi-tenant WireGuard networks. It creates versioned desired configuration from a topology, delivers it to enrolled agents, and records change history.
+
+## Included vertical slice
+
+- Tenant-scoped users and RBAC (`viewer`, `operator`, `admin`) with local login. The default development account is `admin@wiremesh.local` / `wiremesh-dev`.
+- Projects, WireGuard networks, IPv4 address allocation, and Full Mesh, Hub-Spoke, or custom-peer topology compilation.
+- Managed WireGuard key creation with encrypted private-key storage. `WIREMESH_MASTER_KEY` must come from a KMS-backed secret in production.
+- One-time Agent enrollment tokens, issued Agent certificates, desired configuration versions, delivery acknowledgement, and audit records.
+- A Vue operations console for projects, networks, nodes, configuration release, enrollment-token creation, delivery status, and audit history.
+
+## Run locally
+
+Start the API:
+
+```powershell
+go run ./cmd/wiremesh-server
+```
+
+Start the console in another terminal:
+
+```powershell
+Set-Location frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173` and use the development account above. Create a project, then a network, then nodes, and publish a configuration version.
+
+To exercise enrollment, create an Agent token in the Nodes view and run:
+
+```powershell
+go run ./cmd/wiremesh-agent -server http://localhost:8080 -enroll-token <token> -name edge-01
+```
+
+## Production boundaries
+
+The current `MemoryStore` is deliberately a local-development implementation of the persistence interface. A PostgreSQL store must replace it before any durable deployment. Setting `WIREMESH_TLS_CERT_FILE` and `WIREMESH_TLS_KEY_FILE` starts HTTPS and verifies presented Agent certificates; plain HTTP retains an `X-Agent-ID` development adapter and must not be exposed. The certificate authority is currently generated at process start, so CA persistence and KMS integration are also required before production use.
