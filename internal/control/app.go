@@ -17,16 +17,14 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"net/mail"
 	"strings"
 	"time"
 )
 
 type Config struct {
-	MasterKey            string
-	Store                Store
-	InitialAdminEmail    string
-	InitialAdminName     string
-	InitialAdminPassword string
+	MasterKey string
+	Store     Store
 }
 type App struct {
 	store Store
@@ -41,29 +39,9 @@ func NewApp(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	adminEmail := cfg.InitialAdminEmail
-	if adminEmail == "" {
-		adminEmail = "admin@wiremesh.local"
-	}
-	adminName := cfg.InitialAdminName
-	if adminName == "" {
-		adminName = "WireMesh Administrator"
-	}
-	adminPassword := cfg.InitialAdminPassword
-	if adminPassword == "" {
-		adminPassword = "wiremesh-dev"
-	}
-	passwordHash, err := hashPassword(adminPassword)
-	if err != nil {
-		return nil, fmt.Errorf("hash development password: %w", err)
-	}
-	seed := User{ID: "usr_admin", TenantID: "tenant_demo", Email: strings.ToLower(adminEmail), Name: adminName, Role: RoleAdmin, PasswordHash: passwordHash, CreatedAt: time.Now()}
 	store := cfg.Store
 	if store == nil {
-		store = NewMemoryStore(seed)
-	}
-	if err := store.EnsureUser(seed); err != nil {
-		return nil, fmt.Errorf("seed administrator: %w", err)
+		store = NewMemoryStore()
 	}
 	app := &App{store: store, box: box}
 	app.auth = newAuthenticator(store, cfg.MasterKey+"-auth")
@@ -76,6 +54,8 @@ func NewApp(cfg Config) (*App, error) {
 func (a *App) Router() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", a.health)
+	mux.HandleFunc("GET /api/v1/setup/status", a.setupStatus)
+	mux.HandleFunc("POST /api/v1/setup", a.setup)
 	mux.HandleFunc("POST /api/v1/auth/login", a.login)
 	mux.HandleFunc("GET /api/v1/auth/me", a.withUser(RoleViewer, a.me))
 	mux.HandleFunc("GET /api/v1/projects", a.withUser(RoleViewer, a.projects))
@@ -97,6 +77,64 @@ func (a *App) Router() http.Handler {
 
 func (a *App) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (a *App) setupStatus(w http.ResponseWriter, r *http.Request) {
+	initialized, err := a.store.HasUsers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read setup status")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"initialized": initialized})
+}
+
+func (a *App) setup(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email    string
+		Name     string
+		Password string
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
+	in.Name = strings.TrimSpace(in.Name)
+	parsedEmail, err := mail.ParseAddress(in.Email)
+	if err != nil || strings.ToLower(parsedEmail.Address) != in.Email {
+		writeError(w, http.StatusBadRequest, "valid email is required")
+		return
+	}
+	if in.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if len(in.Password) < 8 {
+		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		return
+	}
+	passwordHash, err := hashPassword(in.Password)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to secure password")
+		return
+	}
+	user := User{
+		ID:           newID("usr"),
+		TenantID:     newID("tenant"),
+		Email:        in.Email,
+		Name:         in.Name,
+		Role:         RoleAdmin,
+		PasswordHash: passwordHash,
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := a.store.CreateInitialAdmin(user); err != nil {
+		if errors.Is(err, errAlreadyInitialized) {
+			writeError(w, http.StatusConflict, "WireMesh is already initialized")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to create administrator")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"user": publicUser(user)})
 }
 func (a *App) withUser(required Role, next func(http.ResponseWriter, *http.Request, claims)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

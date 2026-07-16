@@ -33,20 +33,14 @@ func main() {
 	defer store.Close()
 
 	app, err := control.NewApp(control.Config{
-		MasterKey:            os.Getenv("WIREMESH_MASTER_KEY"),
-		Store:                store,
-		InitialAdminEmail:    os.Getenv("WIREMESH_ADMIN_EMAIL"),
-		InitialAdminName:     os.Getenv("WIREMESH_ADMIN_NAME"),
-		InitialAdminPassword: os.Getenv("WIREMESH_ADMIN_PASSWORD"),
+		MasterKey: os.Getenv("WIREMESH_MASTER_KEY"),
+		Store:     store,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("WireMesh control plane listening on %s", address)
 	log.Printf("database driver: %s", databaseDriver)
-	if os.Getenv("WIREMESH_ADMIN_PASSWORD") == "" {
-		log.Printf("development login: admin@wiremesh.local / wiremesh-dev")
-	}
 	handler := withFrontend(app.Router(), os.Getenv("WIREMESH_WEB_DIR"))
 	certFile, keyFile := os.Getenv("WIREMESH_TLS_CERT_FILE"), os.Getenv("WIREMESH_TLS_KEY_FILE")
 	if certFile != "" && keyFile != "" {

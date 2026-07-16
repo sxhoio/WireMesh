@@ -18,6 +18,65 @@ func testApp(t *testing.T) *App {
 	return app
 }
 
+func initializeTestAdmin(t *testing.T, app *App, email, password string) (User, string) {
+	t.Helper()
+	body := `{"email":"` + email + `","name":"Test Administrator","password":"` + password + `"}`
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/setup", strings.NewReader(body)))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("setup failed: %d %s", response.Code, response.Body.String())
+	}
+	var result struct {
+		User User `json:"user"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	loginBody := `{"email":"` + email + `","password":"` + password + `"}`
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(loginBody)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("new administrator cannot log in: %d %s", response.Code, response.Body.String())
+	}
+	var session struct {
+		Token string `json:"token"`
+		User  User   `json:"user"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&session); err != nil {
+		t.Fatal(err)
+	}
+	if session.Token == "" || session.User.ID != result.User.ID {
+		t.Fatalf("login returned unexpected session: %#v", session)
+	}
+	return session.User, session.Token
+}
+
+func TestInitialSetupFlow(t *testing.T) {
+	app := testApp(t)
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/setup/status", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"initialized":false`) {
+		t.Fatalf("unexpected empty setup status: %d %s", response.Code, response.Body.String())
+	}
+
+	user, _ := initializeTestAdmin(t, app, "OWNER@EXAMPLE.COM", "strong-password")
+	if user.Email != "owner@example.com" || user.Role != RoleAdmin || user.TenantID == "" || user.ID == "" {
+		t.Fatalf("unexpected initial administrator: %#v", user)
+	}
+
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/setup/status", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"initialized":true`) {
+		t.Fatalf("unexpected initialized setup status: %d %s", response.Code, response.Body.String())
+	}
+
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/setup", strings.NewReader(`{"email":"other@example.com","name":"Other","password":"another-password"}`)))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("second setup should conflict: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestAllocateAddress(t *testing.T) {
 	address, err := AllocateAddress("10.0.0.0/30", []string{"10.0.0.1"})
 	if err != nil || address != "10.0.0.2" {
@@ -67,15 +126,12 @@ func TestSecretBox(t *testing.T) {
 
 func TestTenantIsolationAndRevision(t *testing.T) {
 	app := testApp(t)
-	token, _, err := app.auth.Login("admin@wiremesh.local", "wiremesh-dev")
-	if err != nil {
-		t.Fatal(err)
-	}
-	project := Project{ID: "p", TenantID: "tenant_demo", Name: "P", CreatedAt: time.Now()}
+	admin, token := initializeTestAdmin(t, app, "admin@example.com", "strong-password")
+	project := Project{ID: "p", TenantID: admin.TenantID, Name: "P", CreatedAt: time.Now()}
 	app.store.CreateProject(project)
-	network := Network{ID: "n", TenantID: "tenant_demo", ProjectID: "p", Name: "N", CIDR: "10.7.0.0/24", Topology: TopologyFullMesh}
+	network := Network{ID: "n", TenantID: admin.TenantID, ProjectID: "p", Name: "N", CIDR: "10.7.0.0/24", Topology: TopologyFullMesh}
 	app.store.CreateNetwork(network)
-	node, err := app.createNode("tenant_demo", network, "node", "", "", "", "", nil)
+	node, err := app.createNode(admin.TenantID, network, "node", "", "", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

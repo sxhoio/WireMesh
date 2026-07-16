@@ -7,7 +7,10 @@ import (
 	"time"
 )
 
-var errNotFound = errors.New("resource not found")
+var (
+	errNotFound           = errors.New("resource not found")
+	errAlreadyInitialized = errors.New("instance already initialized")
+)
 
 // Store is the control-plane persistence boundary. MemoryStore is intentionally
 // development-only; a PostgreSQL implementation can preserve this API.
@@ -38,7 +41,8 @@ type Store interface {
 	ListAudit(string) []AuditEvent
 	GetUserByEmail(string) (User, error)
 	GetUser(string) (User, error)
-	EnsureUser(User) error
+	HasUsers() (bool, error)
+	CreateInitialAdmin(User) error
 }
 
 type MemoryStore struct {
@@ -55,11 +59,10 @@ type MemoryStore struct {
 	users       map[string]User
 }
 
-func NewMemoryStore(seed User) *MemoryStore {
-	store := &MemoryStore{
-		projects: map[string]Project{}, networks: map[string]Network{}, nodes: map[string]Node{}, peers: map[string]PeerRelation{}, revisions: map[string][]ConfigRevision{}, deliveries: map[string]ConfigDelivery{}, enrollments: map[string]EnrollmentToken{}, identities: map[string]AgentIdentity{}, users: map[string]User{seed.ID: seed},
+func NewMemoryStore() *MemoryStore {
+	return &MemoryStore{
+		projects: map[string]Project{}, networks: map[string]Network{}, nodes: map[string]Node{}, peers: map[string]PeerRelation{}, revisions: map[string][]ConfigRevision{}, deliveries: map[string]ConfigDelivery{}, enrollments: map[string]EnrollmentToken{}, identities: map[string]AgentIdentity{}, users: map[string]User{},
 	}
-	return store
 }
 func (s *MemoryStore) CreateProject(v Project) error {
 	s.mu.Lock()
@@ -287,11 +290,17 @@ func (s *MemoryStore) GetUser(id string) (User, error) {
 	}
 	return u, nil
 }
-func (s *MemoryStore) EnsureUser(user User) error {
+func (s *MemoryStore) HasUsers() (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.users) > 0, nil
+}
+func (s *MemoryStore) CreateInitialAdmin(user User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.users[user.ID]; !exists {
-		s.users[user.ID] = user
+	if len(s.users) != 0 {
+		return errAlreadyInitialized
 	}
+	s.users[user.ID] = user
 	return nil
 }

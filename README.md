@@ -4,7 +4,7 @@ WireMesh is a Go control plane and Vue console for managing multi-tenant WireGua
 
 ## Included vertical slice
 
-- Tenant-scoped users and RBAC (`viewer`, `operator`, `admin`) with bcrypt-protected database login. The default development account is `admin@wiremesh.local` / `wiremesh-dev`.
+- Tenant-scoped users and RBAC (`viewer`, `operator`, `admin`) with bcrypt-protected database login. No built-in administrator account or password is created.
 - Projects, WireGuard networks, IPv4 address allocation, and Full Mesh, Hub-Spoke, or custom-peer topology compilation.
 - Managed WireGuard key creation with encrypted private-key storage. `WIREMESH_MASTER_KEY` must come from a KMS-backed secret in production.
 - One-time Agent enrollment tokens, issued Agent certificates, desired configuration versions, delivery acknowledgement, and audit records.
@@ -26,7 +26,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` and use the development account above. Create a project, then a network, then nodes, and publish a configuration version.
+Open `http://localhost:5173`. When the database has no users, the onboarding page asks you to create the initial administrator. Then sign in, create a project and network, add nodes, and publish a configuration version.
 
 ## Database
 
@@ -46,7 +46,7 @@ go run ./cmd/wiremesh-server
 
 `WIREMESH_DATABASE_DRIVER` accepts `sqlite` or `postgres`. `WIREMESH_DATABASE_DSN` is optional for SQLite and required for PostgreSQL.
 
-The initial administrator is created only when the database is empty. Override its credentials before the first start with `WIREMESH_ADMIN_EMAIL`, `WIREMESH_ADMIN_NAME`, and `WIREMESH_ADMIN_PASSWORD`.
+WireMesh does not seed an administrator. `GET /api/v1/setup/status` reports whether any user exists, and the onboarding page calls the one-time `POST /api/v1/setup` endpoint to create the initial tenant and administrator. The endpoint returns `409 Conflict` after the first user exists.
 
 ## Docker
 

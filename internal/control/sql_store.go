@@ -54,6 +54,7 @@ func (s *SQLStore) Close() error { return s.db.Close() }
 
 func (s *SQLStore) migrate(ctx context.Context) error {
 	statements := []string{
+		`CREATE TABLE IF NOT EXISTS setup_locks (name TEXT PRIMARY KEY)`,
 		`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL, created_at TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS projects_tenant_idx ON projects (tenant_id, created_at)`,
@@ -102,9 +103,41 @@ func (s *SQLStore) query(value string) string {
 	return out.String()
 }
 
-func (s *SQLStore) EnsureUser(v User) error {
-	_, err := s.db.Exec(s.query(`INSERT INTO users (id, tenant_id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING`), v.ID, v.TenantID, strings.ToLower(v.Email), v.PasswordHash, v.Name, string(v.Role), timeText(v.CreatedAt))
-	return err
+func (s *SQLStore) HasUsers() (bool, error) {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+func (s *SQLStore) CreateInitialAdmin(v User) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(s.query(`INSERT INTO setup_locks (name) VALUES (?) ON CONFLICT (name) DO NOTHING`), "initial_admin"); err != nil {
+		return err
+	}
+	lockQuery := `SELECT name FROM setup_locks WHERE name = ?`
+	if s.driver == "postgres" {
+		lockQuery += " FOR UPDATE"
+	}
+	var lockName string
+	if err := tx.QueryRow(s.query(lockQuery), "initial_admin").Scan(&lockName); err != nil {
+		return err
+	}
+	var count int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		return err
+	}
+	if count != 0 {
+		return errAlreadyInitialized
+	}
+	if _, err := tx.Exec(s.query(`INSERT INTO users (id, tenant_id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, strings.ToLower(v.Email), v.PasswordHash, v.Name, string(v.Role), timeText(v.CreatedAt)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *SQLStore) GetUserByEmail(email string) (User, error) {
 	return scanUser(s.db.QueryRow(s.query(`SELECT id, tenant_id, email, password_hash, name, role, created_at FROM users WHERE email = ?`), strings.ToLower(email)))
