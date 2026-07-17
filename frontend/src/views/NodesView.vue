@@ -44,7 +44,7 @@ const filtered = computed(() => {
     if (statusFilter.value === 'online' && a.status !== 'online') return false
     if (statusFilter.value === 'offline' && a.status !== 'offline') return false
     if (statusFilter.value === 'disabled' && a.enabled) return false
-    if (networkFilter.value !== 'all' && !a.interfaces.some((i) => i.networkId === networkFilter.value)) return false
+    if (networkFilter.value !== 'all' && a.networkId !== networkFilter.value && !a.interfaces.some((i) => i.networkId === networkFilter.value)) return false
     const kw = keyword.value.trim().toLowerCase()
     if (kw && !`${a.name} ${a.hostname} ${a.city} ${a.publicIP}`.toLowerCase().includes(kw)) return false
     return true
@@ -66,7 +66,8 @@ function toggleExpand(id: string) {
   expanded.value = new Set(expanded.value)
 }
 
-function peersOf(iface: WGInterface) {
+function peersOf(iface?: WGInterface) {
+  if (!iface) return []
   return mesh.scopedLinks
     .filter((l) => l.a === iface.id || l.b === iface.id)
     .map((l) => {
@@ -94,8 +95,7 @@ async function copyText(text: string, key: string) {
 }
 
 function openCustomPeer(a: Agent) {
-  const iface = a.interfaces[0]
-  if (iface) customPeerNetwork.value = iface.networkId
+  customPeerNetwork.value = a.networkId
   menuFor.value = null
 }
 
@@ -164,16 +164,16 @@ function openCustomPeer(a: Agent) {
                 <p class="truncate font-medium leading-snug text-white">{{ a.name }}</p>
                 <p class="truncate text-xs text-slate-500">{{ a.hostname }}</p>
                 <p v-if="a.collectionError" class="mt-0.5 truncate text-[11px] text-amber-400" :title="a.collectionError">WireGuard 采集异常</p>
-                <p class="mt-0.5 truncate font-mono text-[11px] text-slate-600 md:hidden">{{ a.interfaces.map((i) => i.name).join(', ') }} · {{ a.interfaces.map((i) => i.tunnelIP).join(', ') }}</p>
+                <p class="mt-0.5 truncate font-mono text-[11px] text-slate-600 md:hidden">{{ a.interfaces.map((i) => i.name).join(', ') || '待配置' }} · {{ a.interfaces.map((i) => i.tunnelIP).join(', ') || a.address }}</p>
               </td>
               <td class="hidden px-2 py-3.5 md:table-cell">
                 <p class="flex items-center gap-1 whitespace-nowrap text-sm text-slate-300">
-                  <span class="truncate font-mono text-cyan-300">{{ a.interfaces.map((i) => i.name).join(', ') }}</span>
+                  <span class="truncate font-mono text-cyan-300">{{ a.interfaces.map((i) => i.name).join(', ') || '待配置' }}</span>
                   <span v-if="a.interfaces.length > 1" class="chip shrink-0 bg-cyan-500/10 text-cyan-300 ring-1 ring-cyan-500/30">{{ a.interfaces.length }}</span>
                 </p>
               </td>
               <td class="hidden px-2 py-3.5 md:table-cell">
-                <p class="truncate font-mono text-xs text-slate-300">{{ a.interfaces.map((i) => i.tunnelIP).join(', ') }}</p>
+                <p class="truncate font-mono text-xs text-slate-300">{{ a.interfaces.map((i) => i.tunnelIP).join(', ') || a.address }}</p>
               </td>
               <td class="hidden px-2 py-3.5 2xl:table-cell">
                 <p class="truncate font-mono text-xs text-slate-300">{{ a.publicIP }}</p>
@@ -294,7 +294,7 @@ function openCustomPeer(a: Agent) {
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.updateInterface(a.id, a.interfaces[0]?.id || '', { listenPort: a.interfaces[0]?.listenPort || 0, mtu: a.interfaces[0]?.mtu || 0 }, app.username); closeMenu()">编辑接口设置</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.interfaces.map((i) => i.tunnelIP).join(', '), 'ip-' + a.id)">{{ copiedKey === 'ip-' + a.id ? '已复制 ✓' : '复制隧道 IP' }}</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.publicIP, 'ep-' + a.id)">{{ copiedKey === 'ep-' + a.id ? '已复制 ✓' : '复制 Endpoint' }}</button>
-            <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.interfaces[0]?.publicKey ?? '', 'pk-' + a.id)">{{ copiedKey === 'pk-' + a.id ? '已复制 ✓' : '复制 Public Key' }}</button>
+            <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.interfaces[0]?.publicKey || a.publicKey, 'pk-' + a.id)">{{ copiedKey === 'pk-' + a.id ? '已复制 ✓' : '复制 Public Key' }}</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.unsupported('Agent 日志'); closeMenu()">查看日志</button>
             <div class="my-1 border-t border-ink-700"></div>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-red-400 hover:bg-ink-700" @click="mesh.removeAgent(a.id, app.username); closeMenu()">删除 Agent</button>

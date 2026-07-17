@@ -598,7 +598,7 @@ func (a *App) createNode(tenantID string, network Network, name, endpoint, regio
 	if err != nil {
 		return Node{}, err
 	}
-	node := Node{ID: newID("node"), TenantID: tenantID, ProjectID: network.ProjectID, NetworkID: network.ID, Name: name, Address: address, Endpoint: endpoint, Region: region, OS: os, AgentVersion: agentVersion, Labels: labels, PublicKey: base64.StdEncoding.EncodeToString(private.PublicKey().Bytes()), PrivateKey: secret, CreatedAt: time.Now()}
+	node := Node{ID: newID("node"), TenantID: tenantID, ProjectID: network.ProjectID, NetworkID: network.ID, Name: name, Address: address, Endpoint: endpoint, Region: region, OS: os, AgentVersion: agentVersion, Labels: labels, PublicKey: base64.StdEncoding.EncodeToString(private.PublicKey().Bytes()), PrivateKey: secret, WireGuard: []WireGuardInterfaceStatus{}, CreatedAt: time.Now()}
 	if err := a.store.CreateNode(node); err != nil {
 		return Node{}, err
 	}

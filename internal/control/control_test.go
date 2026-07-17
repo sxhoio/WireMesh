@@ -101,6 +101,52 @@ func TestEmptyListEndpointsReturnArrays(t *testing.T) {
 	}
 }
 
+func TestEnrolledNodeAppearsInNodeListWithoutWireGuard(t *testing.T) {
+	app := testApp(t)
+	admin, sessionToken := initializeTestAdmin(t, app, "nodes@example.com", "strong-password")
+	project := Project{ID: "project-nodes", TenantID: admin.TenantID, Name: "Nodes", CreatedAt: time.Now()}
+	if err := app.store.CreateProject(project); err != nil {
+		t.Fatal(err)
+	}
+	network := Network{ID: "network-nodes", TenantID: admin.TenantID, ProjectID: project.ID, Name: "Nodes", CIDR: "10.44.0.0/24", Topology: TopologyCustom, CreatedAt: time.Now()}
+	if err := app.store.CreateNetwork(network); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.CreateEnrollment(EnrollmentToken{ID: "enroll-nodes", TenantID: admin.TenantID, ProjectID: project.ID, NetworkID: network.ID, Token: "enrollment-token", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	enrollResponse := httptest.NewRecorder()
+	app.Router().ServeHTTP(enrollResponse, httptest.NewRequest(http.MethodPost, "/agent/v1/enroll", strings.NewReader(`{"token":"enrollment-token","name":"new-node","os":"linux","agent_version":"test"}`)))
+	if enrollResponse.Code != http.StatusCreated {
+		t.Fatalf("enroll failed: %d %s", enrollResponse.Code, enrollResponse.Body.String())
+	}
+	var enrolled struct {
+		Node Node `json:"node"`
+	}
+	if err := json.NewDecoder(enrollResponse.Body).Decode(&enrolled); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/nodes", nil)
+	request.Header.Set("Authorization", "Bearer "+sessionToken)
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("nodes failed: %d %s", response.Code, response.Body.String())
+	}
+	var nodes []Node
+	if err := json.NewDecoder(response.Body).Decode(&nodes); err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != enrolled.Node.ID || nodes[0].NetworkID != network.ID {
+		t.Fatalf("enrolled node missing from node list: %#v", nodes)
+	}
+	if nodes[0].WireGuard == nil || len(nodes[0].WireGuard) != 0 {
+		t.Fatalf("new node must be listed with an empty WireGuard array: %#v", nodes[0].WireGuard)
+	}
+}
+
 func TestAllocateAddress(t *testing.T) {
 	address, err := AllocateAddress("10.0.0.0/30", []string{"10.0.0.1"})
 	if err != nil || address != "10.0.0.2" {

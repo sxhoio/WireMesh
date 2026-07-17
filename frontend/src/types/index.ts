@@ -18,7 +18,7 @@ export interface Network {
   name: string
   cidr: string
   topology: Topology
-  /** custom 拓扑下手动选择的接口对（interface id 对） */
+  /** custom 拓扑下手动选择的节点对（Agent id 对） */
   customPairs: [string, string][]
 }
 
@@ -50,6 +50,9 @@ export interface WGInterface {
 export interface Agent {
   id: string
   projectId: string
+  networkId: string
+  address: string
+  publicKey: string
   name: string
   hostname: string
   interfaceSelector: string

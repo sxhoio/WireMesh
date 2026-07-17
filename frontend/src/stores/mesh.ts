@@ -40,6 +40,9 @@ function toAgent(node: ApiNode, offlineSeconds: number): Agent {
   return {
     id: node.id,
     projectId: node.project_id,
+    networkId: node.network_id,
+    address: node.address || '',
+    publicKey: node.public_key || '',
     name: node.name,
     hostname: node.hostname || node.name,
     interfaceSelector: node.interface_selector || '',
@@ -204,7 +207,10 @@ export const useMeshStore = defineStore('mesh', {
       return new Set(rows.map((n) => n.id))
     },
     scopedAgents(s): Agent[] {
-      return s.agents.filter((agent) => (s.selectedProjectId === 'all' || agent.projectId === s.selectedProjectId) && agent.interfaces.some((iface) => this.scopedNetworkIds.has(iface.networkId)))
+      return s.agents.filter((agent) => (
+        (s.selectedProjectId === 'all' || agent.projectId === s.selectedProjectId)
+        && (s.selectedNetworkId === 'all' || agent.networkId === s.selectedNetworkId || agent.interfaces.some((iface) => iface.networkId === s.selectedNetworkId))
+      ))
     },
     scopedLinks(s): (PeerLink & { displayState: PeerState })[] {
       return s.links.filter((link) => this.scopedNetworkIds.has(link.networkId)).map((link) => ({ ...link, displayState: link.state }))
@@ -237,29 +243,60 @@ export const useMeshStore = defineStore('mesh', {
       this.loading = true
       this.error = ''
       try {
-        const [projects, nodes, deliveries, geoip, channels, notificationLogs, users, audits] = await Promise.all([
-          api.projects(), api.nodes(), api.deliveries(), api.geoIPStatus(), api.notificationChannels(), api.notificationLogs(),
-          app.isAdmin ? api.users() : Promise.resolve(app.user ? [app.user] : []),
-          app.isAdmin ? api.audit() : Promise.resolve([]),
-        ])
-        const networkGroups = await Promise.all(projects.map((project) => api.networks(project.id)))
-        this.projects = projects.map((project) => ({ id: project.id, name: project.name, desc: project.description || '' }))
-        this.networks = networkGroups.flat().map((network) => ({ id: network.id, projectId: network.project_id, name: network.name, cidr: network.cidr, topology: topology(network.topology), customPairs: [] }))
-        this.agents = nodes.map((node) => toAgent(node, app.settings.statusRules.agentOfflineSec))
+        const failures: unknown[] = []
+        const [nodesResult, projectsResult] = await Promise.allSettled([api.nodes(), api.projects()] as const)
+        if (nodesResult.status === 'rejected') throw nodesResult.reason
+
+        this.agents = nodesResult.value.map((node) => toAgent(node, app.settings.statusRules.agentOfflineSec))
         const observed = observedTopology(this.agents, app.settings.statusRules.handshakeSec)
         this.links = observed.links
         this.tempPeers = observed.tempPeers
-        this.audit = auditEntries(audits)
-        this.feed = feedEntries(audits, deliveries)
-        this.revisions = revisionsFrom(deliveries, this.agents, app.username)
-        this.users = users.map((user) => ({ id: user.id, name: user.name, email: user.email, role: user.role, active: true, lastLogin: timestamp(user.last_login_at) }))
-        this.geoip = { dbPath: geoip.dbPath || '', version: geoip.version || '', updatedAt: timestamp(geoip.updatedAt), entryCount: geoip.entryCount || 0 }
-        this.notifyChannels = channels.map((channel) => ({ id: channel.id, name: channel.name, type: channel.type, config: channel.config, template: channel.template, subjectTemplate: channel.subjectTemplate, enabled: channel.enabled, agents: channel.agents, createdAt: timestamp(channel.createdAt) }))
-        this.notifyLogs = notificationLogs.map((log) => ({ id: log.id, time: timestamp(log.createdAt), channelName: log.channelName, channelType: log.channelType, agentName: log.agentName, message: log.message, status: log.status }))
+
+        if (projectsResult.status === 'fulfilled') {
+          const projects = projectsResult.value
+          this.projects = projects.map((project) => ({ id: project.id, name: project.name, desc: project.description || '' }))
+          const networkResults = await Promise.allSettled(projects.map((project) => api.networks(project.id)))
+          this.networks = networkResults.flatMap((result) => result.status === 'fulfilled' ? result.value : []).map((network) => ({ id: network.id, projectId: network.project_id, name: network.name, cidr: network.cidr, topology: topology(network.topology), customPairs: [] }))
+          failures.push(...networkResults.filter((result) => result.status === 'rejected').map((result) => result.reason))
+        } else {
+          failures.push(projectsResult.reason)
+          this.projects = []
+          this.networks = []
+          this.selectedProjectId = 'all'
+          this.selectedNetworkId = 'all'
+        }
+
+        const [deliveriesResult, geoipResult, channelsResult, logsResult, usersResult, auditsResult] = await Promise.allSettled([
+          api.deliveries(), api.geoIPStatus(), api.notificationChannels(), api.notificationLogs(),
+          app.isAdmin ? api.users() : Promise.resolve(app.user ? [app.user] : []),
+          app.isAdmin ? api.audit() : Promise.resolve([]),
+        ] as const)
+        const optionalResults = [deliveriesResult, geoipResult, channelsResult, logsResult, usersResult, auditsResult]
+        failures.push(...optionalResults.filter((result) => result.status === 'rejected').map((result) => result.reason))
+
+        const deliveries = deliveriesResult.status === 'fulfilled' ? deliveriesResult.value : []
+        const audits = auditsResult.status === 'fulfilled' ? auditsResult.value : []
+        if (auditsResult.status === 'fulfilled') this.audit = auditEntries(audits)
+        if (deliveriesResult.status === 'fulfilled' || auditsResult.status === 'fulfilled') this.feed = feedEntries(audits, deliveries)
+        if (deliveriesResult.status === 'fulfilled') this.revisions = revisionsFrom(deliveries, this.agents, app.username)
+        if (usersResult.status === 'fulfilled') this.users = usersResult.value.map((user) => ({ id: user.id, name: user.name, email: user.email, role: user.role, active: true, lastLogin: timestamp(user.last_login_at) }))
+        if (geoipResult.status === 'fulfilled') {
+          const geoip = geoipResult.value
+          this.geoip = { dbPath: geoip.dbPath || '', version: geoip.version || '', updatedAt: timestamp(geoip.updatedAt), entryCount: geoip.entryCount || 0 }
+        }
+        if (channelsResult.status === 'fulfilled') this.notifyChannels = channelsResult.value.map((channel) => ({ id: channel.id, name: channel.name, type: channel.type, config: channel.config, template: channel.template, subjectTemplate: channel.subjectTemplate, enabled: channel.enabled, agents: channel.agents, createdAt: timestamp(channel.createdAt) }))
+        if (logsResult.status === 'fulfilled') this.notifyLogs = logsResult.value.map((log) => ({ id: log.id, time: timestamp(log.createdAt), channelName: log.channelName, channelType: log.channelType, agentName: log.agentName, message: log.message, status: log.status }))
         this.pendingChanges = []
         if (this.selectedProjectId !== 'all' && !this.projects.some((project) => project.id === this.selectedProjectId)) this.selectedProjectId = 'all'
         if (this.selectedNetworkId !== 'all' && !this.networks.some((network) => network.id === this.selectedNetworkId)) this.selectedNetworkId = 'all'
         this.lastUpdated = Date.now()
+
+        const authFailure = failures.find((reason) => reason instanceof ApiError && reason.status === 401)
+        if (authFailure) app.logout()
+        else if (failures.length) {
+          const first = failures[0]
+          this.error = '节点列表已加载，但部分辅助数据同步失败：' + (first instanceof Error ? first.message : '未知错误')
+        }
       } catch (reason) {
         if (reason instanceof ApiError && reason.status === 401) app.logout()
         this.error = reason instanceof Error ? reason.message : '同步失败'
@@ -304,10 +341,8 @@ export const useMeshStore = defineStore('mesh', {
     },
     async setCustomPairs(networkId: string, pairs: [string, string][], _user?: string) {
       try {
-        for (const [sourceIface, targetIface] of pairs) {
-          const source = this.ifaceWithAgent(sourceIface)?.agent.id
-          const target = this.ifaceWithAgent(targetIface)?.agent.id
-          if (source && target && source !== target) await api.addPeer(networkId, source, target)
+        for (const [sourceNode, targetNode] of pairs) {
+          if (sourceNode !== targetNode) await api.addPeer(networkId, sourceNode, targetNode)
         }
         this.notice = '自定义 Peer 已提交到后端'
         await this.refresh()
