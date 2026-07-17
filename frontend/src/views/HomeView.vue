@@ -2,13 +2,11 @@
 import { computed, ref } from 'vue'
 import WorldMap, { type MapLink } from '../components/WorldMap.vue'
 import TempPeersModal from '../components/TempPeersModal.vue'
-import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
 import type { Agent, PeerState } from '../types'
 import { stateMeta } from '../types'
 import { ago, fmtHandshake, fmtMbps, shortKey } from '../utils/format'
 
-const app = useAppStore()
 const mesh = useMeshStore()
 
 
@@ -59,8 +57,6 @@ const visibleLinks = computed(() => {
   return ls
 })
 
-const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.geo))
-
 const nodeProblems = computed(() => mesh.scopedAgents.flatMap((agent) => {
   if (!agent.enabled) return []
   const relatedLinks = mesh.scopedLinks.filter((link) => (
@@ -83,6 +79,8 @@ const nodeProblems = computed(() => mesh.scopedAgents.flatMap((agent) => {
     severe: agent.status === 'offline' || Boolean(agent.collectionError) || downLinks > 0,
   }]
 }))
+
+const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.geo))
 </script>
 
 <template>
@@ -111,10 +109,13 @@ const nodeProblems = computed(() => mesh.scopedAgents.flatMap((agent) => {
       </button>
     </div>
 
-    <!-- 主体上部：地图与链路状态保持等高 -->
-    <div class="grid shrink-0 grid-cols-1 gap-5 2xl:grid-cols-4">
+    <!-- 主体：左（地图+三联面板）/ 右（链路状态+未知位置） -->
+    <!-- 中小屏：自然文档流，页面滚动；超宽屏（2xl）：固定高度左右栏布局 -->
+    <div class="grid grid-cols-1 gap-5 2xl:min-h-0 2xl:flex-1 2xl:grid-cols-4">
+      <!-- 左侧：地图 + 三联面板 -->
+      <div class="flex flex-col gap-5 2xl:min-h-0 2xl:col-span-3">
         <!-- 地图 -->
-        <div class="panel relative h-[380px] overflow-hidden sm:h-[440px] 2xl:col-span-3 2xl:h-[560px]">
+        <div class="panel relative h-[380px] overflow-hidden sm:h-[440px] 2xl:h-auto 2xl:min-h-[360px] 2xl:flex-1">
           <WorldMap
             :agents="mesh.scopedAgents"
             :links="mesh.scopedLinks"
@@ -131,7 +132,7 @@ const nodeProblems = computed(() => mesh.scopedAgents.flatMap((agent) => {
               <div class="flex items-start justify-between">
                 <div>
                   <p class="font-semibold text-white">{{ selectedAgent.name }}</p>
-                  <p class="text-xs text-slate-500">{{ selectedAgent.city || '未知位置' }} · {{ selectedAgent.hostname }}</p>
+                  <p class="text-xs text-slate-500">{{ selectedAgent.city || '未知位置' }}<span v-if="selectedAgent.locationSource === 'manual'" class="ml-1 text-cyan-500">· 手动位置</span> · {{ selectedAgent.hostname }}</p>
                 </div>
                 <button class="text-slate-500 hover:text-slate-300" @click="selectedAgent = null">
                   <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
@@ -170,14 +171,9 @@ const nodeProblems = computed(() => mesh.scopedAgents.flatMap((agent) => {
             >
               <div class="flex items-start justify-between">
                 <p class="font-semibold text-white">链路详情</p>
-                <button class="text-slate-400 transition hover:text-white" @click="selectedLink = null">
-                  <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-                </button>
-              </div>
-              <div class="mt-3 flex items-center gap-2">
-                <span class="h-2.5 w-2.5 rounded-full" :style="{ background: stateMeta[selectedLink.displayState].color }"></span>
-                <span class="text-sm font-semibold" :style="{ color: stateMeta[selectedLink.displayState].color }">{{ stateMeta[selectedLink.displayState].label }}</span>
-                <span class="rounded-md border border-violet-400/30 bg-violet-400/10 px-2 py-0.5 text-[11px] font-medium text-violet-200">{{ mesh.networkById(selectedLink.networkId)?.name }}</span>
+                <span class="chip" :class="selectedLink.displayState === 'ok' ? 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30' : selectedLink.displayState === 'degraded' ? 'bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30' : 'bg-red-500/10 text-red-400 ring-1 ring-red-500/30'">
+                  {{ stateMeta[selectedLink.displayState].label }}
+                </span>
               </div>
               <dl class="mt-3 space-y-1.5 text-xs">
                 <div class="flex justify-between gap-3 rounded-lg bg-white/[0.04] px-3 py-2"><dt class="text-slate-300">A 端</dt><dd class="truncate font-mono font-medium text-cyan-200">{{ linkEndLabel(selectedLink.a) }}</dd></div>
@@ -186,11 +182,7 @@ const nodeProblems = computed(() => mesh.scopedAgents.flatMap((agent) => {
                 <div class="flex justify-between gap-3 rounded-lg bg-white/[0.04] px-3 py-2"><dt class="text-slate-300">延迟 / 丢包</dt><dd class="font-mono font-medium text-slate-100">{{ selectedLink.latencyMs }} ms / {{ selectedLink.lossPct }}%</dd></div>
                 <div class="flex justify-between gap-3 rounded-lg bg-white/[0.04] px-3 py-2">
                   <dt class="text-slate-300">流量</dt>
-                  <dd class="font-mono font-medium">
-                    <span class="text-cyan-300">↓{{ fmtMbps(selectedLink.rxMbps) }}</span>
-                    <span class="ml-2 text-violet-300">↑{{ fmtMbps(selectedLink.txMbps) }}</span>
-                    <span class="ml-1 text-slate-400">Mbps</span>
-                  </dd>
+                  <dd class="font-mono text-xs text-slate-100">↓{{ fmtMbps(selectedLink.rxMbps) }} ↑{{ fmtMbps(selectedLink.txMbps) }} Mbps</dd>
                 </div>
               </dl>
               <div v-if="selectedLink.failReason" class="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-200 ring-1 ring-red-500/30">
@@ -200,37 +192,10 @@ const nodeProblems = computed(() => mesh.scopedAgents.flatMap((agent) => {
           </transition>
         </div>
 
-        <!-- 链路状态（右栏，与地图等高） -->
-        <div class="panel flex h-[380px] min-h-0 flex-col p-4 sm:h-[440px] 2xl:h-[560px]">
-          <div class="mb-3 flex items-center justify-between">
-            <h3 class="text-sm font-semibold text-white">链路状态</h3>
-            <span class="text-[11px] text-slate-500">{{ visibleLinks.length }} 条</span>
-          </div>
-          <div class="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
-            <button v-for="l in visibleLinks" :key="l.id" class="flex w-full items-center gap-2.5 rounded-lg bg-ink-800/60 px-3 py-2.5 text-left ring-1 ring-ink-700 transition hover:ring-ink-600" @click="onLinkClick(l)">
-              <span class="h-2 w-2 shrink-0 rounded-full" :class="{ 'animate-pulse': l.displayState === 'down' }" :style="{ background: stateMeta[l.displayState].color }"></span>
-              <div class="min-w-0 flex-1">
-                <p class="break-all text-xs font-medium leading-snug text-slate-200">{{ linkEndLabel(l.a) }} ↔ {{ linkEndLabel(l.b) }}</p>
-                <p class="mt-0.5 text-[11px] leading-snug text-slate-500">
-                  <template v-if="l.displayState === 'ok'">{{ l.latencyMs }}ms · 丢包 {{ l.lossPct }}% · 握手 {{ fmtHandshake(l.lastHandshakeSecAgo) }}</template>
-                  <template v-else-if="l.displayState === 'degraded'">{{ l.failReason }}</template>
-                  <template v-else-if="l.displayState === 'down'">连接异常 · 丢包 {{ l.lossPct }}%</template>
-                  <template v-else>状态未知</template>
-                </p>
-              </div>
-              <span class="chip shrink-0 self-start" :class="l.displayState === 'ok' ? 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30' : l.displayState === 'degraded' ? 'bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30' : l.displayState === 'down' ? 'bg-red-500/10 text-red-400 ring-1 ring-red-500/30' : 'bg-slate-500/10 text-slate-500 ring-1 ring-slate-500/30'">
-                {{ stateMeta[l.displayState].label }}
-              </span>
-            </button>
-            <p v-if="!visibleLinks.length" class="py-8 text-center text-xs text-slate-600">当前筛选条件下没有链路</p>
-          </div>
-        </div>
-    </div>
-
-    <!-- 主体下部：四个信息面板统一高度 -->
-    <div class="grid shrink-0 grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-4">
+        <!-- 地图下方三联面板 -->
+        <div class="grid shrink-0 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <!-- 图例与筛选 -->
-          <div class="panel h-72 overflow-hidden p-4">
+          <div class="panel p-4">
             <p class="mb-3 text-sm font-semibold text-white">图例与筛选</p>
             <div class="space-y-1.5 text-[11px] text-slate-400">
               <div class="flex items-center gap-2"><span class="h-0.5 w-4 rounded bg-emerald-400"></span>正常：3 分钟内握手且探测可达</div>
@@ -250,17 +215,11 @@ const nodeProblems = computed(() => mesh.scopedAgents.flatMap((agent) => {
                   <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" :class="mesh.onlyErrors ? 'left-[18px]' : 'left-0.5'"></span>
                 </button>
               </label>
-              <label class="flex items-center justify-between text-[11px] text-slate-400">
-                自动刷新（{{ app.settings.collect.mapRefreshSec }}s）
-                <button class="relative h-5 w-9 rounded-full transition" :class="mesh.autoRefresh ? 'bg-emerald-500' : 'bg-ink-600'" @click="mesh.autoRefresh = !mesh.autoRefresh">
-                  <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" :class="mesh.autoRefresh ? 'left-[18px]' : 'left-0.5'"></span>
-                </button>
-              </label>
             </div>
           </div>
 
           <!-- 链路状态（中） -->
-          <div class="panel flex h-72 min-h-0 flex-col p-4">
+          <div class="panel flex min-h-0 flex-col p-4">
             <div class="mb-3 flex items-center justify-between">
               <h3 class="text-sm font-semibold text-white">链路状态</h3>
               <span class="text-[11px] text-slate-500">{{ visibleLinks.length }} 条</span>
@@ -286,12 +245,12 @@ const nodeProblems = computed(() => mesh.scopedAgents.flatMap((agent) => {
           </div>
 
           <!-- 节点问题 -->
-          <div class="panel flex h-72 min-h-0 flex-col p-4">
+          <div class="panel flex min-h-0 flex-col p-4">
             <div class="mb-3 flex items-center justify-between">
               <h3 class="text-sm font-semibold text-white">节点问题</h3>
               <span class="chip" :class="nodeProblems.length ? 'bg-red-500/10 text-red-300 ring-1 ring-red-500/30' : 'bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30'">{{ nodeProblems.length }}</span>
             </div>
-            <div class="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+            <div class="min-h-0 max-h-64 flex-1 space-y-2 overflow-y-auto p-2">
               <div v-for="problem in nodeProblems" :key="problem.id" class="flex items-start gap-2.5 rounded-lg bg-ink-800/60 px-3 py-2.5 ring-1 ring-ink-700">
                 <span class="mt-1 h-2 w-2 shrink-0 rounded-full" :class="problem.severe ? 'bg-red-400' : 'bg-amber-400'"></span>
                 <div class="min-w-0 flex-1">
@@ -302,15 +261,45 @@ const nodeProblems = computed(() => mesh.scopedAgents.flatMap((agent) => {
               <p v-if="!nodeProblems.length" class="py-8 text-center text-xs text-emerald-400/70">当前没有节点异常</p>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- 右侧栏：链路状态（上）+ 未知位置（下） -->
+      <div class="flex flex-col gap-5 2xl:min-h-0">
+        <!-- 链路状态（右栏，与地图等高） -->
+        <div class="panel flex flex-col p-4 2xl:min-h-0 2xl:flex-1">
+          <div class="mb-3 flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white">链路状态</h3>
+            <span class="text-[11px] text-slate-500">{{ visibleLinks.length }} 条</span>
+          </div>
+          <div class="max-h-80 space-y-2 overflow-y-auto p-2 2xl:max-h-none 2xl:min-h-0 2xl:flex-1">
+            <button v-for="l in visibleLinks" :key="l.id" class="flex w-full items-center gap-2.5 rounded-lg bg-ink-800/60 px-3 py-2.5 text-left ring-1 ring-ink-700 transition hover:ring-ink-600" @click="onLinkClick(l)">
+              <span class="h-2 w-2 shrink-0 rounded-full" :class="{ 'animate-pulse': l.displayState === 'down' }" :style="{ background: stateMeta[l.displayState].color }"></span>
+              <div class="min-w-0 flex-1">
+                <p class="break-all text-xs font-medium leading-snug text-slate-200">{{ linkEndLabel(l.a) }} ↔ {{ linkEndLabel(l.b) }}</p>
+                <p class="mt-0.5 text-[11px] leading-snug text-slate-500">
+                  <template v-if="l.displayState === 'ok'">{{ l.latencyMs }}ms · 丢包 {{ l.lossPct }}% · 握手 {{ fmtHandshake(l.lastHandshakeSecAgo) }}</template>
+                  <template v-else-if="l.displayState === 'degraded'">{{ l.failReason }}</template>
+                  <template v-else-if="l.displayState === 'down'">连接异常 · 丢包 {{ l.lossPct }}%</template>
+                  <template v-else>状态未知</template>
+                </p>
+              </div>
+              <span class="chip shrink-0 self-start" :class="l.displayState === 'ok' ? 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30' : l.displayState === 'degraded' ? 'bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30' : l.displayState === 'down' ? 'bg-red-500/10 text-red-400 ring-1 ring-red-500/30' : 'bg-slate-500/10 text-slate-500 ring-1 ring-slate-500/30'">
+                {{ stateMeta[l.displayState].label }}
+              </span>
+            </button>
+            <p v-if="!visibleLinks.length" class="py-8 text-center text-xs text-slate-600">当前筛选条件下没有链路</p>
+          </div>
+        </div>
 
         <!-- 未知位置 -->
-        <div class="panel flex h-72 min-h-0 flex-col p-4">
+        <div class="panel flex flex-col p-4 2xl:max-h-72 2xl:min-h-0">
           <p class="flex items-center justify-between text-sm font-semibold text-white">
             未知位置
             <span class="chip bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/30">{{ unknownTempPeers.length }}</span>
           </p>
           <p class="mt-1 text-[11px] leading-relaxed text-slate-500">私网 IP、无公网端点或地理位置解析失败的对等端</p>
-          <div class="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+          <div class="mt-3 max-h-60 space-y-2 overflow-y-auto p-2 2xl:max-h-none 2xl:min-h-0 2xl:flex-1">
             <div v-for="t in unknownTempPeers" :key="t.id" class="flex items-center gap-2 rounded-lg bg-ink-800/60 px-3 py-2.5 ring-1 ring-ink-700">
               <span class="h-2 w-2 shrink-0 rounded-full border border-amber-400/70"></span>
               <span class="min-w-0 flex-1 truncate font-mono text-xs text-slate-400">{{ t.endpoint || shortKey(t.publicKey) }}</span>
@@ -319,6 +308,7 @@ const nodeProblems = computed(() => mesh.scopedAgents.flatMap((agent) => {
             <p v-if="!unknownTempPeers.length" class="py-8 text-center text-xs text-slate-600">没有未知位置的对等端</p>
           </div>
         </div>
+      </div>
     </div>
 
     <TempPeersModal v-if="showTempPeers" @close="showTempPeers = false" />
