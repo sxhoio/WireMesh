@@ -116,10 +116,21 @@ func main() {
 		}
 		log.Printf("enrolled node %s", state.NodeID)
 	}
-	if state.Server == "" {
+	if state.Server != *server {
+		previousServer := state.Server
 		state.Server = *server
+		if err := saveState(statePath, state); err != nil {
+			log.Fatalf("persist control plane URL: %v", err)
+		}
+		if previousServer != "" {
+			log.Printf("control plane URL changed from %s to %s", previousServer, state.Server)
+		}
 	}
 
+	mtlsActive := *useMTLS && strings.HasPrefix(strings.ToLower(state.Server), "https://")
+	if *useMTLS && !mtlsActive {
+		log.Printf("warning: --mtls has no effect for HTTP server %s; using X-Agent-ID development authentication", state.Server)
+	}
 	client, err := authenticatedClient(state, *useMTLS)
 	if err != nil {
 		log.Fatalf("configure agent transport: %v", err)
@@ -130,23 +141,55 @@ func main() {
 		AgentVersion: agentVersion, Labels: parseLabels(*labelsText), Interfaces: *interfaces,
 	}
 	manager := wireGuardManager{runner: execCommandRunner{}, configDir: "/etc/wireguard"}
+	transportMode := "HTTP development identity"
+	if mtlsActive {
+		transportMode = "HTTPS mutual TLS"
+	} else if strings.HasPrefix(strings.ToLower(state.Server), "https://") {
+		transportMode = "HTTPS without client certificate"
+	}
+	log.Printf("agent started: node=%s server=%s transport=%s interfaces=%s report_interval=%s probe_interval=%s",
+		state.NodeID, state.Server, transportMode, *interfaces, reportInterval.String(), probeInterval.String())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	heartbeatAccepted := false
+	lastCollectionError := ""
 	sendHeartbeat := func() {
 		heartbeat := baseHeartbeat
 		heartbeat.WireGuard, heartbeat.CollectionError = collectWireGuard(ctx, *interfaces, manager.runner)
+		if heartbeat.CollectionError != lastCollectionError {
+			if heartbeat.CollectionError != "" {
+				log.Printf("WireGuard collection warning: %s", heartbeat.CollectionError)
+			} else if lastCollectionError != "" {
+				log.Printf("WireGuard collection recovered")
+			}
+			lastCollectionError = heartbeat.CollectionError
+		}
 		if err := postHeartbeat(ctx, client, state, heartbeat); err != nil {
 			log.Printf("heartbeat failed: %v", err)
+			return
+		}
+		if !heartbeatAccepted {
+			log.Printf("heartbeat accepted by server: node=%s wireguard_interfaces=%d", state.NodeID, len(heartbeat.WireGuard))
+			heartbeatAccepted = true
 		}
 	}
+	configurationChecked := false
 	reconcileConfiguration := func() {
 		payload, found, err := pollConfig(ctx, client, state)
 		if err != nil {
 			log.Printf("configuration check failed: %v", err)
 			return
 		}
-		if !found || payload.Version == 0 || payload.Version <= state.AttemptedVersion {
+		if !found {
+			if !configurationChecked {
+				log.Printf("no published WireGuard configuration is available for node %s", state.NodeID)
+				configurationChecked = true
+			}
+			return
+		}
+		configurationChecked = true
+		if payload.Version == 0 || payload.Version <= state.AttemptedVersion {
 			return
 		}
 		status, message := manager.Apply(ctx, payload.Config, state.NodeID)

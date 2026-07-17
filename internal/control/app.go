@@ -548,6 +548,11 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	node.LastSeen = time.Now()
+	if strings.TrimSpace(in.Hostname) != "" {
+		node.Hostname = strings.TrimSpace(in.Hostname)
+	}
+	node.InterfaceSelector = strings.TrimSpace(in.Interfaces)
+	node.CollectionError = strings.TrimSpace(in.CollectionError)
 	if strings.TrimSpace(in.OS) != "" {
 		node.OS = strings.TrimSpace(in.OS)
 	}

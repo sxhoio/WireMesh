@@ -71,22 +71,25 @@ type WireGuardInterfaceStatus struct {
 }
 
 type Node struct {
-	ID           string                     `json:"id"`
-	TenantID     string                     `json:"tenant_id"`
-	ProjectID    string                     `json:"project_id"`
-	NetworkID    string                     `json:"network_id"`
-	Name         string                     `json:"name"`
-	Address      string                     `json:"address"`
-	Endpoint     string                     `json:"endpoint"`
-	Region       string                     `json:"region"`
-	OS           string                     `json:"os"`
-	AgentVersion string                     `json:"agent_version"`
-	Labels       map[string]string          `json:"labels"`
-	PublicKey    string                     `json:"public_key"`
-	PrivateKey   EncryptedSecret            `json:"-"`
-	WireGuard    []WireGuardInterfaceStatus `json:"wireguard"`
-	LastSeen     time.Time                  `json:"last_seen"`
-	CreatedAt    time.Time                  `json:"created_at"`
+	ID                string                     `json:"id"`
+	TenantID          string                     `json:"tenant_id"`
+	ProjectID         string                     `json:"project_id"`
+	NetworkID         string                     `json:"network_id"`
+	Name              string                     `json:"name"`
+	Hostname          string                     `json:"hostname"`
+	InterfaceSelector string                     `json:"interface_selector"`
+	CollectionError   string                     `json:"collection_error,omitempty"`
+	Address           string                     `json:"address"`
+	Endpoint          string                     `json:"endpoint"`
+	Region            string                     `json:"region"`
+	OS                string                     `json:"os"`
+	AgentVersion      string                     `json:"agent_version"`
+	Labels            map[string]string          `json:"labels"`
+	PublicKey         string                     `json:"public_key"`
+	PrivateKey        EncryptedSecret            `json:"-"`
+	WireGuard         []WireGuardInterfaceStatus `json:"wireguard"`
+	LastSeen          time.Time                  `json:"last_seen"`
+	CreatedAt         time.Time                  `json:"created_at"`
 }
 type PeerRelation struct {
 	ID           string    `json:"id"`

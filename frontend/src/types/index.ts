@@ -52,6 +52,8 @@ export interface Agent {
   projectId: string
   name: string
   hostname: string
+  interfaceSelector: string
+  collectionError: string
   status: AgentStatus
   enabled: boolean
   version: string

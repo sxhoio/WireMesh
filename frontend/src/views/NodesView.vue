@@ -163,6 +163,7 @@ function openCustomPeer(a: Agent) {
               <td class="px-2 py-3.5">
                 <p class="truncate font-medium leading-snug text-white">{{ a.name }}</p>
                 <p class="truncate text-xs text-slate-500">{{ a.hostname }}</p>
+                <p v-if="a.collectionError" class="mt-0.5 truncate text-[11px] text-amber-400" :title="a.collectionError">WireGuard 采集异常</p>
                 <p class="mt-0.5 truncate font-mono text-[11px] text-slate-600 md:hidden">{{ a.interfaces.map((i) => i.name).join(', ') }} · {{ a.interfaces.map((i) => i.tunnelIP).join(', ') }}</p>
               </td>
               <td class="hidden px-2 py-3.5 md:table-cell">
@@ -206,6 +207,13 @@ function openCustomPeer(a: Agent) {
             <tr v-if="expanded.has(a.id)" class="border-t border-ink-700/70 bg-ink-950/40">
               <td colspan="10" class="px-4 py-4 sm:px-5">
           <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <div v-if="!a.interfaces.length" class="rounded-xl bg-ink-900/70 p-4 ring-1 xl:col-span-2" :class="a.collectionError ? 'ring-amber-500/30' : 'ring-ink-600'">
+              <p class="text-sm font-medium" :class="a.collectionError ? 'text-amber-300' : 'text-slate-300'">未采集到 WireGuard 接口</p>
+              <p class="mt-1 text-xs leading-relaxed text-slate-500">
+                {{ a.collectionError || 'Agent 心跳正常，但当前机器没有活动的 WireGuard 接口。请发布该节点的网络配置，或检查 --interfaces 选择器。' }}
+              </p>
+              <p v-if="a.interfaceSelector" class="mt-2 font-mono text-[11px] text-slate-600">接口选择器：{{ a.interfaceSelector }}</p>
+            </div>
             <div v-for="iface in a.interfaces" :key="iface.id" class="rounded-xl bg-ink-900/70 p-4 ring-1 ring-ink-600">
               <div class="flex items-center justify-between">
                 <div class="flex items-center gap-2">

@@ -64,7 +64,7 @@ func commonSchemaStatements() []string {
 		`CREATE INDEX IF NOT EXISTS projects_tenant_idx ON projects (tenant_id, created_at)`,
 		`CREATE TABLE IF NOT EXISTS networks (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, project_id TEXT NOT NULL, name TEXT NOT NULL, cidr TEXT NOT NULL, dns TEXT NOT NULL, topology TEXT NOT NULL, created_at TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS networks_project_idx ON networks (tenant_id, project_id)`,
-		`CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, project_id TEXT NOT NULL, network_id TEXT NOT NULL, name TEXT NOT NULL, address TEXT NOT NULL, endpoint TEXT NOT NULL, region TEXT NOT NULL, os TEXT NOT NULL, agent_version TEXT NOT NULL, labels_json TEXT NOT NULL, public_key TEXT NOT NULL, private_key_json TEXT NOT NULL, wireguard_json TEXT NOT NULL, last_seen TEXT NOT NULL, created_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, project_id TEXT NOT NULL, network_id TEXT NOT NULL, name TEXT NOT NULL, hostname TEXT NOT NULL DEFAULT '', interface_selector TEXT NOT NULL DEFAULT '', collection_error TEXT NOT NULL DEFAULT '', address TEXT NOT NULL, endpoint TEXT NOT NULL, region TEXT NOT NULL, os TEXT NOT NULL, agent_version TEXT NOT NULL, labels_json TEXT NOT NULL, public_key TEXT NOT NULL, private_key_json TEXT NOT NULL, wireguard_json TEXT NOT NULL, last_seen TEXT NOT NULL, created_at TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS nodes_network_idx ON nodes (tenant_id, network_id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS nodes_address_idx ON nodes (network_id, address)`,
 		`CREATE TABLE IF NOT EXISTS peer_relations (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, network_id TEXT NOT NULL, source_node_id TEXT NOT NULL, target_node_id TEXT NOT NULL, created_at TEXT NOT NULL)`,
@@ -90,7 +90,7 @@ func mysqlSchemaStatements() []string {
 		`CREATE TABLE IF NOT EXISTS users (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, email VARCHAR(320) NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, name VARCHAR(255) NOT NULL, role VARCHAR(32) NOT NULL, last_login_at VARCHAR(40), created_at VARCHAR(40) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS projects (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, name VARCHAR(255) NOT NULL, description TEXT NOT NULL, created_at VARCHAR(40) NOT NULL, INDEX projects_tenant_idx (tenant_id, created_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS networks (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, project_id VARCHAR(191) NOT NULL, name VARCHAR(255) NOT NULL, cidr VARCHAR(64) NOT NULL, dns TEXT NOT NULL, topology VARCHAR(32) NOT NULL, created_at VARCHAR(40) NOT NULL, INDEX networks_project_idx (tenant_id, project_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS nodes (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, project_id VARCHAR(191) NOT NULL, network_id VARCHAR(191) NOT NULL, name VARCHAR(255) NOT NULL, address VARCHAR(64) NOT NULL, endpoint TEXT NOT NULL, region VARCHAR(255) NOT NULL, os VARCHAR(255) NOT NULL, agent_version VARCHAR(255) NOT NULL, labels_json LONGTEXT NOT NULL, public_key TEXT NOT NULL, private_key_json LONGTEXT NOT NULL, wireguard_json LONGTEXT NOT NULL, last_seen VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL, INDEX nodes_network_idx (tenant_id, network_id), UNIQUE INDEX nodes_address_idx (network_id, address)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS nodes (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, project_id VARCHAR(191) NOT NULL, network_id VARCHAR(191) NOT NULL, name VARCHAR(255) NOT NULL, hostname VARCHAR(255) NOT NULL DEFAULT '', interface_selector VARCHAR(255) NOT NULL DEFAULT '', collection_error LONGTEXT NOT NULL, address VARCHAR(64) NOT NULL, endpoint TEXT NOT NULL, region VARCHAR(255) NOT NULL, os VARCHAR(255) NOT NULL, agent_version VARCHAR(255) NOT NULL, labels_json LONGTEXT NOT NULL, public_key TEXT NOT NULL, private_key_json LONGTEXT NOT NULL, wireguard_json LONGTEXT NOT NULL, last_seen VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL, INDEX nodes_network_idx (tenant_id, network_id), UNIQUE INDEX nodes_address_idx (network_id, address)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS peer_relations (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, network_id VARCHAR(191) NOT NULL, source_node_id VARCHAR(191) NOT NULL, target_node_id VARCHAR(191) NOT NULL, created_at VARCHAR(40) NOT NULL, INDEX peers_network_idx (tenant_id, network_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS config_revisions (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, project_id VARCHAR(191) NOT NULL, network_id VARCHAR(191) NOT NULL, version BIGINT NOT NULL, configs_json LONGTEXT NOT NULL, created_at VARCHAR(40) NOT NULL, UNIQUE INDEX revisions_network_version_idx (network_id, version)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS config_deliveries (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, node_id VARCHAR(191) NOT NULL, version BIGINT NOT NULL, state VARCHAR(64) NOT NULL, message TEXT NOT NULL, updated_at VARCHAR(40) NOT NULL, UNIQUE INDEX deliveries_node_version_idx (tenant_id, node_id, version), INDEX deliveries_tenant_idx (tenant_id, updated_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
@@ -133,7 +133,10 @@ func (s *SQLStore) migrate(ctx context.Context) error {
 	if err := s.ensureSystemSettingsGeoIPColumn(ctx); err != nil {
 		return err
 	}
-	return s.ensureNodeWireGuardColumn(ctx)
+	if err := s.ensureNodeWireGuardColumn(ctx); err != nil {
+		return err
+	}
+	return s.ensureNodeAgentStatusColumns(ctx)
 }
 
 func (s *SQLStore) ensureUserLastLoginColumn(ctx context.Context) error {
@@ -309,7 +312,7 @@ func (s *SQLStore) CreateNode(v Node) error {
 	labels, _ := json.Marshal(v.Labels)
 	secret, _ := json.Marshal(v.PrivateKey)
 	wireGuard, _ := json.Marshal(v.WireGuard)
-	_, err := s.db.Exec(s.query(`INSERT INTO nodes (id, tenant_id, project_id, network_id, name, address, endpoint, region, os, agent_version, labels_json, public_key, private_key_json, wireguard_json, last_seen, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ProjectID, v.NetworkID, v.Name, v.Address, v.Endpoint, v.Region, v.OS, v.AgentVersion, string(labels), v.PublicKey, string(secret), string(wireGuard), timeText(v.LastSeen), timeText(v.CreatedAt))
+	_, err := s.db.Exec(s.query(`INSERT INTO nodes (id, tenant_id, project_id, network_id, name, hostname, interface_selector, collection_error, address, endpoint, region, os, agent_version, labels_json, public_key, private_key_json, wireguard_json, last_seen, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ProjectID, v.NetworkID, v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Address, v.Endpoint, v.Region, v.OS, v.AgentVersion, string(labels), v.PublicKey, string(secret), string(wireGuard), timeText(v.LastSeen), timeText(v.CreatedAt))
 	return err
 }
 func (s *SQLStore) GetNode(tenant, id string) (Node, error) {
@@ -345,7 +348,7 @@ func (s *SQLStore) UpdateNode(v Node) error {
 	labels, _ := json.Marshal(v.Labels)
 	secret, _ := json.Marshal(v.PrivateKey)
 	wireGuard, _ := json.Marshal(v.WireGuard)
-	result, err := s.db.Exec(s.query(`UPDATE nodes SET name=?, address=?, endpoint=?, region=?, os=?, agent_version=?, labels_json=?, public_key=?, private_key_json=?, wireguard_json=?, last_seen=? WHERE id=? AND tenant_id=?`), v.Name, v.Address, v.Endpoint, v.Region, v.OS, v.AgentVersion, string(labels), v.PublicKey, string(secret), string(wireGuard), timeText(v.LastSeen), v.ID, v.TenantID)
+	result, err := s.db.Exec(s.query(`UPDATE nodes SET name=?, hostname=?, interface_selector=?, collection_error=?, address=?, endpoint=?, region=?, os=?, agent_version=?, labels_json=?, public_key=?, private_key_json=?, wireguard_json=?, last_seen=? WHERE id=? AND tenant_id=?`), v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Address, v.Endpoint, v.Region, v.OS, v.AgentVersion, string(labels), v.PublicKey, string(secret), string(wireGuard), timeText(v.LastSeen), v.ID, v.TenantID)
 	return changed(result, err)
 }
 
@@ -560,6 +563,49 @@ func (s *SQLStore) ensureNodeWireGuardColumn(ctx context.Context) error {
 	return nil
 }
 
+func (s *SQLStore) ensureNodeAgentStatusColumns(ctx context.Context) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{name: "hostname", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "interface_selector", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "collection_error", definition: "TEXT NOT NULL DEFAULT ''"},
+	}
+	if s.driver == "mysql" {
+		columns = []struct {
+			name       string
+			definition string
+		}{
+			{name: "hostname", definition: "VARCHAR(255) NULL"},
+			{name: "interface_selector", definition: "VARCHAR(255) NULL"},
+			{name: "collection_error", definition: "LONGTEXT NULL"},
+		}
+	}
+	for _, column := range columns {
+		var count int
+		var lookup string
+		switch s.driver {
+		case "sqlite":
+			lookup = fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('nodes') WHERE name = '%s'", column.name)
+		case "mysql":
+			lookup = fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'nodes' AND column_name = '%s'", column.name)
+		default:
+			lookup = fmt.Sprintf("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'nodes' AND column_name = '%s'", column.name)
+		}
+		if err := s.db.QueryRowContext(ctx, lookup).Scan(&count); err != nil {
+			return fmt.Errorf("inspect nodes %s column: %w", column.name, err)
+		}
+		if count > 0 {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE nodes ADD COLUMN "+column.name+" "+column.definition); err != nil {
+			return fmt.Errorf("add nodes %s column: %w", column.name, err)
+		}
+	}
+	return nil
+}
+
 func (s *SQLStore) CreateUser(v User) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO users (id, tenant_id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, strings.ToLower(v.Email), v.PasswordHash, v.Name, string(v.Role), timeText(v.CreatedAt))
 	return err
@@ -659,7 +705,7 @@ func scanNotificationChannel(row scanner) (NotificationChannel, error) {
 	return v, nil
 }
 
-const nodeSelect = `SELECT id, tenant_id, project_id, network_id, name, address, endpoint, region, os, agent_version, labels_json, public_key, private_key_json, wireguard_json, last_seen, created_at FROM nodes`
+const nodeSelect = `SELECT id, tenant_id, project_id, network_id, name, COALESCE(hostname, ''), COALESCE(interface_selector, ''), COALESCE(collection_error, ''), address, endpoint, region, os, agent_version, labels_json, public_key, private_key_json, wireguard_json, last_seen, created_at FROM nodes`
 
 type scanner interface{ Scan(...any) error }
 
@@ -700,7 +746,7 @@ func scanNode(row scanner) (Node, error) {
 	var v Node
 	var labels, secret, lastSeen, created string
 	var wireGuard sql.NullString
-	if err := row.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.NetworkID, &v.Name, &v.Address, &v.Endpoint, &v.Region, &v.OS, &v.AgentVersion, &labels, &v.PublicKey, &secret, &wireGuard, &lastSeen, &created); err != nil {
+	if err := row.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.NetworkID, &v.Name, &v.Hostname, &v.InterfaceSelector, &v.CollectionError, &v.Address, &v.Endpoint, &v.Region, &v.OS, &v.AgentVersion, &labels, &v.PublicKey, &secret, &wireGuard, &lastSeen, &created); err != nil {
 		return Node{}, notFound(err)
 	}
 	if err := json.Unmarshal([]byte(labels), &v.Labels); err != nil {
