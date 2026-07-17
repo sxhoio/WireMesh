@@ -85,6 +85,10 @@ type Node struct {
 	Address           string                     `json:"address"`
 	Endpoint          string                     `json:"endpoint"`
 	Region            string                     `json:"region"`
+	LocationName      string                     `json:"location_name"`
+	LocationSource    string                     `json:"location_source"`
+	Latitude          float64                    `json:"latitude"`
+	Longitude         float64                    `json:"longitude"`
 	OS                string                     `json:"os"`
 	AgentVersion      string                     `json:"agent_version"`
 	Labels            map[string]string          `json:"labels"`

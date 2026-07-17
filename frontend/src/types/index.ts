@@ -67,6 +67,7 @@ export interface Agent {
   publicIP: string
   city: string
   country: string
+  locationSource: string
   lng: number
   lat: number
   lastSeen: number

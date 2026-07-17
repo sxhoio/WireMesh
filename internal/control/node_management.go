@@ -2,6 +2,7 @@ package control
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"net/netip"
 	"sort"
@@ -54,6 +55,10 @@ func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
 		Enabled           *bool              `json:"enabled"`
 		InterfaceSelector *string            `json:"interface_selector"`
 		Labels            *map[string]string `json:"labels"`
+		LocationName      *string            `json:"location_name"`
+		LocationSource    *string            `json:"location_source"`
+		Latitude          *float64           `json:"latitude"`
+		Longitude         *float64           `json:"longitude"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -109,12 +114,50 @@ func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
 			node.Labels = map[string]string{}
 		}
 	}
+	if in.LocationSource != nil || in.LocationName != nil || in.Latitude != nil || in.Longitude != nil {
+		source := node.LocationSource
+		if in.LocationSource != nil {
+			source = strings.TrimSpace(*in.LocationSource)
+		}
+		switch source {
+		case "":
+			node.LocationName = ""
+			node.LocationSource = ""
+			node.Latitude = 0
+			node.Longitude = 0
+		case "manual":
+			latitude, longitude := node.Latitude, node.Longitude
+			if in.Latitude != nil {
+				latitude = *in.Latitude
+			}
+			if in.Longitude != nil {
+				longitude = *in.Longitude
+			}
+			if math.IsNaN(latitude) || math.IsInf(latitude, 0) || latitude < -90 || latitude > 90 {
+				writeError(w, http.StatusBadRequest, "latitude must be between -90 and 90")
+				return
+			}
+			if math.IsNaN(longitude) || math.IsInf(longitude, 0) || longitude < -180 || longitude > 180 {
+				writeError(w, http.StatusBadRequest, "longitude must be between -180 and 180")
+				return
+			}
+			node.LocationSource = "manual"
+			node.Latitude = latitude
+			node.Longitude = longitude
+			if in.LocationName != nil {
+				node.LocationName = strings.TrimSpace(*in.LocationName)
+			}
+		default:
+			writeError(w, http.StatusBadRequest, "location_source must be manual or empty")
+			return
+		}
+	}
 	node = normalizeNodeDefaults(node)
 	if err := a.store.UpdateNode(node); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update node")
 		return
 	}
-	a.auditEvent(c.TenantID, c.Subject, "node.update", "node", node.ID, map[string]string{"address": node.Address, "enabled": fmt.Sprint(node.Enabled)})
+	a.auditEvent(c.TenantID, c.Subject, "node.update", "node", node.ID, map[string]string{"address": node.Address, "enabled": fmt.Sprint(node.Enabled), "location_source": node.LocationSource})
 	writeJSON(w, http.StatusOK, node)
 }
 

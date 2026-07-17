@@ -205,7 +205,7 @@ function render() {
 function fitIfNeeded(force = false) {
   const agents = locatedAgents()
   if (!map || !agents.length) return
-  const key = agents.map((a) => a.id).sort().join(',')
+  const key = agents.map((a) => `${a.id}:${a.lng}:${a.lat}`).sort().join(',')
   if (!force && (userRoamed || key === lastFitKey)) return
   lastFitKey = key
   const extent = markerSource?.getExtent()

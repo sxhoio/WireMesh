@@ -6,7 +6,7 @@ export interface ApiProject { id: string; tenant_id: string; name: string; descr
 export interface ApiNetwork { id: string; tenant_id: string; project_id: string; name: string; cidr: string; dns: string; topology: 'full_mesh' | 'hub_spoke' | 'custom'; created_at: string }
 export interface ApiWireGuardPeer { public_key: string; endpoint: string; allowed_ips: string[]; latest_handshake_at?: string; receive_bytes: number; transmit_bytes: number; persistent_keepalive?: number }
 export interface ApiWireGuardInterface { name: string; public_key: string; listen_port: number; addresses: string[]; mtu: number; up: boolean; peers: ApiWireGuardPeer[] }
-export interface ApiNode { id: string; tenant_id: string; project_id: string; network_id: string; name: string; hostname?: string; interface_selector?: string; collection_error?: string; enabled: boolean; listen_port: number; mtu: number; address: string; endpoint: string; region: string; os: string; agent_version: string; labels: Record<string, string>; public_key: string; wireguard?: ApiWireGuardInterface[]; last_seen: string; created_at: string }
+export interface ApiNode { id: string; tenant_id: string; project_id: string; network_id: string; name: string; hostname?: string; interface_selector?: string; collection_error?: string; enabled: boolean; listen_port: number; mtu: number; address: string; endpoint: string; region: string; location_name: string; location_source: string; latitude: number; longitude: number; os: string; agent_version: string; labels: Record<string, string>; public_key: string; wireguard?: ApiWireGuardInterface[]; last_seen: string; created_at: string }
 export interface ApiAgentCommand { id: string; tenant_id: string; node_id: string; type: string; state: string; result?: string; created_at: string; started_at?: string; completed_at?: string }
 export interface ApiNodeLog { id: string; level: string; source: string; message: string; created_at: string }
 export interface ApiTrafficPoint { recorded_at: string; receive_bytes: number; transmit_bytes: number; rx_mbps: number; tx_mbps: number }
@@ -108,7 +108,7 @@ export const api = {
   createNetwork: (payload: { project_id: string; name: string; cidr: string; dns: string; topology: ApiNetwork['topology'] }) => request<ApiNetwork>('/api/v1/networks', { method: 'POST', body: JSON.stringify(payload) }),
   nodes: () => requestArray<ApiNode>('/api/v1/nodes'),
   node: (id: string) => request<ApiNode>('/api/v1/nodes/' + encodeURIComponent(id)),
-  updateNode: (id: string, payload: Partial<Pick<ApiNode, 'name' | 'address' | 'endpoint' | 'listen_port' | 'mtu' | 'enabled' | 'interface_selector' | 'labels'>>) => request<ApiNode>('/api/v1/nodes/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify(payload) }),
+  updateNode: (id: string, payload: Partial<Pick<ApiNode, 'name' | 'address' | 'endpoint' | 'listen_port' | 'mtu' | 'enabled' | 'interface_selector' | 'labels' | 'location_name' | 'location_source' | 'latitude' | 'longitude'>>) => request<ApiNode>('/api/v1/nodes/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteNode: (id: string) => request<void>('/api/v1/nodes/' + encodeURIComponent(id), { method: 'DELETE' }),
   collectNode: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/collect', { method: 'POST' }),
   checkNodeConnectivity: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/connectivity-check', { method: 'POST' }),

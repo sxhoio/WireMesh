@@ -114,7 +114,7 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
               <div class="flex items-start justify-between">
                 <div>
                   <p class="font-semibold text-white">{{ selectedAgent.name }}</p>
-                  <p class="text-xs text-slate-500">{{ selectedAgent.city }}, {{ selectedAgent.country }} · {{ selectedAgent.hostname }}</p>
+                  <p class="text-xs text-slate-500">{{ selectedAgent.city || '未知位置' }}<span v-if="selectedAgent.locationSource === 'manual'" class="ml-1 text-cyan-500">· 手动位置</span> · {{ selectedAgent.hostname }}</p>
                 </div>
                 <button class="text-slate-500 hover:text-slate-300" @click="selectedAgent = null">
                   <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
@@ -123,6 +123,7 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
               <dl class="mt-3 space-y-1.5 text-xs">
                 <div class="flex justify-between"><dt class="text-slate-500">状态</dt><dd :class="selectedAgent.status === 'online' ? 'text-emerald-400' : 'text-slate-500'">{{ selectedAgent.status === 'online' ? '在线' : '离线' }}{{ selectedAgent.enabled ? '' : ' · 已停用' }}</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">公网端点</dt><dd class="font-mono text-slate-300">{{ agentEndpoint(selectedAgent) }}</dd></div>
+                <div v-if="Number.isFinite(selectedAgent.lat) && Number.isFinite(selectedAgent.lng)" class="flex justify-between"><dt class="text-slate-500">地理坐标</dt><dd class="font-mono text-slate-300">{{ selectedAgent.lat.toFixed(4) }}, {{ selectedAgent.lng.toFixed(4) }}</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">流量</dt><dd class="text-slate-300">↓{{ fmtMbps(selectedAgent.rxMbps) }} ↑{{ fmtMbps(selectedAgent.txMbps) }} Mbps</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">最后上报</dt><dd class="text-slate-300">{{ ago(selectedAgent.lastSeen) }}</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">版本</dt><dd class="text-slate-300">{{ selectedAgent.version }}</dd></div>
@@ -145,26 +146,36 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
 
           <!-- 链路详情浮层 -->
           <transition name="fade">
-            <div v-if="selectedLink" class="absolute right-4 top-4 z-10 w-80 rounded-xl bg-ink-950/92 p-4 ring-1 ring-ink-600 backdrop-blur">
+            <div
+              v-if="selectedLink"
+              class="absolute right-4 top-4 z-10 w-80 rounded-xl border border-slate-700/80 bg-slate-950/95 p-4 text-slate-100 shadow-2xl shadow-black/40 backdrop-blur"
+            >
               <div class="flex items-start justify-between">
                 <p class="font-semibold text-white">链路详情</p>
-                <button class="text-slate-500 hover:text-slate-300" @click="selectedLink = null">
+                <button class="text-slate-400 transition hover:text-white" @click="selectedLink = null">
                   <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               </div>
               <div class="mt-3 flex items-center gap-2">
                 <span class="h-2.5 w-2.5 rounded-full" :style="{ background: stateMeta[selectedLink.displayState].color }"></span>
-                <span class="text-sm font-medium" :class="stateMeta[selectedLink.displayState].text">{{ stateMeta[selectedLink.displayState].label }}</span>
-                <span class="chip bg-violet-500/10 text-violet-300 ring-1 ring-violet-500/30">{{ mesh.networkById(selectedLink.networkId)?.name }}</span>
+                <span class="text-sm font-semibold" :style="{ color: stateMeta[selectedLink.displayState].color }">{{ stateMeta[selectedLink.displayState].label }}</span>
+                <span class="rounded-md border border-violet-400/30 bg-violet-400/10 px-2 py-0.5 text-[11px] font-medium text-violet-200">{{ mesh.networkById(selectedLink.networkId)?.name }}</span>
               </div>
               <dl class="mt-3 space-y-1.5 text-xs">
-                <div class="flex justify-between gap-3"><dt class="text-slate-500">A 端</dt><dd class="truncate font-mono text-slate-300">{{ linkEndLabel(selectedLink.a) }}</dd></div>
-                <div class="flex justify-between gap-3"><dt class="text-slate-500">B 端</dt><dd class="truncate font-mono text-slate-300">{{ linkEndLabel(selectedLink.b) }}</dd></div>
-                <div class="flex justify-between"><dt class="text-slate-500">最后握手</dt><dd class="text-slate-300">{{ fmtHandshake(selectedLink.lastHandshakeSecAgo) }}</dd></div>
-                <div class="flex justify-between"><dt class="text-slate-500">延迟 / 丢包</dt><dd class="text-slate-300">{{ selectedLink.latencyMs }} ms / {{ selectedLink.lossPct }}%</dd></div>
-                <div class="flex justify-between"><dt class="text-slate-500">流量</dt><dd class="text-slate-300">↓{{ fmtMbps(selectedLink.rxMbps) }} ↑{{ fmtMbps(selectedLink.txMbps) }} Mbps</dd></div>
+                <div class="flex justify-between gap-3 rounded-lg bg-white/[0.04] px-3 py-2"><dt class="text-slate-300">A 端</dt><dd class="truncate font-mono font-medium text-cyan-200">{{ linkEndLabel(selectedLink.a) }}</dd></div>
+                <div class="flex justify-between gap-3 rounded-lg bg-white/[0.04] px-3 py-2"><dt class="text-slate-300">B 端</dt><dd class="truncate font-mono font-medium text-cyan-200">{{ linkEndLabel(selectedLink.b) }}</dd></div>
+                <div class="flex justify-between gap-3 rounded-lg bg-white/[0.04] px-3 py-2"><dt class="text-slate-300">最后握手</dt><dd class="font-medium text-slate-100">{{ fmtHandshake(selectedLink.lastHandshakeSecAgo) }}</dd></div>
+                <div class="flex justify-between gap-3 rounded-lg bg-white/[0.04] px-3 py-2"><dt class="text-slate-300">延迟 / 丢包</dt><dd class="font-mono font-medium text-slate-100">{{ selectedLink.latencyMs }} ms / {{ selectedLink.lossPct }}%</dd></div>
+                <div class="flex justify-between gap-3 rounded-lg bg-white/[0.04] px-3 py-2">
+                  <dt class="text-slate-300">流量</dt>
+                  <dd class="font-mono font-medium">
+                    <span class="text-cyan-300">↓{{ fmtMbps(selectedLink.rxMbps) }}</span>
+                    <span class="ml-2 text-violet-300">↑{{ fmtMbps(selectedLink.txMbps) }}</span>
+                    <span class="ml-1 text-slate-400">Mbps</span>
+                  </dd>
+                </div>
               </dl>
-              <div v-if="selectedLink.failReason" class="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-300 ring-1 ring-red-500/30">
+              <div v-if="selectedLink.failReason" class="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-200 ring-1 ring-red-500/30">
                 故障原因：{{ selectedLink.failReason }}
               </div>
             </div>

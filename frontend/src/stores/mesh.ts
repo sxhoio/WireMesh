@@ -55,10 +55,11 @@ function toAgent(node: ApiNode, offlineSeconds: number): Agent {
     osInfo: node.os || '',
     labels: Object.entries(node.labels || {}).map(([key, value]) => key + '=' + value),
     publicIP: node.endpoint || '',
-    city: node.region || '',
+    city: node.location_name || node.region || '',
     country: '',
-    lng: Number.NaN,
-    lat: Number.NaN,
+    locationSource: node.location_source || '',
+    lng: node.location_source && Number.isFinite(node.longitude) ? node.longitude : Number.NaN,
+    lat: node.location_source && Number.isFinite(node.latitude) ? node.latitude : Number.NaN,
     lastSeen: seen,
     rxMbps,
     txMbps,
@@ -350,7 +351,7 @@ export const useMeshStore = defineStore('mesh', {
         await this.refresh()
       } catch (reason) { this.error = reason instanceof Error ? reason.message : '保存 Peer 失败' }
     },
-    async updateNodeConfig(id: string, patch: { name?: string; address?: string; endpoint?: string; listen_port?: number; mtu?: number; enabled?: boolean; interface_selector?: string; labels?: Record<string, string> }) {
+    async updateNodeConfig(id: string, patch: { name?: string; address?: string; endpoint?: string; listen_port?: number; mtu?: number; enabled?: boolean; interface_selector?: string; labels?: Record<string, string>; location_name?: string; location_source?: string; latitude?: number; longitude?: number }) {
       this.error = ''
       try { await api.updateNode(id, patch); await this.refresh(); this.notice = '节点配置已保存，发布网络配置后将下发到 Agent'; return true }
       catch (reason) { this.error = reason instanceof Error ? reason.message : '保存节点配置失败'; return false }
