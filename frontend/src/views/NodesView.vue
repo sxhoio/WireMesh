@@ -2,12 +2,14 @@
 import { computed, reactive, ref } from 'vue'
 import AddAgentDialog from '../components/AddAgentDialog.vue'
 import CustomPeerModal from '../components/CustomPeerModal.vue'
+import EditNodeConfigModal from '../components/EditNodeConfigModal.vue'
+import AgentLogsModal from '../components/AgentLogsModal.vue'
 import TrafficChart from '../components/TrafficChart.vue'
 import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
 import type { Agent, WGInterface } from '../types'
 import { stateMeta } from '../types'
-import { ago, fmtHandshake, shortKey } from '../utils/format'
+import { ago, fmtHandshake, fmtMbps, shortKey } from '../utils/format'
 
 const app = useAppStore()
 const mesh = useMeshStore()
@@ -38,6 +40,8 @@ function closeMenu() {
 }
 const customPeerNetwork = ref<string | null>(null)
 const copiedKey = ref<string | null>(null)
+const editingAgent = ref<Agent | null>(null)
+const logsAgent = ref<Agent | null>(null)
 
 const filtered = computed(() => {
   let list = mesh.scopedAgents.filter((a) => {
@@ -92,6 +96,11 @@ async function copyText(text: string, key: string) {
   }
   copiedKey.value = key
   setTimeout(() => (copiedKey.value = null), 1400)
+}
+
+async function confirmDelete(a: Agent) {
+  if (!window.confirm(`确定删除节点“${a.name}”吗？相关 Peer、命令和配置下发记录将一并清理。`)) return
+  await mesh.removeAgent(a.id, app.username)
 }
 
 function openCustomPeer(a: Agent) {
@@ -178,7 +187,7 @@ function openCustomPeer(a: Agent) {
               <td class="hidden px-2 py-3.5 2xl:table-cell">
                 <p class="truncate font-mono text-xs text-slate-300">{{ a.publicIP }}</p>
               </td>
-              <td class="hidden whitespace-nowrap px-2 py-3.5 font-mono text-xs text-slate-300 2xl:table-cell">↓{{ a.rxMbps }} ↑{{ a.txMbps }}</td>
+              <td class="hidden whitespace-nowrap px-2 py-3.5 font-mono text-xs text-slate-300 2xl:table-cell">↓{{ fmtMbps(a.rxMbps) }} ↑{{ fmtMbps(a.txMbps) }}</td>
               <td class="hidden whitespace-nowrap px-2 py-3.5 text-xs text-slate-300 2xl:table-cell">
                 {{ peersOf(a.interfaces[0]).length + a.interfaces.slice(1).reduce((n, i) => n + peersOf(i).length, 0) }}
                 <span v-if="peerErrorCount(a)" class="ml-1 text-red-400">({{ peerErrorCount(a) }} 异常)</span>
@@ -190,6 +199,7 @@ function openCustomPeer(a: Agent) {
               <td class="px-2 py-3.5">
                 <div class="flex items-center justify-end gap-1.5">
                   <button
+                    v-if="app.canOperate"
                     class="chip w-11 justify-center transition"
                     :class="a.enabled ? 'bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/30 hover:bg-amber-500/10 hover:text-amber-400' : 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30'"
                     @click="mesh.toggleAgentEnabled(a.id, app.username)"
@@ -221,7 +231,7 @@ function openCustomPeer(a: Agent) {
                   <span class="chip bg-violet-500/10 text-violet-300 ring-1 ring-violet-500/30">{{ mesh.networkById(iface.networkId)?.name }}</span>
                   <span v-if="iface.role !== 'mesh'" class="chip bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/30">{{ iface.role === 'hub' ? 'Hub' : 'Spoke' }}</span>
                 </div>
-                <button class="chip bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/30 transition hover:bg-ink-700" @click="mesh.updateInterface(a.id, iface.id, { listenPort: iface.listenPort, mtu: iface.mtu }, app.username)">编辑</button>
+                <button v-if="app.canOperate" class="chip bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/30 transition hover:bg-ink-700" @click="editingAgent = a">编辑</button>
               </div>
               <div class="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
                 <p class="text-slate-500">监听端口 <span class="ml-1 font-mono text-slate-300">{{ iface.listenPort }}</span></p>
@@ -239,7 +249,7 @@ function openCustomPeer(a: Agent) {
                     <span class="min-w-0 flex-1 truncate text-slate-300">{{ p.other ? p.other.agent.name + '/' + p.other.iface.name : p.otherId }}</span>
                     <span class="font-mono text-[11px] text-slate-500">{{ p.other?.iface.tunnelIP }}</span>
                     <span class="w-20 text-right text-[11px] text-slate-500">{{ fmtHandshake(p.link.lastHandshakeSecAgo) }}</span>
-                    <span class="w-24 text-right font-mono text-[11px] text-slate-500">↓{{ p.link.rxMbps }} ↑{{ p.link.txMbps }}</span>
+                    <span class="w-24 text-right font-mono text-[11px] text-slate-500">↓{{ fmtMbps(p.link.rxMbps) }} ↑{{ fmtMbps(p.link.txMbps) }}</span>
                   </div>
                   <p v-if="!peersOf(iface).length" class="text-[11px] text-slate-600">暂无 Peer</p>
                 </div>
@@ -261,7 +271,7 @@ function openCustomPeer(a: Agent) {
                     </button>
                   </div>
                 </div>
-                <TrafficChart :source-key="iface.id" :range="trafficRange[a.id] ?? '24h'" />
+                <TrafficChart :node-id="a.id" :interface-name="iface.name" :range="trafficRange[a.id] ?? '24h'" />
               </div>
             </div>
           </div>
@@ -277,6 +287,8 @@ function openCustomPeer(a: Agent) {
 
     <AddAgentDialog v-if="showAdd" @close="showAdd = false" />
     <CustomPeerModal v-if="customPeerNetwork" :network-id="customPeerNetwork" @close="customPeerNetwork = null" />
+    <EditNodeConfigModal v-if="editingAgent" :agent="editingAgent" @close="editingAgent = null" />
+    <AgentLogsModal v-if="logsAgent" :agent="logsAgent" @close="logsAgent = null" />
 
     <!-- 更多操作菜单：Teleport 到 body，避免被行容器裁剪 -->
     <Teleport to="body">
@@ -288,16 +300,16 @@ function openCustomPeer(a: Agent) {
       >
         <template v-for="a in filtered" :key="a.id">
           <template v-if="menuFor === a.id">
-            <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="openCustomPeer(a); closeMenu()">快速配置 Peer</button>
-            <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.collectNow(a.id); closeMenu()">立即采集状态</button>
-            <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.checkConnectivity(a.id); closeMenu()">连通性检测</button>
-            <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.updateInterface(a.id, a.interfaces[0]?.id || '', { listenPort: a.interfaces[0]?.listenPort || 0, mtu: a.interfaces[0]?.mtu || 0 }, app.username); closeMenu()">编辑接口设置</button>
-            <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.interfaces.map((i) => i.tunnelIP).join(', '), 'ip-' + a.id)">{{ copiedKey === 'ip-' + a.id ? '已复制 ✓' : '复制隧道 IP' }}</button>
+            <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="openCustomPeer(a); closeMenu()">快速配置 Peer</button>
+            <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.collectNow(a.id); closeMenu()">立即采集状态</button>
+            <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.checkConnectivity(a.id); closeMenu()">连通性检测</button>
+            <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="editingAgent = a; closeMenu()">编辑接口设置</button>
+            <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.interfaces.map((i) => i.tunnelIP).filter(Boolean).join(', ') || a.address, 'ip-' + a.id)">{{ copiedKey === 'ip-' + a.id ? '已复制 ✓' : '复制隧道 IP' }}</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.publicIP, 'ep-' + a.id)">{{ copiedKey === 'ep-' + a.id ? '已复制 ✓' : '复制 Endpoint' }}</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.interfaces[0]?.publicKey || a.publicKey, 'pk-' + a.id)">{{ copiedKey === 'pk-' + a.id ? '已复制 ✓' : '复制 Public Key' }}</button>
-            <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.unsupported('Agent 日志'); closeMenu()">查看日志</button>
+            <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="logsAgent = a; closeMenu()">查看日志</button>
             <div class="my-1 border-t border-ink-700"></div>
-            <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-red-400 hover:bg-ink-700" @click="mesh.removeAgent(a.id, app.username); closeMenu()">删除 Agent</button>
+            <button v-if="app.isAdmin" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-red-400 hover:bg-ink-700" @click="confirmDelete(a); closeMenu()">删除 Agent</button>
           </template>
         </template>
       </div>

@@ -2,6 +2,7 @@ package control
 
 import (
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +28,9 @@ type Store interface {
 	GetNodeByID(string) (Node, error)
 	ListNodes(string, string) []Node
 	UpdateNode(Node) error
+	DeleteNode(string, string) error
+	AddTrafficSamples([]TrafficSample) error
+	ListTrafficSamples(string, string, string, time.Time) []TrafficSample
 	AddPeer(PeerRelation) error
 	ListPeers(string, string) []PeerRelation
 	CreateRevision(ConfigRevision) error
@@ -34,6 +38,10 @@ type Store interface {
 	CreateDelivery(ConfigDelivery) error
 	UpdateDelivery(ConfigDelivery) error
 	ListDeliveries(string, string) []ConfigDelivery
+	CreateCommand(AgentCommand) error
+	ClaimCommands(string) []AgentCommand
+	UpdateCommand(AgentCommand) error
+	ListCommands(string, string) []AgentCommand
 	CreateEnrollment(EnrollmentToken) error
 	ConsumeEnrollment(string) (EnrollmentToken, error)
 	CreateIdentity(AgentIdentity) error
@@ -66,6 +74,7 @@ type MemoryStore struct {
 	peers            map[string]PeerRelation
 	revisions        map[string][]ConfigRevision
 	deliveries       map[string]ConfigDelivery
+	commands         map[string]AgentCommand
 	enrollments      map[string]EnrollmentToken
 	identities       map[string]AgentIdentity
 	audits           []AuditEvent
@@ -73,11 +82,12 @@ type MemoryStore struct {
 	settings         map[string]SystemSettings
 	notifications    map[string]NotificationChannel
 	notificationLogs []NotificationLog
+	trafficSamples   []TrafficSample
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		projects: map[string]Project{}, networks: map[string]Network{}, nodes: map[string]Node{}, peers: map[string]PeerRelation{}, revisions: map[string][]ConfigRevision{}, deliveries: map[string]ConfigDelivery{}, enrollments: map[string]EnrollmentToken{}, identities: map[string]AgentIdentity{}, users: map[string]User{}, settings: map[string]SystemSettings{}, notifications: map[string]NotificationChannel{},
+		projects: map[string]Project{}, networks: map[string]Network{}, nodes: map[string]Node{}, peers: map[string]PeerRelation{}, revisions: map[string][]ConfigRevision{}, deliveries: map[string]ConfigDelivery{}, commands: map[string]AgentCommand{}, enrollments: map[string]EnrollmentToken{}, identities: map[string]AgentIdentity{}, users: map[string]User{}, settings: map[string]SystemSettings{}, notifications: map[string]NotificationChannel{},
 	}
 }
 func (s *MemoryStore) CreateProject(v Project) error {
@@ -132,6 +142,7 @@ func (s *MemoryStore) GetNetwork(t, id string) (Network, error) {
 	return v, nil
 }
 func (s *MemoryStore) CreateNode(v Node) error {
+	v = normalizeNodeDefaults(v)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nodes[v.ID] = v
@@ -174,6 +185,52 @@ func (s *MemoryStore) UpdateNode(v Node) error {
 	s.nodes[v.ID] = v
 	return nil
 }
+func (s *MemoryStore) DeleteNode(tenant, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.nodes[id]
+	if !ok || v.TenantID != tenant {
+		return errNotFound
+	}
+	delete(s.nodes, id)
+	delete(s.identities, id)
+	for key, peer := range s.peers {
+		if peer.TenantID == tenant && (peer.SourceNodeID == id || peer.TargetNodeID == id) {
+			delete(s.peers, key)
+		}
+	}
+	for key, delivery := range s.deliveries {
+		if delivery.TenantID == tenant && delivery.NodeID == id {
+			delete(s.deliveries, key)
+		}
+	}
+	s.trafficSamples = slices.DeleteFunc(s.trafficSamples, func(sample TrafficSample) bool { return sample.TenantID == tenant && sample.NodeID == id })
+	for key, command := range s.commands {
+		if command.TenantID == tenant && command.NodeID == id {
+			delete(s.commands, key)
+		}
+	}
+	return nil
+}
+
+func (s *MemoryStore) AddTrafficSamples(samples []TrafficSample) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.trafficSamples = append(s.trafficSamples, samples...)
+	return nil
+}
+func (s *MemoryStore) ListTrafficSamples(tenant, node, interfaceName string, since time.Time) (out []TrafficSample) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, sample := range s.trafficSamples {
+		if sample.TenantID == tenant && sample.NodeID == node && sample.InterfaceName == interfaceName && !sample.RecordedAt.Before(since) {
+			out = append(out, sample)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RecordedAt.Before(out[j].RecordedAt) })
+	return
+}
+
 func (s *MemoryStore) AddPeer(v PeerRelation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -237,6 +294,48 @@ func (s *MemoryStore) ListDeliveries(t, n string) (out []ConfigDelivery) {
 	}
 	return
 }
+func (s *MemoryStore) CreateCommand(v AgentCommand) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.commands[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) ClaimCommands(node string) (out []AgentCommand) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for id, command := range s.commands {
+		if command.NodeID == node && command.State == "pending" {
+			command.State = "running"
+			command.StartedAt = &now
+			s.commands[id] = command
+			out = append(out, command)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return
+}
+func (s *MemoryStore) UpdateCommand(v AgentCommand) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.commands[v.ID]; !ok {
+		return errNotFound
+	}
+	s.commands[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) ListCommands(tenant, node string) (out []AgentCommand) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, command := range s.commands {
+		if command.TenantID == tenant && (node == "" || command.NodeID == node) {
+			out = append(out, command)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return
+}
+
 func (s *MemoryStore) CreateEnrollment(v EnrollmentToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

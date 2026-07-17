@@ -57,6 +57,8 @@ export interface Agent {
   hostname: string
   interfaceSelector: string
   collectionError: string
+  listenPort: number
+  mtu: number
   status: AgentStatus
   enabled: boolean
   version: string

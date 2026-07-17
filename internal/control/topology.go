@@ -20,7 +20,12 @@ func AllocateAddress(cidr string, allocated []string) (string, error) {
 			used[addr] = true
 		}
 	}
-	for candidate := prefix.Masked().Addr().Next(); prefix.Contains(candidate); candidate = candidate.Next() {
+	prefix = prefix.Masked()
+	broadcast := lastIPv4Address(prefix)
+	for candidate := prefix.Addr().Next(); prefix.Contains(candidate); candidate = candidate.Next() {
+		if prefix.Bits() < 31 && candidate == broadcast {
+			break
+		}
 		if !used[candidate] {
 			return candidate.String(), nil
 		}
@@ -36,7 +41,8 @@ func CompileTopology(network Network, nodes []Node, relations []PeerRelation, bo
 		if err != nil {
 			return nil, fmt.Errorf("decrypt node %s key: %w", node.ID, err)
 		}
-		configs[node.ID] = NodeConfig{NodeID: node.ID, NetworkID: network.ID, Address: node.Address, PrivateKey: string(privateKey), ListenPort: 51820}
+		node = normalizeNodeDefaults(node)
+		configs[node.ID] = NodeConfig{NodeID: node.ID, NetworkID: network.ID, Address: node.Address, PrivateKey: string(privateKey), ListenPort: node.ListenPort, MTU: node.MTU}
 	}
 	linked := func(a, b Node) bool {
 		switch network.Topology {

@@ -114,7 +114,7 @@ func TestRenderAndApplyWireGuardConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(content)
-	for _, expected := range []string{"[Interface]", "Address = 10.44.0.1/32", "[Peer]", "AllowedIPs = 10.44.0.2/32", "PersistentKeepalive = 25"} {
+	for _, expected := range []string{"[Interface]", "Address = 10.44.0.1/32", "MTU = 1420", "[Peer]", "AllowedIPs = 10.44.0.2/32", "PersistentKeepalive = 25"} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("configuration is missing %q: %s", expected, text)
 		}

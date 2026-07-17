@@ -231,3 +231,137 @@ func TestTenantIsolationAndRevision(t *testing.T) {
 		t.Fatalf("unexpected error %s", response.Body.String())
 	}
 }
+
+func TestNodeConfigurationCanBeEditedAndPublished(t *testing.T) {
+	app := testApp(t)
+	admin, token := initializeTestAdmin(t, app, "node-config@example.com", "strong-password")
+	project := Project{ID: "project-config", TenantID: admin.TenantID, Name: "Config", CreatedAt: time.Now()}
+	network := Network{ID: "network-config", TenantID: admin.TenantID, ProjectID: project.ID, Name: "Config", CIDR: "10.55.0.0/24", Topology: TopologyFullMesh, CreatedAt: time.Now()}
+	if err := app.store.CreateProject(project); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.CreateNetwork(network); err != nil {
+		t.Fatal(err)
+	}
+	node, err := app.createNode(admin.TenantID, network, "node-one", "", "", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := app.createNode(admin.TenantID, network, "node-two", "", "", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/nodes/"+node.ID, strings.NewReader(`{"address":"10.55.0.20","listen_port":51821,"mtu":1380,"endpoint":"vpn.example.com:51821"}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("patch failed: %d %s", response.Code, response.Body.String())
+	}
+	var updated Node
+	if err := json.NewDecoder(response.Body).Decode(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Address != "10.55.0.20" || updated.ListenPort != 51821 || updated.MTU != 1380 {
+		t.Fatalf("unexpected node: %#v", updated)
+	}
+
+	request = httptest.NewRequest(http.MethodPatch, "/api/v1/nodes/"+node.ID, strings.NewReader(`{"address":"192.168.1.10"}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("out-of-range address should fail: %d %s", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodPatch, "/api/v1/nodes/"+node.ID, strings.NewReader(`{"address":"`+other.Address+`"}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("duplicate address should conflict: %d %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/networks/"+network.ID+"/publish", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("publish failed: %d %s", response.Code, response.Body.String())
+	}
+	var revision ConfigRevision
+	if err := json.NewDecoder(response.Body).Decode(&revision); err != nil {
+		t.Fatal(err)
+	}
+	config := revision.Configs[node.ID]
+	if config.Address != updated.Address || config.ListenPort != updated.ListenPort || config.MTU != updated.MTU {
+		t.Fatalf("published config did not use node settings: %#v", config)
+	}
+}
+
+func TestAgentCommandsLogsAndDelete(t *testing.T) {
+	app := testApp(t)
+	admin, token := initializeTestAdmin(t, app, "node-commands@example.com", "strong-password")
+	project := Project{ID: "project-commands", TenantID: admin.TenantID, Name: "Commands", CreatedAt: time.Now()}
+	network := Network{ID: "network-commands", TenantID: admin.TenantID, ProjectID: project.ID, Name: "Commands", CIDR: "10.56.0.0/24", Topology: TopologyFullMesh, CreatedAt: time.Now()}
+	app.store.CreateProject(project)
+	app.store.CreateNetwork(network)
+	node, err := app.createNode(admin.TenantID, network, "node", "", "", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/nodes/"+node.ID+"/collect", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("create command failed: %d %s", response.Code, response.Body.String())
+	}
+	var command AgentCommand
+	if err := json.NewDecoder(response.Body).Decode(&command); err != nil {
+		t.Fatal(err)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/agent/v1/commands", nil)
+	request.Header.Set("X-Agent-ID", node.ID)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("claim command failed: %d %s", response.Code, response.Body.String())
+	}
+	var commands []AgentCommand
+	if err := json.NewDecoder(response.Body).Decode(&commands); err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 1 || commands[0].State != "running" {
+		t.Fatalf("unexpected claimed commands: %#v", commands)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/agent/v1/commands/"+command.ID+"/result", strings.NewReader(`{"state":"completed","result":"wireguard_interfaces=1"}`))
+	request.Header.Set("X-Agent-ID", node.ID)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("command result failed: %d %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/nodes/"+node.ID+"/logs", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "wireguard_interfaces=1") {
+		t.Fatalf("node logs missing command result: %d %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodDelete, "/api/v1/nodes/"+node.ID, nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("delete failed: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := app.store.GetNode(admin.TenantID, node.ID); err == nil {
+		t.Fatal("node still exists after delete")
+	}
+}

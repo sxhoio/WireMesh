@@ -6,7 +6,7 @@ import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
 import type { Agent, PeerState } from '../types'
 import { stateMeta } from '../types'
-import { ago, fmtHandshake, fmtTime, shortKey } from '../utils/format'
+import { ago, fmtHandshake, fmtMbps, fmtTime, shortKey } from '../utils/format'
 
 const app = useAppStore()
 const mesh = useMeshStore()
@@ -123,7 +123,7 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
               <dl class="mt-3 space-y-1.5 text-xs">
                 <div class="flex justify-between"><dt class="text-slate-500">状态</dt><dd :class="selectedAgent.status === 'online' ? 'text-emerald-400' : 'text-slate-500'">{{ selectedAgent.status === 'online' ? '在线' : '离线' }}{{ selectedAgent.enabled ? '' : ' · 已停用' }}</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">公网端点</dt><dd class="font-mono text-slate-300">{{ agentEndpoint(selectedAgent) }}</dd></div>
-                <div class="flex justify-between"><dt class="text-slate-500">流量</dt><dd class="text-slate-300">↓{{ selectedAgent.rxMbps }} ↑{{ selectedAgent.txMbps }} Mbps</dd></div>
+                <div class="flex justify-between"><dt class="text-slate-500">流量</dt><dd class="text-slate-300">↓{{ fmtMbps(selectedAgent.rxMbps) }} ↑{{ fmtMbps(selectedAgent.txMbps) }} Mbps</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">最后上报</dt><dd class="text-slate-300">{{ ago(selectedAgent.lastSeen) }}</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">版本</dt><dd class="text-slate-300">{{ selectedAgent.version }}</dd></div>
               </dl>
@@ -162,7 +162,7 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
                 <div class="flex justify-between gap-3"><dt class="text-slate-500">B 端</dt><dd class="truncate font-mono text-slate-300">{{ linkEndLabel(selectedLink.b) }}</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">最后握手</dt><dd class="text-slate-300">{{ fmtHandshake(selectedLink.lastHandshakeSecAgo) }}</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">延迟 / 丢包</dt><dd class="text-slate-300">{{ selectedLink.latencyMs }} ms / {{ selectedLink.lossPct }}%</dd></div>
-                <div class="flex justify-between"><dt class="text-slate-500">流量</dt><dd class="text-slate-300">↓{{ selectedLink.rxMbps }} ↑{{ selectedLink.txMbps }} Mbps</dd></div>
+                <div class="flex justify-between"><dt class="text-slate-500">流量</dt><dd class="text-slate-300">↓{{ fmtMbps(selectedLink.rxMbps) }} ↑{{ fmtMbps(selectedLink.txMbps) }} Mbps</dd></div>
               </dl>
               <div v-if="selectedLink.failReason" class="mt-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-300 ring-1 ring-red-500/30">
                 故障原因：{{ selectedLink.failReason }}

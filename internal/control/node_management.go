@@ -1,0 +1,280 @@
+package control
+
+import (
+	"fmt"
+	"net/http"
+	"net/netip"
+	"sort"
+	"strings"
+	"time"
+)
+
+const (
+	defaultNodeListenPort = 51820
+	defaultNodeMTU        = 1420
+)
+
+func normalizeNodeDefaults(node Node) Node {
+	if node.ListenPort == 0 {
+		node.ListenPort = defaultNodeListenPort
+	}
+	if node.MTU == 0 {
+		node.MTU = defaultNodeMTU
+	}
+	if node.Labels == nil {
+		node.Labels = map[string]string{}
+	}
+	if node.WireGuard == nil {
+		node.WireGuard = []WireGuardInterfaceStatus{}
+	}
+	return node
+}
+
+func (a *App) nodeByID(w http.ResponseWriter, r *http.Request, c claims) {
+	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "node not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, normalizeNodeDefaults(node))
+}
+
+func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
+	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "node not found")
+		return
+	}
+	var in struct {
+		Name              *string            `json:"name"`
+		Address           *string            `json:"address"`
+		Endpoint          *string            `json:"endpoint"`
+		ListenPort        *int               `json:"listen_port"`
+		MTU               *int               `json:"mtu"`
+		Enabled           *bool              `json:"enabled"`
+		InterfaceSelector *string            `json:"interface_selector"`
+		Labels            *map[string]string `json:"labels"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.Name != nil {
+		value := strings.TrimSpace(*in.Name)
+		if value == "" {
+			writeError(w, http.StatusBadRequest, "node name is required")
+			return
+		}
+		node.Name = value
+	}
+	if in.Address != nil {
+		value := strings.TrimSpace(*in.Address)
+		if err := a.validateNodeAddress(node, value); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		for _, other := range a.store.ListNodes(c.TenantID, node.NetworkID) {
+			if other.ID != node.ID && other.Address == value {
+				writeError(w, http.StatusConflict, "address is already used by another node")
+				return
+			}
+		}
+		node.Address = value
+	}
+	if in.Endpoint != nil {
+		node.Endpoint = strings.TrimSpace(*in.Endpoint)
+	}
+	if in.ListenPort != nil {
+		if *in.ListenPort < 1 || *in.ListenPort > 65535 {
+			writeError(w, http.StatusBadRequest, "listen_port must be between 1 and 65535")
+			return
+		}
+		node.ListenPort = *in.ListenPort
+	}
+	if in.MTU != nil {
+		if *in.MTU < 576 || *in.MTU > 9000 {
+			writeError(w, http.StatusBadRequest, "mtu must be between 576 and 9000")
+			return
+		}
+		node.MTU = *in.MTU
+	}
+	if in.Enabled != nil {
+		node.Enabled = *in.Enabled
+	}
+	if in.InterfaceSelector != nil {
+		node.InterfaceSelector = strings.TrimSpace(*in.InterfaceSelector)
+	}
+	if in.Labels != nil {
+		node.Labels = *in.Labels
+		if node.Labels == nil {
+			node.Labels = map[string]string{}
+		}
+	}
+	node = normalizeNodeDefaults(node)
+	if err := a.store.UpdateNode(node); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update node")
+		return
+	}
+	a.auditEvent(c.TenantID, c.Subject, "node.update", "node", node.ID, map[string]string{"address": node.Address, "enabled": fmt.Sprint(node.Enabled)})
+	writeJSON(w, http.StatusOK, node)
+}
+
+func (a *App) validateNodeAddress(node Node, value string) error {
+	address, err := netip.ParseAddr(value)
+	if err != nil || !address.Is4() {
+		return fmt.Errorf("address must be a valid IPv4 address")
+	}
+	network, err := a.store.GetNetwork(node.TenantID, node.NetworkID)
+	if err != nil {
+		return fmt.Errorf("node network not found")
+	}
+	prefix, err := netip.ParsePrefix(network.CIDR)
+	if err != nil || !prefix.Addr().Is4() {
+		return fmt.Errorf("network CIDR is invalid")
+	}
+	prefix = prefix.Masked()
+	if !prefix.Contains(address) {
+		return fmt.Errorf("address must be inside network %s", network.CIDR)
+	}
+	if address == prefix.Addr() {
+		return fmt.Errorf("network address cannot be assigned to a node")
+	}
+	if prefix.Bits() < 31 && address == lastIPv4Address(prefix) {
+		return fmt.Errorf("broadcast address cannot be assigned to a node")
+	}
+	return nil
+}
+
+func lastIPv4Address(prefix netip.Prefix) netip.Addr {
+	bytes := prefix.Masked().Addr().As4()
+	hostBits := 32 - prefix.Bits()
+	value := uint32(bytes[0])<<24 | uint32(bytes[1])<<16 | uint32(bytes[2])<<8 | uint32(bytes[3])
+	value |= uint32(1<<hostBits) - 1
+	return netip.AddrFrom4([4]byte{byte(value >> 24), byte(value >> 16), byte(value >> 8), byte(value)})
+}
+
+func (a *App) deleteNode(w http.ResponseWriter, r *http.Request, c claims) {
+	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "node not found")
+		return
+	}
+	if err := a.store.DeleteNode(c.TenantID, node.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete node")
+		return
+	}
+	a.auditEvent(c.TenantID, c.Subject, "node.delete", "node", node.ID, map[string]string{"name": node.Name})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *App) createNodeCommand(commandType string) func(http.ResponseWriter, *http.Request, claims) {
+	return func(w http.ResponseWriter, r *http.Request, c claims) {
+		node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		command := AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: commandType, State: "pending", CreatedAt: time.Now()}
+		if err := a.store.CreateCommand(command); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create agent command")
+			return
+		}
+		a.auditEvent(c.TenantID, c.Subject, "agent.command."+commandType, "node", node.ID, map[string]string{"command_id": command.ID})
+		writeJSON(w, http.StatusAccepted, command)
+	}
+}
+
+func (a *App) nodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
+	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "node not found")
+		return
+	}
+	logs := make([]NodeLog, 0)
+	if node.CollectionError != "" {
+		logs = append(logs, NodeLog{ID: "collection-" + node.ID, Level: "warning", Source: "heartbeat", Message: node.CollectionError, CreatedAt: node.LastSeen})
+	}
+	for _, command := range a.store.ListCommands(c.TenantID, node.ID) {
+		message := command.Type + " · " + command.State
+		if command.Result != "" {
+			message += " · " + command.Result
+		}
+		created := command.CreatedAt
+		if command.CompletedAt != nil {
+			created = *command.CompletedAt
+		}
+		level := "info"
+		if command.State == "failed" {
+			level = "error"
+		}
+		logs = append(logs, NodeLog{ID: command.ID, Level: level, Source: "command", Message: message, CreatedAt: created})
+	}
+	for _, delivery := range a.store.ListDeliveries(c.TenantID, node.ID) {
+		message := fmt.Sprintf("配置版本 %d · %s", delivery.Version, delivery.State)
+		if delivery.Message != "" {
+			message += " · " + delivery.Message
+		}
+		level := "info"
+		if delivery.State == "failed" || delivery.State == "rolled_back" {
+			level = "error"
+		}
+		logs = append(logs, NodeLog{ID: delivery.ID, Level: level, Source: "configuration", Message: message, CreatedAt: delivery.UpdatedAt})
+	}
+	for _, event := range a.store.ListAudit(c.TenantID) {
+		if event.ResourceType == "node" && event.ResourceID == node.ID && strings.HasPrefix(event.Action, "agent.") {
+			logs = append(logs, NodeLog{ID: event.ID, Level: "info", Source: "control-plane", Message: event.Action, CreatedAt: event.CreatedAt})
+		}
+	}
+	sort.Slice(logs, func(i, j int) bool { return logs[i].CreatedAt.After(logs[j].CreatedAt) })
+	if len(logs) > 200 {
+		logs = logs[:200]
+	}
+	writeJSON(w, http.StatusOK, logs)
+}
+
+func (a *App) agentCommands(w http.ResponseWriter, r *http.Request) {
+	node, ok := a.agentNode(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, a.store.ClaimCommands(node.ID))
+}
+
+func (a *App) agentCommandResult(w http.ResponseWriter, r *http.Request) {
+	node, ok := a.agentNode(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		State  string `json:"state"`
+		Result string `json:"result"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.State != "completed" && in.State != "failed" {
+		writeError(w, http.StatusBadRequest, "invalid command state")
+		return
+	}
+	var command *AgentCommand
+	for _, current := range a.store.ListCommands(node.TenantID, node.ID) {
+		if current.ID == r.PathValue("id") {
+			value := current
+			command = &value
+			break
+		}
+	}
+	if command == nil {
+		writeError(w, http.StatusNotFound, "command not found")
+		return
+	}
+	now := time.Now()
+	command.State = in.State
+	command.Result = strings.TrimSpace(in.Result)
+	command.CompletedAt = &now
+	if err := a.store.UpdateCommand(*command); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update command")
+		return
+	}
+	a.auditEvent(node.TenantID, node.ID, "agent.command."+in.State, "node", node.ID, map[string]string{"command_id": command.ID, "type": command.Type})
+	writeJSON(w, http.StatusOK, command)
+}

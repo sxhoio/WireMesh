@@ -47,8 +47,10 @@ function toAgent(node: ApiNode, offlineSeconds: number): Agent {
     hostname: node.hostname || node.name,
     interfaceSelector: node.interface_selector || '',
     collectionError: node.collection_error || '',
+    listenPort: node.listen_port || observed[0]?.listen_port || 51820,
+    mtu: node.mtu || observed[0]?.mtu || 1420,
     status: online ? 'online' : 'offline',
-    enabled: true,
+    enabled: node.enabled !== false,
     version: node.agent_version || '',
     osInfo: node.os || '',
     labels: Object.entries(node.labels || {}).map(([key, value]) => key + '=' + value),
@@ -348,11 +350,30 @@ export const useMeshStore = defineStore('mesh', {
         await this.refresh()
       } catch (reason) { this.error = reason instanceof Error ? reason.message : '保存 Peer 失败' }
     },
-    collectNow(_id: string) { void this.refresh() },
-    checkConnectivity(_id: string) { this.unsupported('连通性检测') },
-    toggleAgentEnabled(_id: string, _user?: string) { this.unsupported('启用或停用 Agent') },
-    removeAgent(_id: string, _user?: string) { this.unsupported('删除 Agent') },
-    updateInterface(_agentId: string, _ifaceId: string, _patch: { listenPort: number; mtu: number }, _user?: string) { this.unsupported('编辑接口') },
+    async updateNodeConfig(id: string, patch: { name?: string; address?: string; endpoint?: string; listen_port?: number; mtu?: number; enabled?: boolean; interface_selector?: string; labels?: Record<string, string> }) {
+      this.error = ''
+      try { await api.updateNode(id, patch); await this.refresh(); this.notice = '节点配置已保存，发布网络配置后将下发到 Agent'; return true }
+      catch (reason) { this.error = reason instanceof Error ? reason.message : '保存节点配置失败'; return false }
+    },
+    async collectNow(id: string) {
+      this.error = ''
+      try { await api.collectNode(id); this.notice = '立即采集命令已下发，Agent 将在下一个探测周期执行'; return true }
+      catch (reason) { this.error = reason instanceof Error ? reason.message : '下发采集命令失败'; return false }
+    },
+    async checkConnectivity(id: string) {
+      this.error = ''
+      try { await api.checkNodeConnectivity(id); this.notice = '连通性检测命令已下发，可稍后在 Agent 日志中查看结果'; return true }
+      catch (reason) { this.error = reason instanceof Error ? reason.message : '下发连通性检测失败'; return false }
+    },
+    async toggleAgentEnabled(id: string, _user?: string) {
+      const agent = this.agents.find((value) => value.id === id); if (!agent) return false
+      return this.updateNodeConfig(id, { enabled: !agent.enabled })
+    },
+    async removeAgent(id: string, _user?: string) {
+      this.error = ''
+      try { await api.deleteNode(id); await this.refresh(); this.notice = 'Agent 已删除'; return true }
+      catch (reason) { this.error = reason instanceof Error ? reason.message : '删除 Agent 失败'; return false }
+    },
     discardPending(_user?: string) { this.pendingChanges = [] },
     adoptTempPeer(_id: string, _target: { projectId: string; networkId: string; agentId: string }, _user?: string) { this.unsupported('纳入临时 Peer') },
     removeTempPeer(_id: string, _user?: string) { this.unsupported('清理临时 Peer') },

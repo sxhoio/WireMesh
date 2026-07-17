@@ -53,7 +53,16 @@ func (s *SwitchableStore) GetNodeByID(id string) (Node, error) { return s.store(
 func (s *SwitchableStore) ListNodes(tenant, network string) []Node {
 	return s.store().ListNodes(tenant, network)
 }
-func (s *SwitchableStore) UpdateNode(v Node) error      { return s.store().UpdateNode(v) }
+func (s *SwitchableStore) UpdateNode(v Node) error { return s.store().UpdateNode(v) }
+func (s *SwitchableStore) DeleteNode(tenant, id string) error {
+	return s.store().DeleteNode(tenant, id)
+}
+func (s *SwitchableStore) AddTrafficSamples(v []TrafficSample) error {
+	return s.store().AddTrafficSamples(v)
+}
+func (s *SwitchableStore) ListTrafficSamples(tenant, node, iface string, since time.Time) []TrafficSample {
+	return s.store().ListTrafficSamples(tenant, node, iface, since)
+}
 func (s *SwitchableStore) AddPeer(v PeerRelation) error { return s.store().AddPeer(v) }
 func (s *SwitchableStore) ListPeers(tenant, network string) []PeerRelation {
 	return s.store().ListPeers(tenant, network)
@@ -66,6 +75,14 @@ func (s *SwitchableStore) CreateDelivery(v ConfigDelivery) error { return s.stor
 func (s *SwitchableStore) UpdateDelivery(v ConfigDelivery) error { return s.store().UpdateDelivery(v) }
 func (s *SwitchableStore) ListDeliveries(tenant, node string) []ConfigDelivery {
 	return s.store().ListDeliveries(tenant, node)
+}
+func (s *SwitchableStore) CreateCommand(v AgentCommand) error { return s.store().CreateCommand(v) }
+func (s *SwitchableStore) ClaimCommands(node string) []AgentCommand {
+	return s.store().ClaimCommands(node)
+}
+func (s *SwitchableStore) UpdateCommand(v AgentCommand) error { return s.store().UpdateCommand(v) }
+func (s *SwitchableStore) ListCommands(tenant, node string) []AgentCommand {
+	return s.store().ListCommands(tenant, node)
 }
 func (s *SwitchableStore) CreateEnrollment(v EnrollmentToken) error {
 	return s.store().CreateEnrollment(v)

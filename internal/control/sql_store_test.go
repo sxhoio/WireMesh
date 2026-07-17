@@ -314,3 +314,117 @@ func TestSQLiteInitialSetupIsAtomic(t *testing.T) {
 		t.Fatalf("expected one successful and one rejected setup, got %#v", counts)
 	}
 }
+
+func TestSQLiteNodeCommandsAndDeleteCascade(t *testing.T) {
+	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "wiremesh-node-commands.db")) + "?_pragma=foreign_keys(1)"
+	store, err := OpenSQLStore("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	project := Project{ID: "project_node_commands", TenantID: "tenant_node_commands", Name: "Node Commands", CreatedAt: now}
+	if err := store.CreateProject(project); err != nil {
+		t.Fatal(err)
+	}
+	network := Network{ID: "network_node_commands", TenantID: project.TenantID, ProjectID: project.ID, Name: "Node Commands", CIDR: "10.88.0.0/24", Topology: TopologyCustom, CreatedAt: now}
+	if err := store.CreateNetwork(network); err != nil {
+		t.Fatal(err)
+	}
+	node := Node{ID: "node_commands", TenantID: project.TenantID, ProjectID: project.ID, NetworkID: network.ID, Name: "Managed Node", Enabled: true, ListenPort: 51821, MTU: 1380, Address: "10.88.0.10", Endpoint: "node.example:51821", Labels: map[string]string{"wiremesh.role": "mesh"}, CreatedAt: now}
+	other := Node{ID: "node_commands_other", TenantID: project.TenantID, ProjectID: project.ID, NetworkID: network.ID, Name: "Other Node", Enabled: true, Address: "10.88.0.11", Labels: map[string]string{}, CreatedAt: now}
+	if err := store.CreateNode(node); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateNode(other); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := store.GetNode(project.TenantID, node.ID)
+	if err != nil || !persisted.Enabled || persisted.ListenPort != 51821 || persisted.MTU != 1380 {
+		t.Fatalf("custom node settings were not persisted: %#v %v", persisted, err)
+	}
+	if err := store.AddPeer(PeerRelation{ID: "peer_node_commands", TenantID: project.TenantID, NetworkID: network.ID, SourceNodeID: node.ID, TargetNodeID: other.ID, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateDelivery(ConfigDelivery{ID: "delivery_node_commands", TenantID: project.TenantID, NodeID: node.ID, Version: 1, State: "pending", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateIdentity(AgentIdentity{NodeID: node.ID, CertificatePEM: "certificate", CertificateFingerprint: "fingerprint", ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	command := AgentCommand{ID: "command_node_commands", TenantID: project.TenantID, NodeID: node.ID, Type: "collect", State: "pending", CreatedAt: now}
+	if err := store.CreateCommand(command); err != nil {
+		t.Fatal(err)
+	}
+	claimed := store.ClaimCommands(node.ID)
+	if len(claimed) != 1 || claimed[0].ID != command.ID || claimed[0].State != "running" || claimed[0].StartedAt == nil {
+		t.Fatalf("command was not claimed: %#v", claimed)
+	}
+	if duplicate := store.ClaimCommands(node.ID); len(duplicate) != 0 {
+		t.Fatalf("command was claimed twice: %#v", duplicate)
+	}
+	completedAt := now.Add(time.Second)
+	claimed[0].State = "completed"
+	claimed[0].Result = "wireguard_interfaces=1"
+	claimed[0].CompletedAt = &completedAt
+	if err := store.UpdateCommand(claimed[0]); err != nil {
+		t.Fatal(err)
+	}
+	commands := store.ListCommands(project.TenantID, node.ID)
+	if len(commands) != 1 || commands[0].State != "completed" || commands[0].Result != "wireguard_interfaces=1" || commands[0].CompletedAt == nil {
+		t.Fatalf("command result was not persisted: %#v", commands)
+	}
+
+	if err := store.DeleteNode(project.TenantID, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetNode(project.TenantID, node.ID); err == nil {
+		t.Fatal("deleted node is still present")
+	}
+	if _, err := store.GetIdentity(node.ID); err == nil {
+		t.Fatal("deleted node identity is still present")
+	}
+	if peers := store.ListPeers(project.TenantID, network.ID); len(peers) != 0 {
+		t.Fatalf("deleted node peers are still present: %#v", peers)
+	}
+	if deliveries := store.ListDeliveries(project.TenantID, node.ID); len(deliveries) != 0 {
+		t.Fatalf("deleted node deliveries are still present: %#v", deliveries)
+	}
+	if commands := store.ListCommands(project.TenantID, node.ID); len(commands) != 0 {
+		t.Fatalf("deleted node commands are still present: %#v", commands)
+	}
+	if _, err := store.GetNode(project.TenantID, other.ID); err != nil {
+		t.Fatalf("unrelated node was deleted: %v", err)
+	}
+}
+
+func TestSQLiteTrafficSamples(t *testing.T) {
+	store, err := OpenSQLStore("sqlite", "file:"+filepath.ToSlash(filepath.Join(t.TempDir(), "traffic.db")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC().Truncate(time.Second)
+	node := Node{ID: "node-traffic", TenantID: "tenant-traffic", ProjectID: "project-traffic", NetworkID: "network-traffic", Name: "Traffic Node", Address: "10.0.0.2", Labels: map[string]string{}, WireGuard: []WireGuardInterfaceStatus{}, CreatedAt: now, LastSeen: now}
+	if err := store.CreateNode(node); err != nil {
+		t.Fatal(err)
+	}
+	samples := []TrafficSample{
+		{ID: "traffic-1", TenantID: node.TenantID, NodeID: node.ID, InterfaceName: "wg0", ReceiveBytes: 1000, TransmitBytes: 2000, RecordedAt: now},
+		{ID: "traffic-2", TenantID: node.TenantID, NodeID: node.ID, InterfaceName: "wg0", ReceiveBytes: 1001000, TransmitBytes: 502000, RecordedAt: now.Add(10 * time.Second)},
+	}
+	if err := store.AddTrafficSamples(samples); err != nil {
+		t.Fatal(err)
+	}
+	got := store.ListTrafficSamples(node.TenantID, node.ID, "wg0", now.Add(-time.Second))
+	if len(got) != 2 || got[1].ReceiveBytes != samples[1].ReceiveBytes {
+		t.Fatalf("unexpected traffic samples: %#v", got)
+	}
+	if err := store.DeleteNode(node.TenantID, node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.ListTrafficSamples(node.TenantID, node.ID, "wg0", now.Add(-time.Second)); len(got) != 0 {
+		t.Fatalf("traffic samples not deleted: %#v", got)
+	}
+}

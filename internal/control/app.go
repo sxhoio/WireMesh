@@ -77,6 +77,13 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /api/v1/networks", a.withUser(RoleOperator, a.networks))
 	mux.HandleFunc("GET /api/v1/nodes", a.withUser(RoleViewer, a.nodes))
 	mux.HandleFunc("POST /api/v1/nodes", a.withUser(RoleOperator, a.nodes))
+	mux.HandleFunc("GET /api/v1/nodes/{id}", a.withUser(RoleViewer, a.nodeByID))
+	mux.HandleFunc("PATCH /api/v1/nodes/{id}", a.withUser(RoleOperator, a.updateNode))
+	mux.HandleFunc("DELETE /api/v1/nodes/{id}", a.withUser(RoleAdmin, a.deleteNode))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/collect", a.withUser(RoleOperator, a.createNodeCommand("collect")))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/connectivity-check", a.withUser(RoleOperator, a.createNodeCommand("connectivity_check")))
+	mux.HandleFunc("GET /api/v1/nodes/{id}/logs", a.withUser(RoleViewer, a.nodeLogs))
+	mux.HandleFunc("GET /api/v1/nodes/{id}/traffic", a.withUser(RoleViewer, a.nodeTraffic))
 	mux.HandleFunc("POST /api/v1/networks/{id}/peers", a.withUser(RoleOperator, a.addPeer))
 	mux.HandleFunc("POST /api/v1/networks/{id}/publish", a.withUser(RoleOperator, a.publish))
 	mux.HandleFunc("GET /api/v1/deliveries", a.withUser(RoleViewer, a.deliveries))
@@ -102,6 +109,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /agent/v1/config", a.agentConfig)
 	mux.HandleFunc("POST /agent/v1/status", a.agentStatus)
 	mux.HandleFunc("POST /agent/v1/heartbeat", a.agentHeartbeat)
+	mux.HandleFunc("GET /agent/v1/commands", a.agentCommands)
+	mux.HandleFunc("POST /agent/v1/commands/{id}/result", a.agentCommandResult)
 	return cors(mux)
 }
 
@@ -358,9 +367,15 @@ func (a *App) publish(w http.ResponseWriter, r *http.Request, c claims) {
 		writeError(w, 404, "network not found")
 		return
 	}
-	nodes := a.store.ListNodes(c.TenantID, network.ID)
+	allNodes := a.store.ListNodes(c.TenantID, network.ID)
+	nodes := make([]Node, 0, len(allNodes))
+	for _, node := range allNodes {
+		if node.Enabled {
+			nodes = append(nodes, node)
+		}
+	}
 	if len(nodes) == 0 {
-		writeError(w, 409, "network has no nodes")
+		writeError(w, 409, "network has no enabled nodes")
 		return
 	}
 	configs, err := CompileTopology(network, nodes, a.store.ListPeers(c.TenantID, network.ID), a.box)
@@ -493,6 +508,10 @@ func (a *App) agentConfig(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !node.Enabled {
+		writeError(w, http.StatusLocked, "node is disabled")
+		return
+	}
 	revision, err := a.store.LatestRevision(node.TenantID, node.NetworkID)
 	if err != nil {
 		writeError(w, 404, "no published configuration")
@@ -569,6 +588,19 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to record agent heartbeat")
 		return
 	}
+	samples := make([]TrafficSample, 0, len(node.WireGuard))
+	for _, iface := range node.WireGuard {
+		var rx, tx int64
+		for _, peer := range iface.Peers {
+			rx += peer.ReceiveBytes
+			tx += peer.TransmitBytes
+		}
+		samples = append(samples, TrafficSample{ID: newID("traffic"), TenantID: node.TenantID, NodeID: node.ID, InterfaceName: iface.Name, ReceiveBytes: rx, TransmitBytes: tx, RecordedAt: node.LastSeen})
+	}
+	if err := a.store.AddTrafficSamples(samples); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record traffic samples")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "recorded", "server_time": node.LastSeen})
 }
 
@@ -598,7 +630,7 @@ func (a *App) createNode(tenantID string, network Network, name, endpoint, regio
 	if err != nil {
 		return Node{}, err
 	}
-	node := Node{ID: newID("node"), TenantID: tenantID, ProjectID: network.ProjectID, NetworkID: network.ID, Name: name, Address: address, Endpoint: endpoint, Region: region, OS: os, AgentVersion: agentVersion, Labels: labels, PublicKey: base64.StdEncoding.EncodeToString(private.PublicKey().Bytes()), PrivateKey: secret, WireGuard: []WireGuardInterfaceStatus{}, CreatedAt: time.Now()}
+	node := Node{ID: newID("node"), TenantID: tenantID, ProjectID: network.ProjectID, NetworkID: network.ID, Name: name, Enabled: true, ListenPort: defaultNodeListenPort, MTU: defaultNodeMTU, Address: address, Endpoint: endpoint, Region: region, OS: os, AgentVersion: agentVersion, Labels: labels, PublicKey: base64.StdEncoding.EncodeToString(private.PublicKey().Bytes()), PrivateKey: secret, WireGuard: []WireGuardInterfaceStatus{}, CreatedAt: time.Now()}
 	if err := a.store.CreateNode(node); err != nil {
 		return Node{}, err
 	}

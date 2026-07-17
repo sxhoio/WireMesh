@@ -79,6 +79,9 @@ type Node struct {
 	Hostname          string                     `json:"hostname"`
 	InterfaceSelector string                     `json:"interface_selector"`
 	CollectionError   string                     `json:"collection_error,omitempty"`
+	Enabled           bool                       `json:"enabled"`
+	ListenPort        int                        `json:"listen_port"`
+	MTU               int                        `json:"mtu"`
 	Address           string                     `json:"address"`
 	Endpoint          string                     `json:"endpoint"`
 	Region            string                     `json:"region"`
@@ -91,6 +94,24 @@ type Node struct {
 	LastSeen          time.Time                  `json:"last_seen"`
 	CreatedAt         time.Time                  `json:"created_at"`
 }
+type TrafficSample struct {
+	ID            string    `json:"id"`
+	TenantID      string    `json:"tenant_id"`
+	NodeID        string    `json:"node_id"`
+	InterfaceName string    `json:"interface_name"`
+	ReceiveBytes  int64     `json:"receive_bytes"`
+	TransmitBytes int64     `json:"transmit_bytes"`
+	RecordedAt    time.Time `json:"recorded_at"`
+}
+
+type TrafficPoint struct {
+	RecordedAt    time.Time `json:"recorded_at"`
+	ReceiveBytes  int64     `json:"receive_bytes"`
+	TransmitBytes int64     `json:"transmit_bytes"`
+	RXMbps        float64   `json:"rx_mbps"`
+	TXMbps        float64   `json:"tx_mbps"`
+}
+
 type PeerRelation struct {
 	ID           string    `json:"id"`
 	TenantID     string    `json:"tenant_id"`
@@ -126,8 +147,29 @@ type NodeConfig struct {
 	Address    string       `json:"address"`
 	PrivateKey string       `json:"private_key"`
 	ListenPort int          `json:"listen_port"`
+	MTU        int          `json:"mtu"`
 	Peers      []PeerConfig `json:"peers"`
 }
+type AgentCommand struct {
+	ID          string     `json:"id"`
+	TenantID    string     `json:"tenant_id"`
+	NodeID      string     `json:"node_id"`
+	Type        string     `json:"type"`
+	State       string     `json:"state"`
+	Result      string     `json:"result,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+}
+
+type NodeLog struct {
+	ID        string    `json:"id"`
+	Level     string    `json:"level"`
+	Source    string    `json:"source"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type ConfigRevision struct {
 	ID        string                `json:"id"`
 	TenantID  string                `json:"tenant_id"`

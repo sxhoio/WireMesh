@@ -28,3 +28,7 @@ export function shortKey(key: string): string {
   if (!key) return '—'
   return `${key.slice(0, 10)}…${key.slice(-6)}`
 }
+
+export function fmtMbps(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(2) : '0.00'
+}

@@ -20,6 +20,8 @@ import (
 	"time"
 )
 
+const defaultAgentMTU = 1420
+
 type wireGuardPeerStatus struct {
 	PublicKey           string   `json:"public_key"`
 	Endpoint            string   `json:"endpoint"`
@@ -53,6 +55,7 @@ type nodeConfig struct {
 	Address    string       `json:"address"`
 	PrivateKey string       `json:"private_key"`
 	ListenPort int          `json:"listen_port"`
+	MTU        int          `json:"mtu"`
 	Peers      []peerConfig `json:"peers"`
 }
 
@@ -320,6 +323,52 @@ func normalizedInterfaceAddress(value string) (string, error) {
 	return address.String() + "/128", nil
 }
 
+func connectivityCheck(parent context.Context, selector string, runner commandRunner) (string, error) {
+	interfaces, collectionError := collectWireGuard(parent, selector, runner)
+	if len(interfaces) == 0 {
+		if collectionError == "" {
+			collectionError = "no WireGuard interfaces found"
+		}
+		return "", errors.New(collectionError)
+	}
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	peerCount, recentHandshakes, pingOK, pingFailed := 0, 0, 0, 0
+	seen := map[string]bool{}
+	for _, iface := range interfaces {
+		for _, peer := range iface.Peers {
+			peerCount++
+			if value, err := time.Parse(time.RFC3339, peer.LatestHandshakeAt); err == nil && time.Since(value) <= 3*time.Minute {
+				recentHandshakes++
+			}
+			for _, allowed := range peer.AllowedIPs {
+				prefix, err := netip.ParsePrefix(allowed)
+				if err != nil || !prefix.Addr().Is4() {
+					continue
+				}
+				target := prefix.Addr().String()
+				if seen[target] || len(seen) >= 8 {
+					continue
+				}
+				seen[target] = true
+				if _, err := runner.Run(ctx, "ping", "-c", "1", "-W", "2", target); err == nil {
+					pingOK++
+				} else {
+					pingFailed++
+				}
+			}
+		}
+	}
+	message := fmt.Sprintf("interfaces=%d peers=%d recent_handshakes=%d ping_ok=%d ping_failed=%d", len(interfaces), peerCount, recentHandshakes, pingOK, pingFailed)
+	if collectionError != "" {
+		message += " warning=" + collectionError
+	}
+	if peerCount > 0 && recentHandshakes == 0 && pingOK == 0 {
+		return message, errors.New("all peer connectivity checks failed")
+	}
+	return message, nil
+}
+
 func validateNodeConfig(config nodeConfig, expectedNodeID string) error {
 	if config.NodeID == "" || config.NodeID != expectedNodeID {
 		return errors.New("configuration node identity does not match this agent")
@@ -332,6 +381,9 @@ func validateNodeConfig(config nodeConfig, expectedNodeID string) error {
 	}
 	if config.ListenPort < 1 || config.ListenPort > 65535 {
 		return errors.New("configuration listen port is invalid")
+	}
+	if config.MTU < 576 || config.MTU > 9000 {
+		return errors.New("configuration MTU is invalid")
 	}
 	if err := validateWireGuardKey(config.PrivateKey); err != nil {
 		return errors.New("configuration private key is invalid")
@@ -374,6 +426,9 @@ func validateWireGuardKey(value string) error {
 }
 
 func renderWireGuardConfig(config nodeConfig) ([]byte, error) {
+	if config.MTU == 0 {
+		config.MTU = defaultAgentMTU
+	}
 	if err := validateNodeConfig(config, config.NodeID); err != nil {
 		return nil, err
 	}
@@ -385,6 +440,8 @@ func renderWireGuardConfig(config nodeConfig) ([]byte, error) {
 	output.WriteString(address)
 	output.WriteString("\nListenPort = ")
 	output.WriteString(strconv.Itoa(config.ListenPort))
+	output.WriteString("\nMTU = ")
+	output.WriteString(strconv.Itoa(config.MTU))
 	output.WriteString("\n\n")
 	for _, peer := range config.Peers {
 		output.WriteString("[Peer]\nPublicKey = ")
@@ -403,6 +460,9 @@ func renderWireGuardConfig(config nodeConfig) ([]byte, error) {
 }
 
 func (manager wireGuardManager) Apply(parent context.Context, config nodeConfig, expectedNodeID string) (string, string) {
+	if config.MTU == 0 {
+		config.MTU = defaultAgentMTU
+	}
 	if err := validateNodeConfig(config, expectedNodeID); err != nil {
 		return "failed", err.Error()
 	}

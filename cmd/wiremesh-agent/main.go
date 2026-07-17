@@ -54,6 +54,12 @@ type agentState struct {
 	AttemptedVersion uint64 `json:"attempted_version,omitempty"`
 }
 
+type agentCommand struct {
+	ID    string `json:"id"`
+	Type  string `json:"type"`
+	State string `json:"state"`
+}
+
 type heartbeatRequest struct {
 	Hostname        string                     `json:"hostname"`
 	OS              string                     `json:"os"`
@@ -210,6 +216,46 @@ func main() {
 	sendHeartbeat()
 	reconcileConfiguration()
 
+	processCommands := func() {
+		commands, err := pollAgentCommands(ctx, client, state)
+		if err != nil {
+			log.Printf("agent command check failed: %v", err)
+			return
+		}
+		for _, command := range commands {
+			result, commandErr := "", error(nil)
+			switch command.Type {
+			case "collect":
+				heartbeat := baseHeartbeat
+				heartbeat.WireGuard, heartbeat.CollectionError = collectWireGuard(ctx, *interfaces, manager.runner)
+				commandErr = postHeartbeat(ctx, client, state, heartbeat)
+				result = fmt.Sprintf("wireguard_interfaces=%d", len(heartbeat.WireGuard))
+				if heartbeat.CollectionError != "" {
+					result += " warning=" + heartbeat.CollectionError
+				}
+			case "connectivity_check":
+				result, commandErr = connectivityCheck(ctx, *interfaces, manager.runner)
+			default:
+				commandErr = fmt.Errorf("unsupported command type %s", command.Type)
+			}
+			commandState := "completed"
+			if commandErr != nil {
+				commandState = "failed"
+				if result != "" {
+					result += "; "
+				}
+				result += commandErr.Error()
+			}
+			if err := postAgentCommandResult(ctx, client, state, command.ID, commandState, result); err != nil {
+				log.Printf("report command %s result: %v", command.ID, err)
+			} else {
+				log.Printf("agent command %s (%s): %s", command.ID, command.Type, commandState)
+			}
+		}
+	}
+
+	processCommands()
+
 	reportTicker := time.NewTicker(*reportInterval)
 	probeTicker := time.NewTicker(*probeInterval)
 	defer reportTicker.Stop()
@@ -223,6 +269,7 @@ func main() {
 			sendHeartbeat()
 		case <-probeTicker.C:
 			reconcileConfiguration()
+			processCommands()
 		}
 	}
 }
@@ -276,6 +323,52 @@ func authenticatedClient(state agentState, useMTLS bool) (*http.Client, error) {
 		}
 	}
 	return &http.Client{Timeout: 20 * time.Second, Transport: transport}, nil
+}
+
+func pollAgentCommands(ctx context.Context, client *http.Client, state agentState) ([]agentCommand, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, state.Server+"/agent/v1/commands", nil)
+	if err != nil {
+		return nil, err
+	}
+	setDevelopmentIdentity(request, state)
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, responseError(response)
+	}
+	var commands []agentCommand
+	if err := json.NewDecoder(response.Body).Decode(&commands); err != nil {
+		return nil, err
+	}
+	if commands == nil {
+		commands = []agentCommand{}
+	}
+	return commands, nil
+}
+
+func postAgentCommandResult(ctx context.Context, client *http.Client, state agentState, id, commandState, result string) error {
+	body, err := json.Marshal(map[string]string{"state": commandState, "result": result})
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, state.Server+"/agent/v1/commands/"+id+"/result", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	setDevelopmentIdentity(request, state)
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return responseError(response)
+	}
+	return nil
 }
 
 func postHeartbeat(ctx context.Context, client *http.Client, state agentState, heartbeat heartbeatRequest) error {
@@ -333,7 +426,7 @@ func pollConfig(ctx context.Context, client *http.Client, state agentState) (con
 		return configResponse{}, false, err
 	}
 	defer response.Body.Close()
-	if response.StatusCode == http.StatusNotFound {
+	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusLocked {
 		return configResponse{}, false, nil
 	}
 	if response.StatusCode != http.StatusOK {
