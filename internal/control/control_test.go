@@ -252,7 +252,7 @@ func TestNodeConfigurationCanBeEditedAndPublished(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	request := httptest.NewRequest(http.MethodPatch, "/api/v1/nodes/"+node.ID, strings.NewReader(`{"address":"10.55.0.20","listen_port":51821,"mtu":1380,"endpoint":"vpn.example.com:51821","location_source":"manual","location_name":"中国 上海","latitude":31.2304,"longitude":121.4737}`))
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/nodes/"+node.ID, strings.NewReader(`{"address":"10.55.0.20","listen_port":51821,"mtu":1380,"endpoint":"vpn.example.com:51821","location_source":"manual","location_name":"中国 上海机房"}`))
 	request.Header.Set("Authorization", "Bearer "+token)
 	response := httptest.NewRecorder()
 	app.Router().ServeHTTP(response, request)
@@ -263,8 +263,16 @@ func TestNodeConfigurationCanBeEditedAndPublished(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&updated); err != nil {
 		t.Fatal(err)
 	}
-	if updated.Address != "10.55.0.20" || updated.ListenPort != 51821 || updated.MTU != 1380 || updated.LocationSource != "manual" || updated.LocationName != "中国 上海" || updated.Latitude != 31.2304 || updated.Longitude != 121.4737 {
+	if updated.Address != "10.55.0.20" || updated.ListenPort != 51821 || updated.MTU != 1380 || updated.LocationSource != "manual" || updated.LocationName != "中国 上海机房" || updated.Latitude != 31.2304 || updated.Longitude != 121.4737 {
 		t.Fatalf("unexpected node: %#v", updated)
+	}
+
+	request = httptest.NewRequest(http.MethodPatch, "/api/v1/nodes/"+other.ID, strings.NewReader(`{"location_source":"manual"}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("manual location without a name should fail: %d %s", response.Code, response.Body.String())
 	}
 
 	request = httptest.NewRequest(http.MethodPatch, "/api/v1/nodes/"+node.ID, strings.NewReader(`{"location_source":"manual","latitude":91,"longitude":121.4737}`))

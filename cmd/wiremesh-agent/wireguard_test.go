@@ -63,6 +63,40 @@ func TestParseWireGuardDumpDoesNotExposeSecrets(t *testing.T) {
 	}
 }
 
+func TestParseWireGuardDumpSupportsMultiplePeersWithDisabledKeepalive(t *testing.T) {
+	interfaceKey := testWireGuardKey(10)
+	firstPeerKey := testWireGuardKey(11)
+	secondPeerKey := testWireGuardKey(12)
+	dump := strings.Join([]string{
+		"wg0\tprivate\t" + interfaceKey + "\t11011\toff",
+		"wg0\t" + firstPeerKey + "\t(none)\t61.242.135.141:32413\t10.88.88.88/32\t1710000000\t264130\t107008\toff",
+		"wg0\t" + secondPeerKey + "\t(none)\t[2402:4e00:1420:800:9c90:f48:88c0:1]:38958\t10.88.88.5/32,10.88.90.0/24\t1710000010\t42184171\t4162846\t25",
+	}, "\n")
+
+	interfaces, err := parseWireGuardDump(dump, "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(interfaces) != 1 || len(interfaces[0].Peers) != 2 {
+		t.Fatalf("unexpected multi-peer interfaces: %#v", interfaces)
+	}
+	if interfaces[0].Peers[0].PersistentKeepalive != 0 {
+		t.Fatalf("disabled keepalive should be reported as zero: %#v", interfaces[0].Peers[0])
+	}
+	if interfaces[0].Peers[1].PersistentKeepalive != 25 {
+		t.Fatalf("numeric keepalive was not preserved: %#v", interfaces[0].Peers[1])
+	}
+	if len(interfaces[0].Peers[1].AllowedIPs) != 2 {
+		t.Fatalf("multiple allowed IPs were not preserved: %#v", interfaces[0].Peers[1].AllowedIPs)
+	}
+}
+
+func TestParsePersistentKeepaliveRejectsInvalidValue(t *testing.T) {
+	if _, err := parsePersistentKeepalive("invalid"); err == nil {
+		t.Fatal("expected invalid keepalive value to be rejected")
+	}
+}
+
 func TestCollectWireGuardMergesInterfaceMetadata(t *testing.T) {
 	runner := &testRunner{run: func(name string, args ...string) ([]byte, error) {
 		switch name + " " + strings.Join(args, " ") {

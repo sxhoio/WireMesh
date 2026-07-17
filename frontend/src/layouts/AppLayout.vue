@@ -169,8 +169,9 @@ async function doPublish() {
         </div>
       </header>
 
-      <main class="relative min-h-0 flex-1 overflow-y-auto p-6">
-        <router-view />
+      <main class="relative min-h-0 flex-1 overflow-y-auto p-4 sm:p-6 xl:px-8 2xl:px-10">
+        <div class="mx-auto w-full max-w-[1920px]">
+          <router-view />
 
         <!-- 待发布配置条 -->
         <transition name="slide-up">
@@ -187,6 +188,7 @@ async function doPublish() {
             </div>
           </div>
         </transition>
+        </div>
       </main>
     </div>
 

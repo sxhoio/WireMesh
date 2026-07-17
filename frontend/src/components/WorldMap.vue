@@ -7,8 +7,10 @@ import XYZ from 'ol/source/XYZ'
 import VectorSource from 'ol/source/Vector'
 import { Point, LineString } from 'ol/geom'
 import { Style, Circle as CircleStyle, Fill, Stroke, Text } from 'ol/style'
-import { fromLonLat } from 'ol/proj'
+import { fromLonLat, toLonLat } from 'ol/proj'
 import { defaults as defaultControls } from 'ol/control'
+import { boundingExtent } from 'ol/extent'
+import countryRegionData from '../assets/country-regions.json'
 import 'ol/ol.css'
 import type { Agent, PeerLink, PeerState, TempPeer } from '../types'
 
@@ -26,6 +28,10 @@ const props = defineProps<{
 
 const locatedAgents = () => props.agents.filter((agent) => Number.isFinite(agent.lng) && Number.isFinite(agent.lat))
 const locatedTempPeers = () => props.tempPeers.filter((peer) => peer.geo && Number.isFinite(peer.geo.lng) && Number.isFinite(peer.geo.lat))
+
+type CountryRegion = { code: string; name: string; bounds: [number, number, number, number]; center: [number, number] }
+const countryRegions = countryRegionData as CountryRegion[]
+const selectedCountryName = ref('')
 
 const emit = defineEmits<{
   (e: 'agent-click', agent: Agent): void
@@ -84,10 +90,6 @@ const el = ref<HTMLDivElement>()
 let map: OlMap | null = null
 let linkSource: VectorSource | null = null
 let markerSource: VectorSource | null = null
-/** 用户是否手动调整过视口；自动适配只在未手动调整时生效 */
-let userRoamed = false
-let lastFitKey = ''
-let suppressFit = false
 
 /** 两点间生成贝塞尔曲线（弧线）投影坐标序列 */
 function curveCoords(a: [number, number], b: [number, number]): number[][] {
@@ -201,19 +203,41 @@ function render() {
   markerSource.addFeatures(markerFeatures)
 }
 
-/** 首次及节点集合变化时自动适配视野；用户手动漫游后不再自动调整 */
-function fitIfNeeded(force = false) {
-  const agents = locatedAgents()
-  if (!map || !agents.length) return
-  const key = agents.map((a) => `${a.id}:${a.lng}:${a.lat}`).sort().join(',')
-  if (!force && (userRoamed || key === lastFitKey)) return
-  lastFitKey = key
-  const extent = markerSource?.getExtent()
-  if (extent && isFinite(extent[0])) {
-    suppressFit = true
-    map.getView().fit(extent, { padding: [60, 60, 60, 60], duration: 0, maxZoom: 6 })
-    setTimeout(() => (suppressFit = false), 200)
-  }
+function countryAtCoordinate(lng: number, lat: number) {
+  const candidates = countryRegions.filter((country) => {
+    const [minLng, minLat, maxLng, maxLat] = country.bounds
+    return lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat
+  })
+  return candidates.sort((left, right) => {
+    const score = (country: CountryRegion) => {
+      const [minLng, minLat, maxLng, maxLat] = country.bounds
+      const width = Math.max(1, maxLng - minLng)
+      const height = Math.max(1, maxLat - minLat)
+      return ((lng - country.center[0]) / width) ** 2 + ((lat - country.center[1]) / height) ** 2
+    }
+    return score(left) - score(right)
+  })[0]
+}
+
+function showGlobalView() {
+  if (!map) return
+  selectedCountryName.value = ''
+  map.getView().animate({ center: fromLonLat([12, 18]), zoom: 2, duration: 450 })
+}
+
+function zoomToCountry(lng: number, lat: number) {
+  const country = countryAtCoordinate(lng, lat)
+  if (!map || !country) return false
+  const [minLng, minLat, maxLng, maxLat] = country.bounds
+  const extent = boundingExtent([
+    toMapProjection([minLng, minLat]),
+    toMapProjection([minLng, maxLat]),
+    toMapProjection([maxLng, minLat]),
+    toMapProjection([maxLng, maxLat]),
+  ])
+  selectedCountryName.value = country.name || country.code
+  map.getView().fit(extent, { padding: [54, 54, 54, 54], duration: 500, maxZoom: 6 })
+  return true
 }
 
 onMounted(() => {
@@ -235,16 +259,13 @@ onMounted(() => {
       new VectorLayer({ source: markerSource, zIndex: 3 }),
     ],
     view: new View({
-      center: fromLonLat([20, 25]),
-      zoom: 3,
+      center: fromLonLat([12, 18]),
+      zoom: 2,
       minZoom: 2,
       maxZoom: 12,
     }),
   })
 
-  map.on('pointerdrag', () => {
-    if (!suppressFit) userRoamed = true
-  })
   map.getView().on('change:resolution', () => render())
   map.on('moveend', () => render())
 
@@ -261,11 +282,14 @@ onMounted(() => {
       hit = true
       return true
     }, { hitTolerance: 6 })
+    if (!hit) {
+      const [lng, lat] = toLonLat(evt.coordinate)
+      zoomToCountry(lng, lat)
+    }
     return hit
   })
 
   render()
-  fitIfNeeded(true)
 })
 
 onBeforeUnmount(() => {
@@ -275,10 +299,7 @@ onBeforeUnmount(() => {
 
 watch(
   () => [props.agents, props.links, props.tempPeers, props.linkFilter, props.onlyErrors],
-  () => {
-    render()
-    fitIfNeeded()
-  },
+  () => render(),
   { deep: true },
 )
 </script>
@@ -286,9 +307,13 @@ watch(
 <template>
   <div class="relative h-full w-full">
     <div ref="el" class="ol-map-wrap h-full w-full"></div>
+    <div class="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-lg bg-white/90 px-3 py-2 text-xs text-slate-600 shadow-lg ring-1 ring-slate-200 backdrop-blur">
+      <span>{{ selectedCountryName ? '已定位：' + selectedCountryName : '全球视图 · 点击国家自动放大' }}</span>
+      <button v-if="selectedCountryName" class="font-medium text-cyan-700 hover:text-cyan-900" @click="showGlobalView">返回全球</button>
+    </div>
     <div v-if="!locatedAgents().length" class="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/45 p-6 text-center backdrop-blur-[1px]">
       <div class="rounded-xl bg-white/90 px-5 py-4 text-sm text-slate-500 shadow-lg ring-1 ring-slate-200">
-        暂无带有效地理坐标的节点；地图不会生成模拟位置。
+        暂无带有效地理坐标的节点；正在等待客户端上报公网 IP 或服务器 GeoIP 自动解析。
       </div>
     </div>
   </div>

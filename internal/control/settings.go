@@ -3,7 +3,6 @@ package control
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/mail"
 	"os"
@@ -29,9 +28,13 @@ type geoIPStatusResponse struct {
 	EntryCount uint64    `json:"entryCount"`
 }
 
+func configuredGeoIPDBPath() string {
+	return strings.TrimSpace(os.Getenv("WIREMESH_GEOIP_DB"))
+}
+
 func defaultSystemSettings(tenant string) SystemSettings {
 	return SystemSettings{
-		TenantID: tenant, DashboardName: "WireMesh 控制台", SessionTimeoutMin: 120,
+		TenantID: tenant, DashboardName: "WireMesh 控制台", SessionTimeoutMin: 120, GeoIPDBPath: configuredGeoIPDBPath(),
 		NetDefaults: NetworkDefaults{Port: 51820, MTU: 1420, Keepalive: 25, DefaultTopology: "full-mesh"},
 		StatusRules: StatusRules{AgentOfflineSec: 120, HandshakeSec: 180, RedFailCount: 3},
 		Collect:     CollectionSettings{ReportSec: 10, ProbeSec: 15, MapRefreshSec: 30},
@@ -43,6 +46,9 @@ func (a *App) tenantSettings(tenant string) (SystemSettings, error) {
 	settings, err := a.store.GetSettings(tenant)
 	if errors.Is(err, errNotFound) {
 		return defaultSystemSettings(tenant), nil
+	}
+	if err == nil && strings.TrimSpace(settings.GeoIPDBPath) == "" {
+		settings.GeoIPDBPath = configuredGeoIPDBPath()
 	}
 	return settings, err
 }
@@ -251,46 +257,25 @@ func (a *App) loadGeoIP(tenant, path string) (string, error) {
 
 func (a *App) lookupGeoIP(w http.ResponseWriter, r *http.Request, c claims) {
 	ipText := strings.TrimSpace(r.URL.Query().Get("ip"))
-	ip := net.ParseIP(ipText)
-	if ip == nil {
-		writeError(w, http.StatusBadRequest, "valid IP address is required")
-		return
-	}
-	a.geoMu.RLock()
-	state := a.geoReaders[c.TenantID]
-	if state == nil {
-		a.geoMu.RUnlock()
-		writeError(w, http.StatusConflict, "GeoIP database is not loaded")
-		return
-	}
-	var record struct {
-		City struct {
-			Names map[string]string `maxminddb:"names"`
-		} `maxminddb:"city"`
-		Country struct {
-			ISOCode string            `maxminddb:"iso_code"`
-			Names   map[string]string `maxminddb:"names"`
-		} `maxminddb:"country"`
-		Location struct {
-			Latitude  float64 `maxminddb:"latitude"`
-			Longitude float64 `maxminddb:"longitude"`
-			TimeZone  string  `maxminddb:"time_zone"`
-		} `maxminddb:"location"`
-	}
-	err := state.Reader.Lookup(ip, &record)
-	a.geoMu.RUnlock()
+	location, err := a.geoLookup(c.TenantID, ipText)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "GeoIP lookup failed")
+		switch {
+		case errors.Is(err, errGeoIPUnavailable):
+			writeError(w, http.StatusConflict, "GeoIP database is not loaded")
+		case errors.Is(err, errGeoIPNotFound):
+			writeError(w, http.StatusNotFound, "GeoIP location was not found")
+		case strings.Contains(err.Error(), "valid public IP"):
+			writeError(w, http.StatusBadRequest, "valid public IP address is required")
+		default:
+			writeError(w, http.StatusInternalServerError, "GeoIP lookup failed")
+		}
 		return
 	}
-	city, country := record.City.Names["zh-CN"], record.Country.Names["zh-CN"]
-	if city == "" {
-		city = record.City.Names["en"]
-	}
-	if country == "" {
-		country = record.Country.Names["en"]
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"ip": ipText, "city": city, "country": country, "countryCode": record.Country.ISOCode, "latitude": record.Location.Latitude, "longitude": record.Location.Longitude, "timezone": record.Location.TimeZone})
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ip": location.PublicIP, "city": location.City, "country": location.Country,
+		"countryCode": location.CountryCode, "latitude": location.Latitude,
+		"longitude": location.Longitude, "timezone": location.Timezone,
+	})
 }
 
 func (a *App) notificationLogs(w http.ResponseWriter, r *http.Request, c claims) {

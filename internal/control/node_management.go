@@ -31,6 +31,56 @@ func normalizeNodeDefaults(node Node) Node {
 	return node
 }
 
+func (a *App) adoptReportedNodeConfiguration(node *Node) (string, bool) {
+	iface, address, ok := a.reportedNodeConfiguration(*node)
+	if !ok {
+		return "", false
+	}
+	listenPort := node.ListenPort
+	if iface.ListenPort >= 1 && iface.ListenPort <= 65535 {
+		listenPort = iface.ListenPort
+	}
+	mtu := node.MTU
+	if iface.MTU >= 576 && iface.MTU <= 9000 {
+		mtu = iface.MTU
+	}
+	if node.Address == address && node.ListenPort == listenPort && node.MTU == mtu {
+		return "", false
+	}
+	if len(a.store.ListDeliveries(node.TenantID, node.ID)) != 0 {
+		return "", false
+	}
+	for _, event := range a.store.ListAudit(node.TenantID) {
+		if event.ResourceType == "node" && event.ResourceID == node.ID && (event.Action == "node.update" || event.Action == "agent.config.observed") {
+			return "", false
+		}
+	}
+	for _, other := range a.store.ListNodes(node.TenantID, node.NetworkID) {
+		if other.ID != node.ID && other.Address == address {
+			return "", false
+		}
+	}
+	node.Address = address
+	node.ListenPort = listenPort
+	node.MTU = mtu
+	return iface.Name, true
+}
+
+func (a *App) reportedNodeConfiguration(node Node) (WireGuardInterfaceStatus, string, bool) {
+	for _, iface := range node.WireGuard {
+		for _, raw := range iface.Addresses {
+			address := strings.TrimSpace(raw)
+			if value, _, found := strings.Cut(address, "/"); found {
+				address = value
+			}
+			if a.validateNodeAddress(node, address) == nil {
+				return iface, address, true
+			}
+		}
+	}
+	return WireGuardInterfaceStatus{}, "", false
+}
+
 func (a *App) nodeByID(w http.ResponseWriter, r *http.Request, c claims) {
 	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 	if err != nil {
@@ -126,7 +176,16 @@ func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
 			node.Latitude = 0
 			node.Longitude = 0
 		case "manual":
-			latitude, longitude := node.Latitude, node.Longitude
+			locationName := node.LocationName
+			if in.LocationName != nil {
+				locationName = strings.TrimSpace(*in.LocationName)
+			}
+			if locationName == "" {
+				writeError(w, http.StatusBadRequest, "location_name is required for manual location")
+				return
+			}
+
+			latitude, longitude := resolveManualLocation(locationName, node.Latitude, node.Longitude)
 			if in.Latitude != nil {
 				latitude = *in.Latitude
 			}
@@ -141,12 +200,10 @@ func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
 				writeError(w, http.StatusBadRequest, "longitude must be between -180 and 180")
 				return
 			}
+			node.LocationName = locationName
 			node.LocationSource = "manual"
 			node.Latitude = latitude
 			node.Longitude = longitude
-			if in.LocationName != nil {
-				node.LocationName = strings.TrimSpace(*in.LocationName)
-			}
 		default:
 			writeError(w, http.StatusBadRequest, "location_source must be manual or empty")
 			return

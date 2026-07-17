@@ -41,6 +41,7 @@ type App struct {
 	caKey           any
 	geoMu           sync.RWMutex
 	geoReaders      map[string]*geoReaderState
+	geoLookup       func(string, string) (geoIPLocation, error)
 	agentBinaryPath string
 }
 
@@ -54,6 +55,7 @@ func NewApp(cfg Config) (*App, error) {
 		store = NewMemoryStore()
 	}
 	app := &App{store: store, database: cfg.Database, databaseDriver: cfg.DatabaseDriver, box: box, geoReaders: map[string]*geoReaderState{}, agentBinaryPath: cfg.AgentBinaryPath}
+	app.geoLookup = app.lookupGeoIPLocation
 	app.auth = newAuthenticator(store, cfg.MasterKey+"-auth")
 	if err := app.newCertificateAuthority(); err != nil {
 		return nil, err
@@ -107,6 +109,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /agent/download", a.agentDownload)
 	mux.HandleFunc("POST /agent/v1/enroll", a.enroll)
 	mux.HandleFunc("GET /agent/v1/config", a.agentConfig)
+	mux.HandleFunc("GET /agent/v1/location", a.agentLocation)
 	mux.HandleFunc("POST /agent/v1/status", a.agentStatus)
 	mux.HandleFunc("POST /agent/v1/heartbeat", a.agentHeartbeat)
 	mux.HandleFunc("GET /agent/v1/commands", a.agentCommands)
@@ -473,8 +476,9 @@ func (a *App) enroll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]any{"node": node, "certificate_pem": cert, "private_key_pem": key, "certificate_fingerprint": fingerprint, "expires_at": expires, "ca_pem": a.caPEM()})
 }
 
-// agentNode authorizes a mTLS-authenticated agent in production. The X-Agent-ID
-// header is a local-development adapter so the included sample agent works over HTTP.
+// agentNode authorizes an agent by its enrolled mTLS certificate when it reaches
+// the server directly. X-Agent-ID also supports local HTTP and TLS-terminating
+// reverse proxies; proxy deployments must keep the backend listener private.
 func (a *App) agentNode(w http.ResponseWriter, r *http.Request) (Node, bool) {
 	nodeID := r.Header.Get("X-Agent-ID")
 	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
@@ -562,6 +566,7 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		Interfaces      string                     `json:"interfaces"`
 		WireGuard       []WireGuardInterfaceStatus `json:"wireguard"`
 		CollectionError string                     `json:"collection_error,omitempty"`
+		Location        geoIPLocation              `json:"location,omitempty"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -581,12 +586,21 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if in.Labels != nil {
 		node.Labels = in.Labels
 	}
+	adoptedInterface := ""
+	adoptedConfiguration := false
 	if in.WireGuard != nil {
 		node.WireGuard = in.WireGuard
+		adoptedInterface, adoptedConfiguration = a.adoptReportedNodeConfiguration(&node)
 	}
+	a.applyAutomaticNodeLocation(&node, in.Location, r)
 	if err := a.store.UpdateNode(node); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record agent heartbeat")
 		return
+	}
+	if adoptedConfiguration {
+		a.auditEvent(node.TenantID, node.ID, "agent.config.observed", "node", node.ID, map[string]string{
+			"address": node.Address, "interface": adoptedInterface, "listen_port": fmt.Sprint(node.ListenPort), "mtu": fmt.Sprint(node.MTU),
+		})
 	}
 	samples := make([]TrafficSample, 0, len(node.WireGuard))
 	for _, iface := range node.WireGuard {

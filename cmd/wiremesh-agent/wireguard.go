@@ -155,9 +155,9 @@ func parseWireGuardDump(value, selector string) ([]wireGuardInterfaceStatus, err
 		if parseErr != nil {
 			return nil, fmt.Errorf("invalid transmit counter for %s", name)
 		}
-		keepalive, parseErr := strconv.Atoi(fields[8])
+		keepalive, parseErr := parsePersistentKeepalive(fields[8])
 		if parseErr != nil {
-			return nil, fmt.Errorf("invalid keepalive for %s", name)
+			return nil, fmt.Errorf("invalid keepalive for %s: %w", name, parseErr)
 		}
 		peer := wireGuardPeerStatus{
 			PublicKey: dashToEmpty(fields[1]), Endpoint: dashToEmpty(fields[3]),
@@ -182,6 +182,18 @@ func parseWireGuardDump(value, selector string) ([]wireGuardInterfaceStatus, err
 		result = append(result, *byName[name])
 	}
 	return result, nil
+}
+
+func parsePersistentKeepalive(value string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "off") {
+		return 0, nil
+	}
+	keepalive, err := strconv.Atoi(value)
+	if err != nil || keepalive < 0 {
+		return 0, fmt.Errorf("unexpected value %q", value)
+	}
+	return keepalive, nil
 }
 
 func parseInterfaceSelector(value string) (map[string]bool, bool, error) {

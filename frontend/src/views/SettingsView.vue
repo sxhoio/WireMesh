@@ -168,7 +168,7 @@ function defaultChannelConfig(type: NotifyChannelType): NotificationConfig {
   if (type === 'dingtalk') return { messageType: 'markdown', timeoutSec: 8, atAll: false, atMobiles: [], allowPrivate: false }
   if (type === 'wecom') return { messageType: 'markdown', timeoutSec: 8, atAll: false, atMobiles: [], atUserIds: [], allowPrivate: false }
   if (type === 'feishu') return { messageType: 'text', timeoutSec: 8, atAll: false, allowPrivate: false }
-  if (type === 'telegram') return { parseMode: 'HTML', timeoutSec: 8, disableWebPagePreview: true, disableNotification: false }
+  if (type === 'telegram') return { parseMode: 'HTML', timeoutSec: 8, disableWebPagePreview: true, disableNotification: false, useProxy: false }
   return { smtpPort: 587, encryption: 'starttls', timeoutSec: 10, to: [], cc: [], allowPrivate: false, skipTlsVerify: false }
 }
 function defaultTemplate(type: NotifyChannelType) { return type === 'webhook' ? defaultWebhookTemplate : defaultMessageTemplate }
@@ -204,14 +204,23 @@ function addWebhookHeader() { if (!channelForm.config.headers) channelForm.confi
 function removeWebhookHeader(index: number) { channelForm.config.headers?.splice(index, 1) }
 function restoreDefaultTemplate() { channelForm.template = defaultTemplate(channelForm.type); if (channelForm.type === 'email') channelForm.subjectTemplate = defaultSubjectTemplate }
 function insertTemplateVariable(value: string) { channelForm.template += (channelForm.template.endsWith('\n') || !channelForm.template ? '' : '\n') + value }
-function isConfigured(field: 'url' | 'secret' | 'botToken' | 'chatId' | 'password' | 'recipients' | 'cc') {
+function isConfigured(field: 'url' | 'secret' | 'botToken' | 'proxyUrl' | 'chatId' | 'password' | 'recipients' | 'cc') {
   const config = channelForm.config
   if (field === 'url') return !!config.urlConfigured; if (field === 'secret') return !!config.secretConfigured
-  if (field === 'botToken') return !!config.botTokenConfigured; if (field === 'chatId') return !!config.chatIdConfigured
-  if (field === 'password') return !!config.passwordConfigured; if (field === 'recipients') return !!config.recipientsConfigured
+  if (field === 'botToken') return !!config.botTokenConfigured; if (field === 'proxyUrl') return !!config.proxyUrlConfigured
+  if (field === 'chatId') return !!config.chatIdConfigured; if (field === 'password') return !!config.passwordConfigured
+  if (field === 'recipients') return !!config.recipientsConfigured
   return !!config.ccConfigured
 }
 function configuredPlaceholder(field: Parameters<typeof isConfigured>[0], fallback: string) { return isConfigured(field) ? '已安全保存，留空保持不变' : fallback }
+function validProxyURL(value: string) {
+  try {
+    const proxy = new URL(value)
+    return ['http:', 'https:', 'socks5:', 'socks5h:'].includes(proxy.protocol) && !!proxy.hostname && !proxy.search && !proxy.hash && (proxy.pathname === '' || proxy.pathname === '/')
+  } catch {
+    return false
+  }
+}
 function validateChannelForm(config: NotificationConfig) {
   if (!channelForm.name.trim()) return '请输入渠道名称'
   if (!channelForm.template.trim()) return '请输入通知消息模板'
@@ -225,6 +234,8 @@ function validateChannelForm(config: NotificationConfig) {
   } else if (channelForm.type === 'telegram') {
     if (!config.botToken && !config.botTokenConfigured) return '请输入 Bot Token'
     if (!config.chatId && !config.chatIdConfigured) return '请输入 Chat ID'
+    if (config.useProxy && !config.proxyUrl && !config.proxyUrlConfigured) return '启用代理后请输入代理地址'
+    if (config.proxyUrl && !validProxyURL(config.proxyUrl)) return '代理地址必须使用 http、https、socks5 或 socks5h 协议'
   } else if (channelForm.type === 'email') {
     if (!config.smtpHost?.trim()) return '请输入 SMTP 主机'
     if (!config.fromAddress?.trim()) return '请输入发件人地址'
@@ -259,7 +270,7 @@ function channelAgentsLabel(c: NotifyChannel) { if (c.agents === 'all') return '
 function channelConfigSummary(c: NotifyChannel) {
   const config = c.config || {}
   if (c.type === 'webhook') return (config.method || 'POST') + ' · ' + (config.contentType || 'application/json') + ' · ' + (config.urlConfigured ? '目标已配置' : '目标未配置')
-  if (c.type === 'telegram') return 'Bot ' + (config.botTokenConfigured ? '已配置' : '未配置') + ' · Chat ' + (config.chatIdConfigured ? '已配置' : '未配置') + ' · ' + (config.parseMode || '纯文本')
+  if (c.type === 'telegram') return 'Bot ' + (config.botTokenConfigured ? '已配置' : '未配置') + ' · Chat ' + (config.chatIdConfigured ? '已配置' : '未配置') + ' · ' + (config.parseMode || '纯文本') + ' · ' + (config.useProxy ? (config.proxyUrlConfigured ? '代理已配置' : '代理未配置') : '直连')
   if (c.type === 'email') return (config.smtpHost || 'SMTP 未配置') + ':' + (config.smtpPort || '-') + ' · ' + (config.recipientCount || 0) + ' 个收件人 · ' + (config.encryption || 'none')
   return (config.messageType || 'text') + ' · ' + (config.urlConfigured ? 'Webhook 已配置' : 'Webhook 未配置') + (config.secretConfigured ? ' · 签名已配置' : '')
 }
@@ -499,6 +510,12 @@ function channelConfigSummary(c: NotifyChannel) {
                 <div><label class="label">Topic / Thread ID（可选）</label><input v-model="channelForm.config.threadId" class="input font-mono" placeholder="123" /></div>
                 <div><label class="label">解析模式</label><select v-model="channelForm.config.parseMode" class="input"><option value="">纯文本</option><option value="HTML">HTML</option><option value="MarkdownV2">MarkdownV2</option></select></div>
                 <div><label class="label">超时时间（秒）</label><input v-model.number="channelForm.config.timeoutSec" type="number" min="1" max="60" class="input font-mono" /></div>
+                <label class="flex items-center gap-2 text-xs text-slate-400 md:col-span-2"><input v-model="channelForm.config.useProxy" type="checkbox" class="accent-emerald-500" />通过代理访问 Telegram Bot API</label>
+                <div v-if="channelForm.config.useProxy" class="md:col-span-2">
+                  <label class="label">代理地址</label>
+                  <input v-model="channelForm.config.proxyUrl" type="password" autocomplete="new-password" class="input font-mono" :placeholder="configuredPlaceholder('proxyUrl', 'http://127.0.0.1:7890 或 socks5://127.0.0.1:1080')" />
+                  <p class="mt-1.5 text-[11px] leading-5 text-slate-500">支持 HTTP、HTTPS、SOCKS5 和 SOCKS5H；需要认证时可使用 <span class="font-mono text-slate-400">scheme://user:password@host:port</span>。代理地址会加密保存。</p>
+                </div>
                 <label class="flex items-center gap-2 text-xs text-slate-400"><input v-model="channelForm.config.disableWebPagePreview" type="checkbox" class="accent-emerald-500" />关闭网页预览</label>
                 <label class="flex items-center gap-2 text-xs text-slate-400"><input v-model="channelForm.config.disableNotification" type="checkbox" class="accent-emerald-500" />静默发送</label>
               </div>
@@ -548,7 +565,7 @@ function channelConfigSummary(c: NotifyChannel) {
       </section>
 
       <!-- 项目与网络 -->
-      <section v-else-if="tab === 'project'" class="grid grid-cols-1 items-start gap-5 2xl:grid-cols-2">
+      <section v-else-if="tab === 'project'" class="grid grid-cols-1 items-start gap-5">
         <div class="panel p-4 sm:p-6 2xl:p-7">
           <h2 class="text-sm font-semibold text-white">项目</h2>
           <div class="mt-3 space-y-2">

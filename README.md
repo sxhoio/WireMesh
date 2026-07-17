@@ -57,13 +57,19 @@ docker build -t wiremesh:local .
 docker run --rm -p 8080:8080 -v wiremesh-data:/data -e WIREMESH_MASTER_KEY=replace-with-a-secret wiremesh:local
 ```
 
-Open `http://localhost:8080`. The image starts the database-selection wizard and stores its encrypted database configuration and optional SQLite file in the `/data` volume. For production, inject `WIREMESH_MASTER_KEY` from a secret manager and mount the TLS certificate/key files referenced by `WIREMESH_TLS_CERT_FILE` and `WIREMESH_TLS_KEY_FILE`.
+Open `http://localhost:8080`. The image starts the database-selection wizard and stores its encrypted database configuration and optional SQLite file in the `/data` volume. The image also includes `/app/GeoLite2-City.mmdb` and sets `WIREMESH_GEOIP_DB` to that path, so newly configured tenants can use server-side node geolocation without an extra mount. Override `WIREMESH_GEOIP_DB` when using an externally updated database. For production, inject `WIREMESH_MASTER_KEY` from a secret manager and mount the TLS certificate/key files referenced by `WIREMESH_TLS_CERT_FILE` and `WIREMESH_TLS_KEY_FILE`.
 
 To exercise enrollment, create an Agent token in the Nodes view and run:
 
 ```powershell
 go run ./cmd/wiremesh-agent -server http://localhost:8080 -enroll-token <token> -name edge-01
 ```
+
+## Automatic node location
+
+The Agent periodically calls the authenticated `GET /agent/v1/location` endpoint. The control plane observes the Agent's public source address, resolves it with the tenant GeoIP database, and the Agent includes the result in subsequent heartbeats. Heartbeats from older Agents are also located directly from their request source address, so server upgrades can improve existing nodes without waiting for every Agent to be replaced.
+
+Manual coordinates always take priority. Clearing a manual location returns the node to automatic Agent/GeoIP discovery. When WireMesh is behind a reverse proxy, preserve the client address with `X-Forwarded-For` or `X-Real-IP`; forwarded headers are only trusted when the direct connection comes from a private, loopback, or link-local address.
 
 ## Production boundaries
 

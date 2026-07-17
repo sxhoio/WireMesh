@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const agentVersion = "0.3.0"
+const agentVersion = "0.3.2"
 
 type enrollmentRequest struct {
 	Token        string            `json:"token"`
@@ -68,6 +68,7 @@ type heartbeatRequest struct {
 	Interfaces      string                     `json:"interfaces"`
 	WireGuard       []wireGuardInterfaceStatus `json:"wireguard"`
 	CollectionError string                     `json:"collection_error,omitempty"`
+	Location        *agentLocation             `json:"location,omitempty"`
 }
 
 func main() {
@@ -91,7 +92,6 @@ func main() {
 	if *server == "" {
 		log.Fatal("server URL is required")
 	}
-
 	statePath := filepath.Join(*stateDir, "identity.json")
 	state, err := loadState(statePath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -99,6 +99,17 @@ func main() {
 	}
 	if state.NodeID == "" && *nodeID != "" {
 		state = agentState{NodeID: *nodeID, Server: *server}
+	}
+	probeState := state
+	probeState.Server = *server
+	probeClient, probeErr := authenticatedClient(probeState, *useMTLS)
+	if probeErr != nil {
+		log.Printf("warning: configure control plane URL discovery transport: %v", probeErr)
+	} else if resolvedServer, resolveErr := resolveControlPlaneURL(*server, probeClient); resolveErr != nil {
+		log.Printf("warning: control plane URL discovery failed for %s: %v", *server, resolveErr)
+	} else if resolvedServer != *server {
+		log.Printf("control plane URL redirected from %s to %s; using the final URL for agent requests", *server, resolvedServer)
+		*server = resolvedServer
 	}
 	if state.NodeID == "" {
 		token, err := readEnrollmentToken(*enrollToken, *tokenFile)
@@ -108,7 +119,7 @@ func main() {
 		if strings.TrimSpace(*name) == "" {
 			log.Fatal("name is required for first-time enrollment")
 		}
-		state, err = enroll(*server, token, strings.TrimSpace(*name), parseLabels(*labelsText))
+		state, err = enroll(probeClient, *server, token, strings.TrimSpace(*name), parseLabels(*labelsText))
 		if err != nil {
 			log.Fatalf("enroll agent: %v", err)
 		}
@@ -133,9 +144,9 @@ func main() {
 		}
 	}
 
-	mtlsActive := *useMTLS && strings.HasPrefix(strings.ToLower(state.Server), "https://")
+	mtlsActive := *useMTLS && state.CertificatePEM != "" && state.PrivateKeyPEM != ""
 	if *useMTLS && !mtlsActive {
-		log.Printf("warning: --mtls has no effect for HTTP server %s; using X-Agent-ID development authentication", state.Server)
+		log.Printf("warning: --mtls requested but enrolled certificate material is unavailable; using the Agent identity header")
 	}
 	client, err := authenticatedClient(state, *useMTLS)
 	if err != nil {
@@ -148,10 +159,12 @@ func main() {
 	}
 	manager := wireGuardManager{runner: execCommandRunner{}, configDir: "/etc/wireguard"}
 	transportMode := "HTTP development identity"
-	if mtlsActive {
-		transportMode = "HTTPS mutual TLS"
+	if mtlsActive && strings.HasPrefix(strings.ToLower(state.Server), "https://") {
+		transportMode = "HTTPS mutual TLS with Agent identity header fallback"
+	} else if mtlsActive {
+		transportMode = "HTTP redirect with mutual TLS and Agent identity header fallback"
 	} else if strings.HasPrefix(strings.ToLower(state.Server), "https://") {
-		transportMode = "HTTPS without client certificate"
+		transportMode = "HTTPS Agent identity header"
 	}
 	log.Printf("agent started: node=%s server=%s transport=%s interfaces=%s report_interval=%s probe_interval=%s",
 		state.NodeID, state.Server, transportMode, *interfaces, reportInterval.String(), probeInterval.String())
@@ -160,7 +173,35 @@ func main() {
 	defer stop()
 	heartbeatAccepted := false
 	lastCollectionError := ""
+	lastLocationAttempt := time.Time{}
+	lastLocationError := ""
+	lastLocationSummary := ""
+	refreshLocation := func() {
+		if !lastLocationAttempt.IsZero() && time.Since(lastLocationAttempt) < 30*time.Minute {
+			return
+		}
+		lastLocationAttempt = time.Now()
+		location, locationErr := fetchAgentLocation(ctx, client, state)
+		if locationErr != nil {
+			message := locationErr.Error()
+			if message != lastLocationError {
+				log.Printf("location discovery warning: %s", message)
+			}
+			lastLocationError = message
+			return
+		}
+		if lastLocationError != "" {
+			log.Printf("location discovery recovered")
+		}
+		lastLocationError = ""
+		if summary := location.summary(); summary != lastLocationSummary {
+			log.Printf("location discovery completed: %s", summary)
+			lastLocationSummary = summary
+		}
+		baseHeartbeat.Location = &location
+	}
 	sendHeartbeat := func() {
+		refreshLocation()
 		heartbeat := baseHeartbeat
 		heartbeat.WireGuard, heartbeat.CollectionError = collectWireGuard(ctx, *interfaces, manager.runner)
 		if heartbeat.CollectionError != lastCollectionError {
@@ -274,7 +315,47 @@ func main() {
 	}
 }
 
-func enroll(server, token, name string, labels map[string]string) (agentState, error) {
+func resolveControlPlaneURL(server string, client *http.Client) (string, error) {
+	request, err := http.NewRequest(http.MethodGet, server+"/healthz", nil)
+	if err != nil {
+		return "", err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", responseError(response)
+	}
+	var health struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&health); err != nil {
+		return "", fmt.Errorf("decode health response: %w", err)
+	}
+	if health.Status != "ok" {
+		return "", fmt.Errorf("unexpected health status %q", health.Status)
+	}
+
+	finalURL := *response.Request.URL
+	if !strings.EqualFold(request.URL.Hostname(), finalURL.Hostname()) {
+		return "", fmt.Errorf("control plane redirected to a different host %q", finalURL.Hostname())
+	}
+	if strings.EqualFold(request.URL.Scheme, "https") && !strings.EqualFold(finalURL.Scheme, "https") {
+		return "", errors.New("control plane attempted to downgrade HTTPS to HTTP")
+	}
+	if !strings.HasSuffix(finalURL.Path, "/healthz") {
+		return "", fmt.Errorf("health check redirected to unexpected path %q", finalURL.Path)
+	}
+	finalURL.Path = strings.TrimSuffix(finalURL.Path, "/healthz")
+	finalURL.RawPath = ""
+	finalURL.RawQuery = ""
+	finalURL.Fragment = ""
+	return strings.TrimRight(finalURL.String(), "/"), nil
+}
+
+func enroll(client *http.Client, server, token, name string, labels map[string]string) (agentState, error) {
 	body, err := json.Marshal(enrollmentRequest{
 		Token: token, Name: name, OS: runtime.GOOS + "/" + runtime.GOARCH,
 		AgentVersion: agentVersion, Labels: labels,
@@ -282,7 +363,6 @@ func enroll(server, token, name string, labels map[string]string) (agentState, e
 	if err != nil {
 		return agentState{}, err
 	}
-	client := &http.Client{Timeout: 20 * time.Second}
 	response, err := client.Post(server+"/agent/v1/enroll", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return agentState{}, err
@@ -306,22 +386,25 @@ func enroll(server, token, name string, labels map[string]string) (agentState, e
 
 func authenticatedClient(state agentState, useMTLS bool) (*http.Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if useMTLS && strings.HasPrefix(strings.ToLower(state.Server), "https://") {
+	roots, err := x509.SystemCertPool()
+	if err != nil || roots == nil {
+		roots = x509.NewCertPool()
+	}
+	if state.CAPEM != "" {
+		roots.AppendCertsFromPEM([]byte(state.CAPEM))
+	}
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots}
+	if useMTLS && (state.CertificatePEM != "" || state.PrivateKeyPEM != "") {
+		if state.CertificatePEM == "" || state.PrivateKeyPEM == "" {
+			return nil, errors.New("incomplete enrolled client certificate material")
+		}
 		certificate, err := tls.X509KeyPair([]byte(state.CertificatePEM), []byte(state.PrivateKeyPEM))
 		if err != nil {
 			return nil, err
 		}
-		roots, err := x509.SystemCertPool()
-		if err != nil || roots == nil {
-			roots = x509.NewCertPool()
-		}
-		if state.CAPEM != "" {
-			roots.AppendCertsFromPEM([]byte(state.CAPEM))
-		}
-		transport.TLSClientConfig = &tls.Config{
-			MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate}, RootCAs: roots,
-		}
+		tlsConfig.Certificates = []tls.Certificate{certificate}
 	}
+	transport.TLSClientConfig = tlsConfig
 	return &http.Client{Timeout: 20 * time.Second, Transport: transport}, nil
 }
 
@@ -440,7 +523,7 @@ func pollConfig(ctx context.Context, client *http.Client, state agentState) (con
 }
 
 func setDevelopmentIdentity(request *http.Request, state agentState) {
-	if strings.HasPrefix(strings.ToLower(state.Server), "http://") {
+	if state.NodeID != "" {
 		request.Header.Set("X-Agent-ID", state.NodeID)
 	}
 }

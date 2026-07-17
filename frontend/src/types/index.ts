@@ -145,6 +145,9 @@ export interface NotificationConfig {
   atUserIdCount?: number
   botToken?: string
   botTokenConfigured?: boolean
+  useProxy?: boolean
+  proxyUrl?: string
+  proxyUrlConfigured?: boolean
   chatId?: string
   chatIdConfigured?: boolean
   threadId?: string

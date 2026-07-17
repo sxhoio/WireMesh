@@ -62,6 +62,9 @@ type NotificationConfig struct {
 	AtUserIDCount         int                  `json:"atUserIdCount,omitempty"`
 	BotToken              string               `json:"botToken,omitempty"`
 	BotTokenConfigured    bool                 `json:"botTokenConfigured,omitempty"`
+	UseProxy              bool                 `json:"useProxy,omitempty"`
+	ProxyURL              string               `json:"proxyUrl,omitempty"`
+	ProxyURLConfigured    bool                 `json:"proxyUrlConfigured,omitempty"`
 	ChatID                string               `json:"chatId,omitempty"`
 	ChatIDConfigured      bool                 `json:"chatIdConfigured,omitempty"`
 	ThreadID              string               `json:"threadId,omitempty"`
@@ -337,6 +340,10 @@ func mergeNotificationConfig(kind string, current, input NotificationConfig) Not
 	if input.BotToken != "" {
 		base.BotToken = strings.TrimSpace(input.BotToken)
 	}
+	base.UseProxy = input.UseProxy
+	if input.ProxyURL != "" {
+		base.ProxyURL = strings.TrimSpace(input.ProxyURL)
+	}
 	if input.ChatID != "" {
 		base.ChatID = strings.TrimSpace(input.ChatID)
 	}
@@ -443,6 +450,14 @@ func validateNotificationConfig(kind string, c NotificationConfig) error {
 		if c.ChatID == "" {
 			return errors.New("Telegram chatId is required")
 		}
+		if c.UseProxy && c.ProxyURL == "" {
+			return errors.New("Telegram proxyUrl is required when proxy is enabled")
+		}
+		if c.ProxyURL != "" {
+			if err := validateNotificationProxyURL(c.ProxyURL); err != nil {
+				return err
+			}
+		}
 		if c.ParseMode != "" && c.ParseMode != "HTML" && c.ParseMode != "MarkdownV2" {
 			return errors.New("Telegram parseMode is invalid")
 		}
@@ -474,6 +489,33 @@ func validateNotificationConfig(kind string, c NotificationConfig) error {
 		}
 		if c.Encryption != "none" && c.Encryption != "starttls" && c.Encryption != "tls" {
 			return errors.New("email encryption must be none, starttls, or tls")
+		}
+	}
+	return nil
+}
+
+func validateNotificationProxyURL(value string) error {
+	proxyURL, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || proxyURL.Hostname() == "" || proxyURL.Opaque != "" {
+		return errors.New("Telegram proxyUrl is invalid")
+	}
+	scheme := strings.ToLower(proxyURL.Scheme)
+	if scheme != "http" && scheme != "https" && scheme != "socks5" && scheme != "socks5h" {
+		return errors.New("Telegram proxyUrl must use http, https, socks5, or socks5h")
+	}
+	if proxyURL.RawQuery != "" || proxyURL.Fragment != "" || (proxyURL.Path != "" && proxyURL.Path != "/") {
+		return errors.New("Telegram proxyUrl must not contain a path, query, or fragment")
+	}
+	if port := proxyURL.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return errors.New("Telegram proxyUrl port is invalid")
+		}
+	}
+	if (scheme == "socks5" || scheme == "socks5h") && proxyURL.User != nil {
+		password, _ := proxyURL.User.Password()
+		if len(proxyURL.User.Username()) > 255 || len(password) > 255 {
+			return errors.New("Telegram SOCKS5 proxy credentials are too long")
 		}
 	}
 	return nil
@@ -585,6 +627,7 @@ func publicNotificationConfig(c NotificationConfig) NotificationConfig {
 	out.URLConfigured, out.URL = c.URL != "", ""
 	out.SecretConfigured, out.Secret = c.Secret != "", ""
 	out.BotTokenConfigured, out.BotToken = c.BotToken != "", ""
+	out.ProxyURLConfigured, out.ProxyURL = c.ProxyURL != "", ""
 	out.ChatIDConfigured, out.ChatID = c.ChatID != "", ""
 	out.PasswordConfigured, out.Password = c.Password != "", ""
 	out.RecipientsConfigured, out.RecipientCount, out.To = len(c.To) > 0, len(c.To), nil
@@ -701,7 +744,7 @@ func sendWebhook(ctx context.Context, c NotificationConfig, message string) erro
 		_, _ = mac.Write([]byte(message))
 		req.Header.Set("X-WireMesh-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	}
-	return doNotificationRequest(req, c.TimeoutSec, c.AllowPrivate)
+	return doNotificationRequest(req, c.TimeoutSec, c.AllowPrivate, "")
 }
 
 func sendDingTalk(ctx context.Context, c NotificationConfig, subject, message string) error {
@@ -780,10 +823,18 @@ func sendTelegram(ctx context.Context, c NotificationConfig, message string) err
 		payload["message_thread_id"] = id
 	}
 	target := "https://api.telegram.org/bot" + url.PathEscape(c.BotToken) + "/sendMessage"
-	return postJSONNotification(ctx, target, payload, c.TimeoutSec, false)
+	proxyURL := ""
+	if c.UseProxy {
+		proxyURL = c.ProxyURL
+	}
+	return postJSONNotificationWithProxy(ctx, target, payload, c.TimeoutSec, c.UseProxy, proxyURL)
 }
 
 func postJSONNotification(ctx context.Context, target string, payload any, timeout int, allowPrivate bool) error {
+	return postJSONNotificationWithProxy(ctx, target, payload, timeout, allowPrivate, "")
+}
+
+func postJSONNotificationWithProxy(ctx context.Context, target string, payload any, timeout int, allowPrivate bool, proxyValue string) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return errors.New("failed to encode notification payload")
@@ -793,10 +844,10 @@ func postJSONNotification(ctx context.Context, target string, payload any, timeo
 		return errors.New("failed to create notification request")
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return doNotificationRequest(req, timeout, allowPrivate)
+	return doNotificationRequest(req, timeout, allowPrivate, proxyValue)
 }
 
-func doNotificationRequest(req *http.Request, timeout int, allowPrivate bool) error {
+func doNotificationRequest(req *http.Request, timeout int, allowPrivate bool, proxyValue string) error {
 	if !allowPrivate {
 		addresses, err := net.LookupIP(req.URL.Hostname())
 		if err != nil {
@@ -808,7 +859,10 @@ func doNotificationRequest(req *http.Request, timeout int, allowPrivate bool) er
 			}
 		}
 	}
-	client := &http.Client{Timeout: time.Duration(timeout) * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	client, err := notificationHTTPClient(timeout, proxyValue)
+	if err != nil {
+		return err
+	}
 	response, err := client.Do(req)
 	if err != nil {
 		return errors.New("notification request failed")
@@ -819,6 +873,134 @@ func doNotificationRequest(req *http.Request, timeout int, allowPrivate bool) er
 		return fmt.Errorf("notification endpoint returned HTTP %d", response.StatusCode)
 	}
 	return nil
+}
+
+func notificationHTTPClient(timeout int, proxyValue string) (*http.Client, error) {
+	client := &http.Client{Timeout: time.Duration(timeout) * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	if proxyValue == "" {
+		return client, nil
+	}
+	if err := validateNotificationProxyURL(proxyValue); err != nil {
+		return nil, err
+	}
+	proxyURL, _ := url.Parse(proxyValue)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	switch strings.ToLower(proxyURL.Scheme) {
+	case "http", "https":
+		transport.Proxy = http.ProxyURL(proxyURL)
+	case "socks5", "socks5h":
+		transport.Proxy = nil
+		dialTimeout := time.Duration(timeout) * time.Second
+		transport.DialContext = func(ctx context.Context, _, address string) (net.Conn, error) {
+			return dialSOCKS5Proxy(ctx, proxyURL, address, dialTimeout)
+		}
+	}
+	client.Transport = transport
+	return client, nil
+}
+
+func dialSOCKS5Proxy(ctx context.Context, proxyURL *url.URL, targetAddress string, timeout time.Duration) (net.Conn, error) {
+	proxyAddress := proxyURL.Host
+	if proxyURL.Port() == "" {
+		proxyAddress = net.JoinHostPort(proxyURL.Hostname(), "1080")
+	}
+	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", proxyAddress)
+	if err != nil {
+		return nil, errors.New("Telegram proxy connection failed")
+	}
+	fail := func(message string) (net.Conn, error) {
+		_ = conn.Close()
+		return nil, errors.New(message)
+	}
+	deadline := time.Now().Add(timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+	methods := []byte{0x00}
+	if proxyURL.User != nil {
+		methods = append(methods, 0x02)
+	}
+	greeting := append([]byte{0x05, byte(len(methods))}, methods...)
+	if _, err := conn.Write(greeting); err != nil {
+		return fail("Telegram proxy negotiation failed")
+	}
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, reply); err != nil || reply[0] != 0x05 || reply[1] == 0xff {
+		return fail("Telegram proxy rejected authentication methods")
+	}
+	if reply[1] == 0x02 {
+		username := proxyURL.User.Username()
+		password, _ := proxyURL.User.Password()
+		auth := []byte{0x01, byte(len(username))}
+		auth = append(auth, username...)
+		auth = append(auth, byte(len(password)))
+		auth = append(auth, password...)
+		if _, err := conn.Write(auth); err != nil {
+			return fail("Telegram proxy authentication failed")
+		}
+		if _, err := io.ReadFull(conn, reply); err != nil || reply[0] != 0x01 || reply[1] != 0x00 {
+			return fail("Telegram proxy authentication failed")
+		}
+	} else if reply[1] != 0x00 {
+		return fail("Telegram proxy selected an unsupported authentication method")
+	}
+	host, portText, err := net.SplitHostPort(targetAddress)
+	if err != nil {
+		return fail("Telegram proxy target address is invalid")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return fail("Telegram proxy target port is invalid")
+	}
+	request := []byte{0x05, 0x01, 0x00}
+	if ip := net.ParseIP(host); ip != nil {
+		if ipv4 := ip.To4(); ipv4 != nil {
+			request = append(request, 0x01)
+			request = append(request, ipv4...)
+		} else {
+			request = append(request, 0x04)
+			request = append(request, ip.To16()...)
+		}
+	} else {
+		if len(host) > 255 {
+			return fail("Telegram proxy target host is too long")
+		}
+		request = append(request, 0x03, byte(len(host)))
+		request = append(request, host...)
+	}
+	request = append(request, byte(port>>8), byte(port))
+	if _, err := conn.Write(request); err != nil {
+		return fail("Telegram proxy connect request failed")
+	}
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(conn, header); err != nil || header[0] != 0x05 {
+		return fail("Telegram proxy returned an invalid response")
+	}
+	if header[1] != 0x00 {
+		return fail(fmt.Sprintf("Telegram proxy connect failed with code %d", header[1]))
+	}
+	addressLength := 0
+	switch header[3] {
+	case 0x01:
+		addressLength = 4
+	case 0x03:
+		length := []byte{0}
+		if _, err := io.ReadFull(conn, length); err != nil {
+			return fail("Telegram proxy returned an invalid address")
+		}
+		addressLength = int(length[0])
+	case 0x04:
+		addressLength = 16
+	default:
+		return fail("Telegram proxy returned an unsupported address type")
+	}
+	if _, err := io.ReadFull(conn, make([]byte, addressLength+2)); err != nil {
+		return fail("Telegram proxy returned an incomplete response")
+	}
+	_ = conn.SetDeadline(time.Time{})
+	return conn, nil
 }
 
 func sendEmail(ctx context.Context, c NotificationConfig, subject, body string) error {

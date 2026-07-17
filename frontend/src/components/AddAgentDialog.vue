@@ -29,21 +29,16 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'"'"'`)}'`
 }
 
-const installScript = computed(() => enrollmentToken.value
-  ? `# WireMesh Agent 一键安装（常驻 systemd 服务）
-# 在目标 Linux 主机上以具备 sudo 权限的用户执行
-curl -fsSL ${serverUrl.value}/agent/install.sh | sudo bash -s -- \\
-  --server ${shellQuote(serverUrl.value)} \\
-  --token ${shellQuote(enrollmentToken.value)} \\
-  --project ${shellQuote(form.projectId)} \\
-  --network ${shellQuote(form.networkId)} \\
-  --name ${shellQuote(form.name.trim() || '<节点名称>')} \\
-  --labels ${shellQuote(form.labels.trim())} \\
-  --interfaces auto \\
-  --report-interval ${app.settings.collect.reportSec}s \\
-  --probe-interval ${app.settings.collect.probeSec}s \\
-  --mtls`
-  : '# 请先填写节点信息，然后生成一次性接入命令')
+const installScript = computed(() => {
+  if (!enrollmentToken.value) return '# 请先填写节点信息，然后生成一次性接入命令'
+  const args = [
+    `  --token ${shellQuote(enrollmentToken.value)}`,
+    `  --name ${shellQuote(form.name.trim() || '<节点名称>')}`,
+  ]
+  if (form.labels.trim()) args.push(`  --labels ${shellQuote(form.labels.trim())}`)
+  const continuation = ` ${String.fromCharCode(92)}\n`
+  return `curl -fsSL ${serverUrl.value}/agent/install.sh | sudo bash -s --${continuation}${args.join(continuation)}`
+})
 
 const manualCommand = computed(() => enrollmentToken.value
   ? `# 手动下载 Linux amd64 Agent（arm64 主机请将 arch 改为 arm64）

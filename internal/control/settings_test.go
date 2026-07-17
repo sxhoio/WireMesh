@@ -256,7 +256,7 @@ func TestNotificationChannelSpecificConfigAndTemplate(t *testing.T) {
 		{"dingtalk", NotificationConfig{URL: "https://oapi.dingtalk.com/robot/send?access_token=private", Secret: "dingtalk-secret", MessageType: "markdown", TimeoutSec: 8}, "dingtalk-secret"},
 		{"wecom", NotificationConfig{URL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=private", MessageType: "text", AtMobiles: []string{"13800138000"}, AtUserIDs: []string{"operator"}, TimeoutSec: 8}, "private"},
 		{"feishu", NotificationConfig{URL: "https://open.feishu.cn/open-apis/bot/v2/hook/private", Secret: "feishu-secret", MessageType: "post", TimeoutSec: 8}, "feishu-secret"},
-		{"telegram", NotificationConfig{BotToken: "123456:telegram-secret", ChatID: "-100123456", ThreadID: "42", ParseMode: "HTML", TimeoutSec: 8}, "telegram-secret"},
+		{"telegram", NotificationConfig{BotToken: "123456:telegram-secret", ChatID: "-100123456", ThreadID: "42", ParseMode: "HTML", TimeoutSec: 8, UseProxy: true, ProxyURL: "socks5://proxy-user:proxy-password@127.0.0.1:1080"}, "telegram-secret"},
 		{"email", NotificationConfig{SMTPHost: "smtp.example.com", SMTPPort: 587, Username: "wiremesh", Password: "smtp-secret", FromAddress: "wiremesh@example.com", FromName: "WireMesh", To: []string{"ops@example.com"}, CC: []string{"manager@example.com"}, Encryption: "starttls", TimeoutSec: 10}, "smtp-secret"},
 	}
 	for _, test := range tests {
@@ -266,7 +266,7 @@ func TestNotificationChannelSpecificConfigAndTemplate(t *testing.T) {
 			if response.Code != http.StatusCreated {
 				t.Fatalf("create %s: %d %s", test.kind, response.Code, response.Body.String())
 			}
-			if strings.Contains(response.Body.String(), test.secret) || (test.config.URL != "" && strings.Contains(response.Body.String(), test.config.URL)) || strings.Contains(response.Body.String(), "ops@example.com") || strings.Contains(response.Body.String(), "13800138000") || strings.Contains(response.Body.String(), "operator") {
+			if strings.Contains(response.Body.String(), test.secret) || (test.config.URL != "" && strings.Contains(response.Body.String(), test.config.URL)) || (test.config.ProxyURL != "" && strings.Contains(response.Body.String(), test.config.ProxyURL)) || strings.Contains(response.Body.String(), "proxy-password") || strings.Contains(response.Body.String(), "ops@example.com") || strings.Contains(response.Body.String(), "13800138000") || strings.Contains(response.Body.String(), "operator") {
 				t.Fatalf("%s secret or destination leaked: %s", test.kind, response.Body.String())
 			}
 			var public notificationChannelResponse
@@ -286,8 +286,8 @@ func TestNotificationChannelSpecificConfigAndTemplate(t *testing.T) {
 			}
 			switch test.kind {
 			case "telegram":
-				if envelope.Config.BotToken != test.config.BotToken || !public.Config.BotTokenConfigured || public.Config.BotToken != "" {
-					t.Fatalf("telegram token handling invalid: %#v %#v", envelope.Config, public.Config)
+				if envelope.Config.BotToken != test.config.BotToken || envelope.Config.ProxyURL != test.config.ProxyURL || !envelope.Config.UseProxy || !public.Config.BotTokenConfigured || public.Config.BotToken != "" || !public.Config.ProxyURLConfigured || public.Config.ProxyURL != "" || !public.Config.UseProxy {
+					t.Fatalf("telegram token or proxy handling invalid: %#v %#v", envelope.Config, public.Config)
 				}
 			case "email":
 				if envelope.Config.Password != test.config.Password || len(envelope.Config.To) != 1 || !public.Config.PasswordConfigured || !public.Config.RecipientsConfigured || len(public.Config.To) != 0 {
@@ -303,6 +303,26 @@ func TestNotificationChannelSpecificConfigAndTemplate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidateNotificationProxyURL(t *testing.T) {
+	valid := []string{
+		"http://127.0.0.1:7890",
+		"https://proxy.example.com:8443",
+		"socks5://user:password@127.0.0.1:1080",
+		"socks5h://proxy.example.com:1080",
+	}
+	for _, value := range valid {
+		if err := validateNotificationProxyURL(value); err != nil {
+			t.Fatalf("valid proxy %q rejected: %v", value, err)
+		}
+	}
+	invalid := []string{"", "ftp://proxy.example.com:21", "http://", "socks5://proxy.example.com:70000", "http://proxy.example.com/path"}
+	for _, value := range invalid {
+		if err := validateNotificationProxyURL(value); err == nil {
+			t.Fatalf("invalid proxy %q accepted", value)
+		}
 	}
 }
 

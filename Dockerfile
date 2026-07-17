@@ -39,11 +39,13 @@ COPY --from=server-build --chown=nonroot:nonroot /out/wiremesh-server /app/wirem
 COPY --from=server-build --chown=nonroot:nonroot /out/wiremesh-agent-linux-amd64 /app/wiremesh-agent-linux-amd64
 COPY --from=server-build --chown=nonroot:nonroot /out/wiremesh-agent-linux-arm64 /app/wiremesh-agent-linux-arm64
 COPY --from=frontend-build --chown=nonroot:nonroot /src/frontend/dist/ /app/web/
+COPY --chown=nonroot:nonroot GeoLite2-City.mmdb /app/GeoLite2-City.mmdb
 COPY --from=server-build --chown=nonroot:nonroot /out/data/ /data/
 ENV WIREMESH_ADDR=:8080 \
     WIREMESH_WEB_DIR=/app/web \
     WIREMESH_AGENT_BINARY=/app/wiremesh-agent-{os}-{arch} \
-    WIREMESH_DATABASE_CONFIG=/data/wiremesh-database.json
+    WIREMESH_DATABASE_CONFIG=/data/wiremesh-database.json \
+    WIREMESH_GEOIP_DB=/app/GeoLite2-City.mmdb
 VOLUME ["/data"]
 EXPOSE 8080
 ENTRYPOINT ["/app/wiremesh-server"]

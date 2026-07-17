@@ -6,34 +6,41 @@ import { useMeshStore } from '../stores/mesh'
 const props = defineProps<{ agent: Agent }>()
 const emit = defineEmits<{ close: [] }>()
 const mesh = useMeshStore()
+const reportedInterface = props.agent.interfaces.find((iface) => iface.tunnelIP && iface.tunnelIP === props.agent.address)
+  || (props.agent.interfaceSelector && props.agent.interfaceSelector !== 'auto'
+    ? props.agent.interfaces.find((iface) => props.agent.interfaceSelector.split(',').map((value) => value.trim()).includes(iface.name))
+    : undefined)
+  || props.agent.interfaces.find((iface) => iface.up && iface.tunnelIP)
+  || props.agent.interfaces.find((iface) => iface.tunnelIP)
+  || props.agent.interfaces.find((iface) => iface.up)
+  || props.agent.interfaces[0]
 const saving = ref(false)
 const validationError = ref('')
 const form = reactive({
   name: props.agent.name,
-  address: props.agent.address,
+  address: reportedInterface?.tunnelIP || props.agent.address,
   endpoint: props.agent.publicIP,
-  listenPort: props.agent.listenPort || 51820,
-  mtu: props.agent.mtu || 1420,
+  listenPort: reportedInterface?.listenPort || props.agent.listenPort || 51820,
+  mtu: reportedInterface?.mtu || props.agent.mtu || 1420,
   interfaceSelector: props.agent.interfaceSelector || 'auto',
   enabled: props.agent.enabled,
   role: (props.agent.labels.find((value) => value.startsWith('wiremesh.role='))?.split('=')[1] || 'mesh') as 'mesh' | 'hub' | 'spoke',
   manualLocation: props.agent.locationSource === 'manual',
-  locationName: props.agent.locationSource === 'manual' ? props.agent.city : '',
-  latitude: props.agent.locationSource === 'manual' && Number.isFinite(props.agent.lat) ? String(props.agent.lat) : '',
-  longitude: props.agent.locationSource === 'manual' && Number.isFinite(props.agent.lng) ? String(props.agent.lng) : '',
+  locationName: props.agent.city || '',
 })
 const network = computed(() => mesh.networkById(props.agent.networkId))
+const hasCurrentLocation = computed(() => Number.isFinite(props.agent.lat) && Number.isFinite(props.agent.lng))
+const currentLocationSource = computed(() => {
+  if (props.agent.locationSource === 'manual') return '手动位置'
+  if (props.agent.locationSource === 'agent') return '客户端自动定位'
+  if (props.agent.locationSource === 'geoip') return 'GeoIP 自动定位'
+  return '等待自动定位'
+})
 
 async function save() {
   validationError.value = ''
-  const latitude = Number(form.latitude)
-  const longitude = Number(form.longitude)
-  if (form.manualLocation && (form.latitude.trim() === '' || !Number.isFinite(latitude) || latitude < -90 || latitude > 90)) {
-    validationError.value = '纬度必须是 -90 到 90 之间的有效数字'
-    return
-  }
-  if (form.manualLocation && (form.longitude.trim() === '' || !Number.isFinite(longitude) || longitude < -180 || longitude > 180)) {
-    validationError.value = '经度必须是 -180 到 180 之间的有效数字'
+  if (form.manualLocation && form.locationName.trim() === '') {
+    validationError.value = '请输入位置名称'
     return
   }
   saving.value = true
@@ -47,8 +54,6 @@ async function save() {
     interface_selector: form.interfaceSelector.trim() || 'auto', labels,
     location_source: form.manualLocation ? 'manual' : '',
     location_name: form.manualLocation ? form.locationName.trim() : '',
-    latitude: form.manualLocation ? latitude : 0,
-    longitude: form.manualLocation ? longitude : 0,
   })
   saving.value = false
   if (ok) emit('close')
@@ -59,13 +64,13 @@ async function save() {
   <div class="fixed inset-0 z-[80] flex items-center justify-center bg-black/65 p-4" @click.self="emit('close')">
     <form class="panel flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden" @submit.prevent="save">
       <div class="flex shrink-0 items-start justify-between border-b border-ink-700 px-6 py-5">
-        <div><h3 class="text-base font-semibold text-white">编辑节点配置</h3><p class="mt-1 text-xs text-slate-500">WireGuard 参数发布后下发到 Agent；手动地理位置保存后立即用于地图展示。</p></div>
+        <div><h3 class="text-base font-semibold text-white">编辑节点配置</h3><p class="mt-1 text-xs text-slate-500">WireGuard 参数发布后下发到 Agent；地理位置默认由客户端与服务器 GeoIP 自动维护。</p></div>
         <button type="button" class="text-slate-500 hover:text-white" @click="emit('close')">✕</button>
       </div>
       <div class="grid min-h-0 flex-1 gap-4 overflow-y-auto p-6 sm:grid-cols-2">
         <label class="space-y-1.5"><span class="text-xs text-slate-400">节点名称</span><input v-model="form.name" required class="input w-full" /></label>
         <label class="space-y-1.5"><span class="text-xs text-slate-400">所属网络</span><input :value="network?.name + ' · ' + network?.cidr" disabled class="input w-full opacity-60" /></label>
-        <label class="space-y-1.5"><span class="text-xs text-slate-400">WireGuard 内网 IP</span><input v-model="form.address" required class="input w-full font-mono" placeholder="10.0.0.2" /><span class="block text-[11px] text-slate-600">必须位于 {{ network?.cidr }} 中且不能与其他节点重复</span></label>
+        <label class="space-y-1.5"><span class="text-xs text-slate-400">WireGuard 内网 IP</span><input v-model="form.address" required class="input w-full font-mono" placeholder="10.0.0.2" /><span class="block text-[11px] text-slate-600"><template v-if="reportedInterface?.tunnelIP">来自 Agent 最近上报的 {{ reportedInterface.name }}；</template>必须位于 {{ network?.cidr }} 中且不能与其他节点重复</span></label>
         <label class="space-y-1.5"><span class="text-xs text-slate-400">公网 Endpoint</span><input v-model="form.endpoint" class="input w-full font-mono" placeholder="host.example.com:51820" /></label>
         <label class="space-y-1.5"><span class="text-xs text-slate-400">监听端口</span><input v-model.number="form.listenPort" type="number" min="1" max="65535" required class="input w-full" /></label>
         <label class="space-y-1.5"><span class="text-xs text-slate-400">MTU</span><input v-model.number="form.mtu" type="number" min="576" max="9000" required class="input w-full" /></label>
@@ -73,15 +78,18 @@ async function save() {
         <label class="space-y-1.5"><span class="text-xs text-slate-400">拓扑角色</span><select v-model="form.role" class="input w-full"><option value="mesh">Mesh</option><option value="hub">Hub</option><option value="spoke">Spoke</option></select></label>
 
         <section class="space-y-4 rounded-xl border border-cyan-500/20 bg-cyan-500/[0.04] p-4 sm:col-span-2">
+          <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-ink-900/70 px-3 py-2.5 ring-1 ring-ink-700/80">
+            <div><p class="text-[11px] text-slate-500">当前定位状态</p><p class="mt-0.5 text-sm text-slate-200">{{ currentLocationSource }}<span v-if="props.agent.city" class="text-slate-500"> · {{ props.agent.city }}</span></p></div>
+            <p v-if="hasCurrentLocation" class="font-mono text-xs text-slate-400">{{ props.agent.lat.toFixed(4) }}, {{ props.agent.lng.toFixed(4) }}</p>
+            <p v-else class="text-xs text-amber-300">等待客户端上报公网 IP 或服务器 GeoIP 解析</p>
+          </div>
           <label class="flex cursor-pointer items-center justify-between gap-4">
-            <span><span class="block text-sm font-medium text-slate-200">手动设置地理位置</span><span class="mt-1 block text-[11px] leading-relaxed text-slate-500">当 Agent 或 GeoIP 无法取得有效位置时启用。保存后节点会立即出现在地图上。</span></span>
+            <span><span class="block text-sm font-medium text-slate-200">使用手动位置覆盖自动定位</span><span class="mt-1 block text-[11px] leading-relaxed text-slate-500">通常无需开启。关闭手动位置后，Agent 后续心跳会自动恢复客户端/GeoIP 定位。</span></span>
             <input v-model="form.manualLocation" type="checkbox" class="h-4 w-4 shrink-0 accent-cyan-500" />
           </label>
-          <div v-if="form.manualLocation" class="grid gap-4 border-t border-ink-700/80 pt-4 sm:grid-cols-3">
-            <label class="space-y-1.5 sm:col-span-3"><span class="text-xs text-slate-400">位置名称</span><input v-model="form.locationName" class="input w-full" placeholder="例如：中国 上海" /><span class="block text-[11px] text-slate-600">用于节点详情和地图位置说明，不影响坐标计算。</span></label>
-            <label class="space-y-1.5"><span class="text-xs text-slate-400">纬度 Latitude</span><input v-model.trim="form.latitude" required inputmode="decimal" class="input w-full font-mono" placeholder="31.2304" /></label>
-            <label class="space-y-1.5"><span class="text-xs text-slate-400">经度 Longitude</span><input v-model.trim="form.longitude" required inputmode="decimal" class="input w-full font-mono" placeholder="121.4737" /></label>
-            <div class="flex items-end"><p class="pb-2 text-[11px] leading-relaxed text-slate-500">请输入 WGS84 坐标。中国大陆底图显示时会自动执行坐标转换。</p></div>
+          <div v-if="form.manualLocation" class="border-t border-ink-700/80 pt-4">
+            <label class="space-y-1.5"><span class="text-xs text-slate-400">位置名称</span><input v-model="form.locationName" required class="input w-full" list="wiremesh-location-presets" placeholder="例如：上海、广州、东京、新加坡" /><span class="block text-[11px] leading-relaxed text-slate-600">只需填写位置名称，系统会自动匹配预设中心坐标；无法识别时优先沿用节点当前坐标，否则使用默认坐标。</span></label>
+            <datalist id="wiremesh-location-presets"><option value="上海" /><option value="广州" /><option value="北京" /><option value="深圳" /><option value="成都" /><option value="重庆" /><option value="杭州" /><option value="香港" /><option value="台北" /><option value="东京" /><option value="新加坡" /><option value="法兰克福" /><option value="伦敦" /><option value="纽约" /><option value="悉尼" /></datalist>
           </div>
         </section>
 

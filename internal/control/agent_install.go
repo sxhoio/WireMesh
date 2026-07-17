@@ -11,7 +11,7 @@ import (
 const agentInstallerScript = `#!/usr/bin/env bash
 set -euo pipefail
 
-SERVER=""
+SERVER=__WIREMESH_SERVER__
 TOKEN=""
 PROJECT=""
 NETWORK=""
@@ -20,7 +20,7 @@ LABELS=""
 INTERFACES="auto"
 REPORT_INTERVAL="10s"
 PROBE_INTERVAL="15s"
-USE_MTLS="false"
+USE_MTLS=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -34,6 +34,7 @@ while [ "$#" -gt 0 ]; do
     --report-interval) REPORT_INTERVAL="$2"; shift 2 ;;
     --probe-interval) PROBE_INTERVAL="$2"; shift 2 ;;
     --mtls) USE_MTLS="true"; shift ;;
+    --no-mtls) USE_MTLS="false"; shift ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
@@ -42,14 +43,24 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "请以 root 运行安装脚本（推荐通过 sudo bash 执行）" >&2
   exit 1
 fi
-if [ -z "$SERVER" ] || [ -z "$TOKEN" ] || [ -z "$NAME" ]; then
-  echo "缺少必要参数：--server、--token 和 --name" >&2
+if [ -z "$TOKEN" ] || [ -z "$NAME" ]; then
+  echo "缺少必要参数：--token 和 --name" >&2
+  exit 2
+fi
+if [ -z "$SERVER" ]; then
+  echo "安装脚本无法确定 WireMesh 服务地址，请通过 --server 手动指定" >&2
   exit 2
 fi
 case "$SERVER$NAME$LABELS$PROJECT$NETWORK" in
   *$'\n'*|*$'\r'*) echo "参数中不能包含换行符" >&2; exit 2 ;;
 esac
 SERVER="${SERVER%/}"
+if [ -z "$USE_MTLS" ]; then
+  case "$SERVER" in
+    https://*) USE_MTLS="true" ;;
+    *) USE_MTLS="false" ;;
+  esac
+fi
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$OS" in
@@ -150,13 +161,67 @@ systemctl daemon-reload
 systemctl enable --now wiremesh-agent.service
 
 echo "WireMesh Agent 已安装并启动。"
+echo "Agent 将自动上报公网 IP，并由 WireMesh GeoIP 数据库解析地理位置。"
 echo "查看状态: systemctl status wiremesh-agent --no-pager"
 `
 
-func (a *App) agentInstallScript(w http.ResponseWriter, _ *http.Request) {
+func (a *App) agentInstallScript(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = io.WriteString(w, agentInstallerScript)
+	script := strings.Replace(agentInstallerScript, "__WIREMESH_SERVER__", shellSingleQuote(agentInstallerServerURL(r)), 1)
+	_, _ = io.WriteString(w, script)
+}
+
+func agentInstallerServerURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwardedScheme := agentInstallerForwardedScheme(r); forwardedScheme != "" {
+		scheme = forwardedScheme
+	}
+	host := firstForwardedHeaderValue(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(r.Host)
+	}
+	host = strings.ReplaceAll(strings.ReplaceAll(host, "\r", ""), "\n", "")
+	return scheme + "://" + host
+}
+
+func agentInstallerForwardedScheme(r *http.Request) string {
+	if value := strings.ToLower(firstForwardedHeaderValue(r.Header.Get("X-Forwarded-Proto"))); value == "http" || value == "https" {
+		return value
+	}
+	forwarded := firstForwardedHeaderValue(r.Header.Get("Forwarded"))
+	for _, part := range strings.Split(forwarded, ";") {
+		key, value, found := strings.Cut(strings.TrimSpace(part), "=")
+		if found && strings.EqualFold(key, "proto") {
+			value = strings.ToLower(strings.Trim(strings.TrimSpace(value), "\""))
+			if value == "http" || value == "https" {
+				return value
+			}
+		}
+	}
+	for _, header := range []string{"X-Forwarded-Ssl", "Front-End-Https"} {
+		if value := strings.ToLower(firstForwardedHeaderValue(r.Header.Get(header))); value == "on" || value == "true" || value == "1" {
+			return "https"
+		}
+	}
+	if firstForwardedHeaderValue(r.Header.Get("X-Forwarded-Port")) == "443" {
+		return "https"
+	}
+	return ""
+}
+
+func firstForwardedHeaderValue(value string) string {
+	if comma := strings.IndexByte(value, ','); comma >= 0 {
+		value = value[:comma]
+	}
+	return strings.TrimSpace(value)
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func (a *App) agentDownload(w http.ResponseWriter, r *http.Request) {
