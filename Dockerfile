@@ -24,16 +24,26 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux go build \
     -trimpath -ldflags="-s -w -buildid=" \
     -o /out/wiremesh-server ./cmd/wiremesh-server
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -trimpath -ldflags="-s -w -buildid=" \
+    -o /out/wiremesh-agent-linux-amd64 ./cmd/wiremesh-agent && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+    -trimpath -ldflags="-s -w -buildid=" \
+    -o /out/wiremesh-agent-linux-arm64 ./cmd/wiremesh-agent
 
 FROM gcr.io/distroless/static-debian12:nonroot AS runtime
-WORKDIR /app
+WORKDIR /data
 COPY --from=server-build --chown=nonroot:nonroot /out/wiremesh-server /app/wiremesh-server
+COPY --from=server-build --chown=nonroot:nonroot /out/wiremesh-agent-linux-amd64 /app/wiremesh-agent-linux-amd64
+COPY --from=server-build --chown=nonroot:nonroot /out/wiremesh-agent-linux-arm64 /app/wiremesh-agent-linux-arm64
 COPY --from=frontend-build --chown=nonroot:nonroot /src/frontend/dist/ /app/web/
 COPY --from=server-build --chown=nonroot:nonroot /out/data/ /data/
 ENV WIREMESH_ADDR=:8080 \
     WIREMESH_WEB_DIR=/app/web \
-    WIREMESH_DATABASE_DRIVER=sqlite \
-    WIREMESH_DATABASE_DSN="file:/data/wiremesh.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+    WIREMESH_AGENT_BINARY=/app/wiremesh-agent-{os}-{arch} \
+    WIREMESH_DATABASE_CONFIG=/data/wiremesh-database.json
 VOLUME ["/data"]
 EXPOSE 8080
 ENTRYPOINT ["/app/wiremesh-server"]

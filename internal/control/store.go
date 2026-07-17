@@ -3,6 +3,7 @@ package control
 import (
 	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -41,27 +42,42 @@ type Store interface {
 	ListAudit(string) []AuditEvent
 	GetUserByEmail(string) (User, error)
 	GetUser(string) (User, error)
+	UpdateUserLastLogin(string, time.Time) error
 	HasUsers() (bool, error)
 	CreateInitialAdmin(User) error
+	ListUsers(string) []User
+	CreateUser(User) error
+	GetSettings(string) (SystemSettings, error)
+	UpsertSettings(SystemSettings) error
+	ListNotificationChannels(string) []NotificationChannel
+	GetNotificationChannel(string, string) (NotificationChannel, error)
+	CreateNotificationChannel(NotificationChannel) error
+	UpdateNotificationChannel(NotificationChannel) error
+	DeleteNotificationChannel(string, string) error
+	AddNotificationLog(NotificationLog) error
+	ListNotificationLogs(string) []NotificationLog
 }
 
 type MemoryStore struct {
-	mu          sync.RWMutex
-	projects    map[string]Project
-	networks    map[string]Network
-	nodes       map[string]Node
-	peers       map[string]PeerRelation
-	revisions   map[string][]ConfigRevision
-	deliveries  map[string]ConfigDelivery
-	enrollments map[string]EnrollmentToken
-	identities  map[string]AgentIdentity
-	audits      []AuditEvent
-	users       map[string]User
+	mu               sync.RWMutex
+	projects         map[string]Project
+	networks         map[string]Network
+	nodes            map[string]Node
+	peers            map[string]PeerRelation
+	revisions        map[string][]ConfigRevision
+	deliveries       map[string]ConfigDelivery
+	enrollments      map[string]EnrollmentToken
+	identities       map[string]AgentIdentity
+	audits           []AuditEvent
+	users            map[string]User
+	settings         map[string]SystemSettings
+	notifications    map[string]NotificationChannel
+	notificationLogs []NotificationLog
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		projects: map[string]Project{}, networks: map[string]Network{}, nodes: map[string]Node{}, peers: map[string]PeerRelation{}, revisions: map[string][]ConfigRevision{}, deliveries: map[string]ConfigDelivery{}, enrollments: map[string]EnrollmentToken{}, identities: map[string]AgentIdentity{}, users: map[string]User{},
+		projects: map[string]Project{}, networks: map[string]Network{}, nodes: map[string]Node{}, peers: map[string]PeerRelation{}, revisions: map[string][]ConfigRevision{}, deliveries: map[string]ConfigDelivery{}, enrollments: map[string]EnrollmentToken{}, identities: map[string]AgentIdentity{}, users: map[string]User{}, settings: map[string]SystemSettings{}, notifications: map[string]NotificationChannel{},
 	}
 }
 func (s *MemoryStore) CreateProject(v Project) error {
@@ -275,7 +291,7 @@ func (s *MemoryStore) GetUserByEmail(email string) (User, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, u := range s.users {
-		if u.Email == email {
+		if strings.EqualFold(u.Email, email) {
 			return u, nil
 		}
 	}
@@ -290,6 +306,17 @@ func (s *MemoryStore) GetUser(id string) (User, error) {
 	}
 	return u, nil
 }
+func (s *MemoryStore) UpdateUserLastLogin(id string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[id]
+	if !ok {
+		return errNotFound
+	}
+	u.LastLoginAt = at.UTC()
+	s.users[id] = u
+	return nil
+}
 func (s *MemoryStore) HasUsers() (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -303,4 +330,105 @@ func (s *MemoryStore) CreateInitialAdmin(user User) error {
 	}
 	s.users[user.ID] = user
 	return nil
+}
+
+func (s *MemoryStore) ListUsers(tenant string) (out []User) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, v := range s.users {
+		if v.TenantID == tenant {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return
+}
+func (s *MemoryStore) CreateUser(v User) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, current := range s.users {
+		if strings.EqualFold(current.Email, v.Email) {
+			return errors.New("email already exists")
+		}
+	}
+	s.users[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) GetSettings(tenant string) (SystemSettings, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.settings[tenant]
+	if !ok {
+		return SystemSettings{}, errNotFound
+	}
+	return v, nil
+}
+func (s *MemoryStore) UpsertSettings(v SystemSettings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settings[v.TenantID] = v
+	return nil
+}
+func (s *MemoryStore) ListNotificationChannels(tenant string) (out []NotificationChannel) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, v := range s.notifications {
+		if v.TenantID == tenant {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return
+}
+func (s *MemoryStore) GetNotificationChannel(tenant, id string) (NotificationChannel, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.notifications[id]
+	if !ok || v.TenantID != tenant {
+		return NotificationChannel{}, errNotFound
+	}
+	return v, nil
+}
+func (s *MemoryStore) CreateNotificationChannel(v NotificationChannel) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notifications[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) UpdateNotificationChannel(v NotificationChannel) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.notifications[v.ID]
+	if !ok || current.TenantID != v.TenantID {
+		return errNotFound
+	}
+	s.notifications[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) DeleteNotificationChannel(tenant, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.notifications[id]
+	if !ok || v.TenantID != tenant {
+		return errNotFound
+	}
+	delete(s.notifications, id)
+	return nil
+}
+func (s *MemoryStore) AddNotificationLog(v NotificationLog) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notificationLogs = append(s.notificationLogs, v)
+	return nil
+}
+func (s *MemoryStore) ListNotificationLogs(tenant string) (out []NotificationLog) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, v := range s.notificationLogs {
+		if v.TenantID == tenant {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
@@ -9,8 +9,44 @@ const router = useRouter()
 const app = useAppStore()
 const mesh = useMeshStore()
 
+type ToastKind = 'error' | 'success'
+interface ToastMessage { id: number; kind: ToastKind; message: string }
+
+const toasts = ref<ToastMessage[]>([])
+const toastTimers = new Map<number, number>()
+let nextToastId = 1
+
+function dismissToast(id: number) {
+  const timer = toastTimers.get(id)
+  if (timer) window.clearTimeout(timer)
+  toastTimers.delete(id)
+  toasts.value = toasts.value.filter((toast) => toast.id !== id)
+}
+
+function pushToast(message: string, kind: ToastKind) {
+  const value = message.trim()
+  if (!value) return
+  const id = nextToastId++
+  toasts.value.push({ id, kind, message: value })
+  toastTimers.set(id, window.setTimeout(() => dismissToast(id), 5000))
+}
+
+watch(
+  () => ({ error: mesh.error, notice: mesh.notice }),
+  ({ error, notice }) => {
+    if (error) pushToast(error, 'error')
+    else if (notice) pushToast(notice, 'success')
+    if (error || notice) mesh.clearMessage()
+  },
+  { flush: 'post', immediate: true },
+)
+
 onMounted(() => mesh.startPolling())
-onUnmounted(() => mesh.stopPolling())
+onUnmounted(() => {
+  mesh.stopPolling()
+  toastTimers.forEach((timer) => window.clearTimeout(timer))
+  toastTimers.clear()
+})
 
 const nav = [
   { name: 'home', label: '首页', path: '/', icon: 'M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418' },
@@ -126,18 +162,14 @@ async function doPublish() {
         <div class="ml-auto flex items-center gap-2 text-xs text-slate-400">
           <span class="chip bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30">
             <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"></span>
-            Agent {{ mesh.stats.agentOnline }}/{{ mesh.stats.agentTotal }} 在线
+            节点 {{ mesh.stats.agentOnline }}/{{ mesh.stats.agentTotal }} 在线
           </span>
           <span v-if="mesh.stats.linkBad" class="chip bg-red-500/10 text-red-400 ring-1 ring-red-500/30">异常链路 {{ mesh.stats.linkBad }}</span>
-          <span v-if="mesh.stats.tempCount" class="chip bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30">临时 Peer {{ mesh.stats.tempCount }}</span>
+          <span v-if="mesh.stats.tempCount" class="chip bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30">临时对等端 {{ mesh.stats.tempCount }}</span>
         </div>
       </header>
 
       <main class="relative min-h-0 flex-1 overflow-y-auto p-6">
-        <div v-if="mesh.error || mesh.notice" class="mb-4 flex items-start justify-between gap-3 rounded-xl px-4 py-3 text-sm ring-1" :class="mesh.error ? 'bg-red-500/10 text-red-300 ring-red-500/30' : 'bg-emerald-500/10 text-emerald-300 ring-emerald-500/30'">
-          <span>{{ mesh.error || mesh.notice }}</span>
-          <button class="shrink-0 text-current opacity-70 hover:opacity-100" @click="mesh.clearMessage()">关闭</button>
-        </div>
         <router-view />
 
         <!-- 待发布配置条 -->
@@ -157,6 +189,32 @@ async function doPublish() {
         </transition>
       </main>
     </div>
+
+    <TransitionGroup
+      name="toast"
+      tag="div"
+      class="pointer-events-none fixed bottom-5 left-4 right-4 z-[80] flex flex-col items-end gap-2.5 sm:left-auto sm:w-[24rem]"
+    >
+      <button
+        v-for="toast in toasts"
+        :key="toast.id"
+        type="button"
+        class="pointer-events-auto flex w-full items-start gap-3 rounded-2xl border px-4 py-3.5 text-left shadow-2xl backdrop-blur-xl transition hover:-translate-y-0.5"
+        :class="toast.kind === 'error' ? 'border-red-500/35 bg-ink-900/95 text-red-200 shadow-red-950/30' : 'border-emerald-500/35 bg-ink-900/95 text-emerald-200 shadow-emerald-950/30'"
+        title="点击关闭"
+        @click="dismissToast(toast.id)"
+      >
+        <span class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ring-1" :class="toast.kind === 'error' ? 'bg-red-500/15 text-red-300 ring-red-500/35' : 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/35'">
+          <svg v-if="toast.kind === 'error'" viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.3 3.8L2.5 17.3A2 2 0 004.2 20h15.6a2 2 0 001.7-2.7L13.7 3.8a2 2 0 00-3.4 0z" /></svg>
+          <svg v-else viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12.5l4.2 4.2L19 7" /></svg>
+        </span>
+        <span class="min-w-0 flex-1">
+          <span class="block text-xs font-semibold">{{ toast.kind === 'error' ? '操作失败' : '操作成功' }}</span>
+          <span class="mt-1 block break-words text-xs leading-5 text-slate-300">{{ toast.message }}</span>
+          <span class="mt-1.5 block text-[10px] text-slate-600">点击后关闭</span>
+        </span>
+      </button>
+    </TransitionGroup>
 
     <!-- 发布确认 -->
     <div v-if="showPublishConfirm" class="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/70 p-4 backdrop-blur-sm" @click.self="showPublishConfirm = false">
@@ -181,5 +239,18 @@ async function doPublish() {
 .slide-up-leave-to {
   opacity: 0;
   transform: translateY(12px);
+}
+.toast-enter-active,
+.toast-leave-active,
+.toast-move {
+  transition: opacity 0.24s ease, transform 0.24s ease;
+}
+.toast-enter-from {
+  opacity: 0;
+  transform: translate(18px, 14px) scale(0.97);
+}
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(-28px) scale(0.97);
 }
 </style>

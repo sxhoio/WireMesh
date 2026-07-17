@@ -26,11 +26,11 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. When the database has no users, the onboarding page asks you to create the initial administrator. Then sign in, create a project and network, add nodes, and publish a configuration version.
+Open `http://localhost:5173`. On first run, the onboarding page asks you to choose SQLite, MySQL, or PostgreSQL, verifies the connection, creates the required tables, and then creates the initial administrator. Then sign in, create a project and network, add nodes, and publish a configuration version.
 
 ## Database
 
-SQLite is the default and requires no external service. It creates `wiremesh.db` in the current directory:
+Without database environment variables, the first-run wizard defaults to SQLite and stores `wiremesh.db` beside `wiremesh-database.json`:
 
 ```powershell
 go run ./cmd/wiremesh-server
@@ -44,7 +44,7 @@ $env:WIREMESH_DATABASE_DSN = 'postgres://wiremesh:password@localhost:5432/wireme
 go run ./cmd/wiremesh-server
 ```
 
-`WIREMESH_DATABASE_DRIVER` accepts `sqlite` or `postgres`. `WIREMESH_DATABASE_DSN` is optional for SQLite and required for PostgreSQL.
+`WIREMESH_DATABASE_DRIVER` accepts `sqlite`, `mysql`, or `postgres`. When `WIREMESH_DATABASE_DRIVER` / `WIREMESH_DATABASE_DSN` are omitted, the first-run web wizard lets an administrator choose SQLite, MySQL, or PostgreSQL, tests the connection, creates the schema, and stores the encrypted connection configuration in `wiremesh-database.json`. Set `WIREMESH_DATABASE_CONFIG` to change that bootstrap file path. Environment variables continue to take precedence and disable database changes from the web wizard.
 
 WireMesh does not seed an administrator. `GET /api/v1/setup/status` reports whether any user exists, and the onboarding page calls the one-time `POST /api/v1/setup` endpoint to create the initial tenant and administrator. The endpoint returns `409 Conflict` after the first user exists.
 
@@ -57,7 +57,7 @@ docker build -t wiremesh:local .
 docker run --rm -p 8080:8080 -v wiremesh-data:/data -e WIREMESH_MASTER_KEY=replace-with-a-secret wiremesh:local
 ```
 
-Open `http://localhost:8080`. The image stores its default SQLite database in the `/data` volume. For production, inject `WIREMESH_MASTER_KEY` from a secret manager and mount the TLS certificate/key files referenced by `WIREMESH_TLS_CERT_FILE` and `WIREMESH_TLS_KEY_FILE`.
+Open `http://localhost:8080`. The image starts the database-selection wizard and stores its encrypted database configuration and optional SQLite file in the `/data` volume. For production, inject `WIREMESH_MASTER_KEY` from a secret manager and mount the TLS certificate/key files referenced by `WIREMESH_TLS_CERT_FILE` and `WIREMESH_TLS_KEY_FILE`.
 
 To exercise enrollment, create an Agent token in the Nodes view and run:
 
@@ -67,4 +67,4 @@ go run ./cmd/wiremesh-agent -server http://localhost:8080 -enroll-token <token> 
 
 ## Production boundaries
 
-SQLite and PostgreSQL are supported through the same SQL repository and automatic schema migrations. Setting `WIREMESH_TLS_CERT_FILE` and `WIREMESH_TLS_KEY_FILE` starts HTTPS and verifies presented Agent certificates; plain HTTP retains an `X-Agent-ID` development adapter and must not be exposed. The certificate authority is currently generated at process start, so CA persistence and KMS integration are still required before production use.
+SQLite, MySQL, and PostgreSQL are supported through the same SQL repository and automatic schema creation. Setting `WIREMESH_TLS_CERT_FILE` and `WIREMESH_TLS_KEY_FILE` starts HTTPS and verifies presented Agent certificates; plain HTTP retains an `X-Agent-ID` development adapter and must not be exposed. The certificate authority is currently generated at process start, so CA persistence and KMS integration are still required before production use.

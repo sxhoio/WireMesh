@@ -12,6 +12,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+var errLoginPersistence = errors.New("failed to record login time")
+
 type claims struct {
 	Subject, TenantID string
 	Role              Role
@@ -40,6 +42,10 @@ func (a *Authenticator) Login(email, password string) (string, User, error) {
 	}
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
 		return "", User{}, errors.New("invalid credentials")
+	}
+	user.LastLoginAt = time.Now().UTC()
+	if err := a.store.UpdateUserLastLogin(user.ID, user.LastLoginAt); err != nil {
+		return "", User{}, errLoginPersistence
 	}
 	return a.issue(user), user, nil
 }

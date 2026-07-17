@@ -8,7 +8,7 @@ import { useAppStore } from './app'
 
 let pollingTimer: number | undefined
 
-function timestamp(value?: string) {
+function timestamp(value?: string | null) {
   if (!value || value.startsWith('0001-')) return 0
   const parsed = Date.parse(value)
   return Number.isFinite(parsed) ? parsed : 0
@@ -16,6 +16,10 @@ function timestamp(value?: string) {
 function topology(value: ApiNetwork['topology']): Network['topology'] {
   return value === 'full_mesh' ? 'full-mesh' : value === 'hub_spoke' ? 'hub-spoke' : 'custom'
 }
+function apiTopology(value: Network['topology']): ApiNetwork['topology'] {
+  return value === 'full-mesh' ? 'full_mesh' : value === 'hub-spoke' ? 'hub_spoke' : 'custom'
+}
+
 function endpointPort(value: string) {
   const match = value.match(/:(\d+)$/)
   return match ? Number(match[1]) : 0
@@ -159,9 +163,12 @@ export const useMeshStore = defineStore('mesh', {
       this.loading = true
       this.error = ''
       try {
-        const [projects, nodes, deliveries] = await Promise.all([api.projects(), api.nodes(), api.deliveries()])
+        const [projects, nodes, deliveries, geoip, channels, notificationLogs, users, audits] = await Promise.all([
+          api.projects(), api.nodes(), api.deliveries(), api.geoIPStatus(), api.notificationChannels(), api.notificationLogs(),
+          app.isAdmin ? api.users() : Promise.resolve(app.user ? [app.user] : []),
+          app.isAdmin ? api.audit() : Promise.resolve([]),
+        ])
         const networkGroups = await Promise.all(projects.map((project) => api.networks(project.id)))
-        const audits = app.isAdmin ? await api.audit() : []
         this.projects = projects.map((project) => ({ id: project.id, name: project.name, desc: project.description || '' }))
         this.networks = networkGroups.flat().map((network) => ({ id: network.id, projectId: network.project_id, name: network.name, cidr: network.cidr, topology: topology(network.topology), customPairs: [] }))
         this.agents = nodes.map((node) => toAgent(node, app.settings.statusRules.agentOfflineSec))
@@ -170,9 +177,10 @@ export const useMeshStore = defineStore('mesh', {
         this.audit = auditEntries(audits)
         this.feed = feedEntries(audits, deliveries)
         this.revisions = revisionsFrom(deliveries, this.agents, app.username)
-        this.users = app.user ? [{ id: app.user.id, name: app.user.name, email: app.user.email, role: app.user.role, active: true, lastLogin: 0 }] : []
-        this.notifyChannels = []
-        this.notifyLogs = []
+        this.users = users.map((user) => ({ id: user.id, name: user.name, email: user.email, role: user.role, active: true, lastLogin: timestamp(user.last_login_at) }))
+        this.geoip = { dbPath: geoip.dbPath || '', version: geoip.version || '', updatedAt: timestamp(geoip.updatedAt), entryCount: geoip.entryCount || 0 }
+        this.notifyChannels = channels.map((channel) => ({ id: channel.id, name: channel.name, type: channel.type, config: channel.config, template: channel.template, subjectTemplate: channel.subjectTemplate, enabled: channel.enabled, agents: channel.agents, createdAt: timestamp(channel.createdAt) }))
+        this.notifyLogs = notificationLogs.map((log) => ({ id: log.id, time: timestamp(log.createdAt), channelName: log.channelName, channelType: log.channelType, agentName: log.agentName, message: log.message, status: log.status }))
         this.pendingChanges = []
         if (this.selectedProjectId !== 'all' && !this.projects.some((project) => project.id === this.selectedProjectId)) this.selectedProjectId = 'all'
         if (this.selectedNetworkId !== 'all' && !this.networks.some((network) => network.id === this.selectedNetworkId)) this.selectedNetworkId = 'all'
@@ -197,6 +205,28 @@ export const useMeshStore = defineStore('mesh', {
       } catch (reason) { this.error = reason instanceof Error ? reason.message : '发布失败' }
     },
     async createEnrollment(projectId: string, networkId: string, ttlMinutes = 30) { return api.createEnrollment(projectId, networkId, ttlMinutes) },
+    async addProject(payload: { name: string; desc: string }, _user?: string) {
+      try {
+        await api.createProject({ name: payload.name, description: payload.desc })
+        await this.refresh()
+        this.notice = '项目已创建'
+        return true
+      } catch (reason) {
+        this.error = reason instanceof Error ? reason.message : '创建项目失败'
+        return false
+      }
+    },
+    async addNetwork(payload: { projectId: string; name: string; cidr: string; topology: Network['topology'] }, _user?: string) {
+      try {
+        await api.createNetwork({ project_id: payload.projectId, name: payload.name, cidr: payload.cidr, dns: useAppStore().settings.netDefaults.dns, topology: apiTopology(payload.topology) })
+        await this.refresh()
+        this.notice = '网络已创建'
+        return true
+      } catch (reason) {
+        this.error = reason instanceof Error ? reason.message : '创建网络失败'
+        return false
+      }
+    },
     async setCustomPairs(networkId: string, pairs: [string, string][], _user?: string) {
       try {
         for (const [sourceIface, targetIface] of pairs) {
@@ -216,13 +246,70 @@ export const useMeshStore = defineStore('mesh', {
     discardPending(_user?: string) { this.pendingChanges = [] },
     adoptTempPeer(_id: string, _target: { projectId: string; networkId: string; agentId: string }, _user?: string) { this.unsupported('纳入临时 Peer') },
     removeTempPeer(_id: string, _user?: string) { this.unsupported('清理临时 Peer') },
-    reloadGeoIP(_user?: string) { this.unsupported('GeoIP 重载') },
-    addAgentFromScript(_payload: unknown) { this.unsupported('浏览器内直接创建 Agent') },
+    async reloadGeoIP(_user?: string) {
+      this.error = ''
+      try {
+        const value = await api.reloadGeoIP()
+        this.geoip = { dbPath: value.dbPath || '', version: value.version || '', updatedAt: timestamp(value.updatedAt), entryCount: value.entryCount || 0 }
+        this.notice = 'GeoIP 数据库已重新加载'
+        return true
+      } catch (reason) { this.error = reason instanceof Error ? reason.message : 'GeoIP 重载失败'; return false }
+    },
+    async updateGeoDbPath(path: string, _user?: string) {
+      this.error = ''
+      try {
+        const value = await api.updateGeoIP(path)
+        this.geoip = { dbPath: value.dbPath || '', version: value.version || '', updatedAt: timestamp(value.updatedAt), entryCount: value.entryCount || 0 }
+        this.notice = 'GeoIP 数据库路径已保存并加载'
+        return true
+      } catch (reason) { this.error = reason instanceof Error ? reason.message : 'GeoIP 数据库加载失败'; return false }
+    },
+    async lookupGeoIP(ip: string) {
+      this.error = ''
+      try { return await api.lookupGeoIP(ip) }
+      catch (reason) { this.error = reason instanceof Error ? reason.message : 'GeoIP 查询失败'; return null }
+    },
     pushEvent(_kind: FeedEvent['kind'], _message: string) {},
     pushAudit(_user: string, _action: string, _detail: string) {},
-    addNotifyChannel(_payload: Omit<NotifyChannel, 'id' | 'createdAt'>, _user?: string) { this.unsupported('通知渠道') },
-    updateNotifyChannel(_id: string, _patch: Partial<NotifyChannel>, _user?: string) { this.unsupported('通知渠道') },
-    removeNotifyChannel(_id: string, _user?: string) { this.unsupported('通知渠道') },
-    testNotifyChannel(_id: string, _user?: string) { this.unsupported('通知渠道测试') },
+    async addNotifyChannel(payload: Omit<NotifyChannel, 'id' | 'createdAt'>, _user?: string) {
+      this.error = ''
+      try {
+        await api.createNotificationChannel(payload)
+        await this.refresh()
+        this.notice = '通知渠道已添加'
+        return true
+      } catch (reason) { this.error = reason instanceof Error ? reason.message : '添加通知渠道失败'; return false }
+    },
+    async updateNotifyChannel(id: string, patch: Partial<NotifyChannel>, _user?: string) {
+      const current = this.notifyChannels.find((channel) => channel.id === id)
+      if (!current) { this.error = '通知渠道不存在'; return false }
+      const value = { ...current, ...patch }
+      this.error = ''
+      try {
+        await api.updateNotificationChannel(id, { name: value.name, type: value.type, config: value.config, template: value.template, subjectTemplate: value.subjectTemplate, enabled: value.enabled, agents: value.agents })
+        await this.refresh()
+        this.notice = '通知渠道已更新'
+        return true
+      } catch (reason) { this.error = reason instanceof Error ? reason.message : '更新通知渠道失败'; return false }
+    },
+    async removeNotifyChannel(id: string, _user?: string) {
+      this.error = ''
+      try { await api.deleteNotificationChannel(id); await this.refresh(); this.notice = '通知渠道已删除'; return true }
+      catch (reason) { this.error = reason instanceof Error ? reason.message : '删除通知渠道失败'; return false }
+    },
+    async testNotifyChannel(id: string, _user?: string) {
+      this.error = ''
+      try { await api.testNotificationChannel(id); await this.refresh(); this.notice = '测试通知已发送'; return true }
+      catch (reason) {
+        this.error = reason instanceof Error ? reason.message : '通知渠道测试失败'
+        try { this.notifyLogs = (await api.notificationLogs()).map((log) => ({ id: log.id, time: timestamp(log.createdAt), channelName: log.channelName, channelType: log.channelType, agentName: log.agentName, message: log.message, status: log.status })) } catch {}
+        return false
+      }
+    },
+    async addUser(payload: { name: string; email: string; password: string; role: UserAccount['role'] }) {
+      this.error = ''
+      try { await api.createUser(payload); await this.refresh(); this.notice = '用户已创建'; return true }
+      catch (reason) { this.error = reason instanceof Error ? reason.message : '创建用户失败'; return false }
+    },
   },
 })

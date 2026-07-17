@@ -1,6 +1,7 @@
 package control
 
 import (
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -72,6 +73,24 @@ func TestSQLitePersistsLoginAndControlPlaneState(t *testing.T) {
 	if err := store.AddAudit(AuditEvent{ID: "audit_sql", TenantID: admin.TenantID, ActorID: admin.ID, Action: "test.persist", ResourceType: "node", ResourceID: node.ID, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
+	settings := defaultSystemSettings(admin.TenantID)
+	settings.DashboardName = "Persistent Settings"
+	settings.UpdatedAt = now
+	if err := store.UpsertSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	target, err := app.box.Encrypt([]byte("https://hooks.example.com/test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel := NotificationChannel{ID: "channel_sql", TenantID: admin.TenantID, Name: "Persistent Webhook", Type: "webhook", Target: target, Enabled: true, AllAgents: true, CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateNotificationChannel(channel); err != nil {
+		t.Fatal(err)
+	}
+	notificationLog := NotificationLog{ID: "notification_log_sql", TenantID: admin.TenantID, ChannelID: channel.ID, ChannelName: channel.Name, ChannelType: channel.Type, AgentName: node.Name, Message: "persistent notification", Status: "success", CreatedAt: now}
+	if err := store.AddNotificationLog(notificationLog); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -85,8 +104,16 @@ func TestSQLitePersistsLoginAndControlPlaneState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := app.auth.Login("sqlite-admin@example.com", "strong-password"); err != nil {
+	_, loggedInUser, err := app.auth.Login("sqlite-admin@example.com", "strong-password")
+	if err != nil {
 		t.Fatalf("login did not survive restart: %v", err)
+	}
+	if loggedInUser.LastLoginAt.IsZero() {
+		t.Fatal("login time was not returned after restart")
+	}
+	persistedUser, err := store.GetUser(admin.ID)
+	if err != nil || !persistedUser.LastLoginAt.Equal(loggedInUser.LastLoginAt) {
+		t.Fatalf("login time was not persisted after restart: %#v %v", persistedUser, err)
 	}
 	if projects := store.ListProjects(admin.TenantID); len(projects) != 1 || projects[0].ID != project.ID {
 		t.Fatalf("projects not persisted: %#v", projects)
@@ -107,6 +134,97 @@ func TestSQLitePersistsLoginAndControlPlaneState(t *testing.T) {
 	}
 	if events := store.ListAudit(admin.TenantID); len(events) < 2 {
 		t.Fatalf("audit events not persisted: %#v", events)
+	}
+	persistedSettings, err := store.GetSettings(admin.TenantID)
+	if err != nil || persistedSettings.DashboardName != settings.DashboardName {
+		t.Fatalf("settings not persisted: %#v %v", persistedSettings, err)
+	}
+	channels := store.ListNotificationChannels(admin.TenantID)
+	if len(channels) != 1 || channels[0].ID != channel.ID {
+		t.Fatalf("notification channel not persisted: %#v", channels)
+	}
+	plaintext, err := app.box.Decrypt(channels[0].Target)
+	if err != nil || string(plaintext) != "https://hooks.example.com/test" {
+		t.Fatalf("notification target not persisted or decryptable: %q %v", plaintext, err)
+	}
+	logs := store.ListNotificationLogs(admin.TenantID)
+	if len(logs) != 1 || logs[0].ID != notificationLog.ID || logs[0].Message != notificationLog.Message {
+		t.Fatalf("notification log not persisted: %#v", logs)
+	}
+}
+
+func TestSQLiteMigratesExistingUsersLastLoginColumn(t *testing.T) {
+	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "legacy-wiremesh.db"))
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE users (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL, created_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	passwordHash, err := hashPassword("strong-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	if _, err := db.Exec(`INSERT INTO users (id, tenant_id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "legacy-user", "legacy-tenant", "legacy@example.com", passwordHash, "Legacy User", string(RoleAdmin), timeText(createdAt)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenSQLStore("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	defer store.Close()
+	var count int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'last_login_at'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("last_login_at column was not migrated: count=%d err=%v", count, err)
+	}
+	loginAt := time.Now().UTC()
+	if err := store.UpdateUserLastLogin("legacy-user", loginAt); err != nil {
+		t.Fatalf("update migrated login time: %v", err)
+	}
+	user, err := store.GetUser("legacy-user")
+	if err != nil || !user.LastLoginAt.Equal(loginAt) {
+		t.Fatalf("read migrated login time: %#v %v", user, err)
+	}
+}
+
+func TestSQLiteMigratesExistingSystemSettingsGeoIPColumn(t *testing.T) {
+	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "legacy-settings.db"))
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE system_settings (tenant_id TEXT PRIMARY KEY, settings_json TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	updatedAt := time.Now().UTC().Add(-time.Hour)
+	if _, err := db.Exec(`INSERT INTO system_settings (tenant_id, settings_json, updated_at) VALUES (?, ?, ?)`, "legacy-tenant", `{"dashboardName":"Legacy"}`, timeText(updatedAt)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenSQLStore("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open legacy settings database: %v", err)
+	}
+	defer store.Close()
+	var count int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('system_settings') WHERE name = 'geoip_db_path'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("geoip_db_path column was not migrated: count=%d err=%v", count, err)
+	}
+	settings, err := store.GetSettings("legacy-tenant")
+	if err != nil {
+		t.Fatalf("read migrated settings: %v", err)
+	}
+	if settings.GeoIPDBPath != "" || settings.DashboardName != "Legacy" {
+		t.Fatalf("unexpected migrated settings: %#v", settings)
 	}
 }
 

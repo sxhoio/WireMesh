@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "driver": "sqlite",
+  "secret": {
+    "WrappedDEK": "fu0n/JG0Zidz2deLltD77+UvyqFyMlhgTGR7VnK0xZRv3T13baGepcv+WOaLnXeN",
+    "DEKNonce": "FoqKRLcL0pftXD+6",
+    "Ciphertext": "Xcd7cUNpcwLZr7g9tRPfmigzMaefFulZLRyX4jlWGinFdVGIHsflEZQ/rkysB5o9V+QA2i/I8z3XmXFI14TB",
+    "DataNonce": "jRCl/2R+6geC6ZVm"
+  }
+}

@@ -132,73 +132,79 @@ function openCustomPeer(a: Agent) {
       </div>
     </div>
 
-    <!-- Agent 列表 -->
-    <div class="space-y-3">
-      <div v-for="a in filtered" :key="a.id" class="panel overflow-hidden">
-        <!-- 行：表格网格，所有行共享固定列宽 -->
-        <div class="grid items-center gap-x-4 px-5 py-4 [grid-template-columns:1.25rem_0.625rem_minmax(9rem,11rem)_minmax(0,1fr)_minmax(4.25rem,max-content)_2.25rem] md:[grid-template-columns:1.25rem_0.625rem_minmax(8rem,10rem)_6rem_7rem_minmax(0,1fr)_minmax(4.25rem,max-content)_2.25rem] lg:[grid-template-columns:1.25rem_0.625rem_minmax(8rem,10rem)_6rem_7rem_minmax(11rem,1fr)_minmax(4.25rem,max-content)_2.25rem] xl:[grid-template-columns:1.25rem_0.625rem_minmax(8rem,10rem)_6rem_7.5rem_7.5rem_7rem_5.5rem_minmax(0,1fr)_minmax(4.25rem,max-content)_2.25rem]">
-          <button class="text-slate-500 transition hover:text-slate-300" @click="toggleExpand(a.id)">
-            <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4 transition-transform" :class="{ 'rotate-90': expanded.has(a.id) }" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" /></svg>
-          </button>
-          <span class="h-2.5 w-2.5 rounded-full" :class="!a.enabled ? 'bg-slate-600' : a.status === 'online' ? 'bg-emerald-400 shadow-glow' : 'bg-slate-500'"></span>
+    <!-- Agent 列表：table-fixed 固定列宽，所有行严格对齐 -->
+    <div class="panel overflow-hidden">
+      <table class="w-full table-fixed border-collapse text-left">
+        <thead>
+          <tr class="text-[11px] font-medium text-slate-500">
+            <th class="w-10 px-2 py-3"></th>
+            <th class="w-7 px-1 py-3"></th>
+            <th class="w-36 px-2 py-3">节点</th>
+            <th class="hidden w-24 px-2 py-3 md:table-cell">接口</th>
+            <th class="hidden w-28 px-2 py-3 md:table-cell">隧道 IP</th>
+            <th class="hidden w-28 px-2 py-3 2xl:table-cell">公网 Endpoint</th>
+            <th class="hidden w-24 px-2 py-3 2xl:table-cell">速率 (Mbps)</th>
+            <th class="hidden w-20 px-2 py-3 2xl:table-cell">Peer</th>
+            <th class="hidden w-56 px-2 py-3 xl:table-cell">版本 · 上报</th>
+            <th class="w-28 px-2 py-3 text-right">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template v-for="a in filtered" :key="a.id">
+            <tr class="border-t border-ink-700/70 transition hover:bg-ink-850/40">
+              <td class="px-2 py-3.5 text-center">
+                <button class="text-slate-500 transition hover:text-slate-300" @click="toggleExpand(a.id)">
+                  <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4 transition-transform" :class="{ 'rotate-90': expanded.has(a.id) }" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" /></svg>
+                </button>
+              </td>
+              <td class="px-1 py-3.5">
+                <span class="block h-2.5 w-2.5 rounded-full" :class="!a.enabled ? 'bg-slate-600' : a.status === 'online' ? 'bg-emerald-400 shadow-glow' : 'bg-slate-500'"></span>
+              </td>
+              <td class="px-2 py-3.5">
+                <p class="truncate font-medium leading-snug text-white">{{ a.name }}</p>
+                <p class="truncate text-xs text-slate-500">{{ a.hostname }}</p>
+                <p class="mt-0.5 truncate font-mono text-[11px] text-slate-600 md:hidden">{{ a.interfaces.map((i) => i.name).join(', ') }} · {{ a.interfaces.map((i) => i.tunnelIP).join(', ') }}</p>
+              </td>
+              <td class="hidden px-2 py-3.5 md:table-cell">
+                <p class="flex items-center gap-1 whitespace-nowrap text-sm text-slate-300">
+                  <span class="truncate font-mono text-cyan-300">{{ a.interfaces.map((i) => i.name).join(', ') }}</span>
+                  <span v-if="a.interfaces.length > 1" class="chip shrink-0 bg-cyan-500/10 text-cyan-300 ring-1 ring-cyan-500/30">{{ a.interfaces.length }}</span>
+                </p>
+              </td>
+              <td class="hidden px-2 py-3.5 md:table-cell">
+                <p class="truncate font-mono text-xs text-slate-300">{{ a.interfaces.map((i) => i.tunnelIP).join(', ') }}</p>
+              </td>
+              <td class="hidden px-2 py-3.5 2xl:table-cell">
+                <p class="truncate font-mono text-xs text-slate-300">{{ a.publicIP }}</p>
+              </td>
+              <td class="hidden whitespace-nowrap px-2 py-3.5 font-mono text-xs text-slate-300 2xl:table-cell">↓{{ a.rxMbps }} ↑{{ a.txMbps }}</td>
+              <td class="hidden whitespace-nowrap px-2 py-3.5 text-xs text-slate-300 2xl:table-cell">
+                {{ peersOf(a.interfaces[0]).length + a.interfaces.slice(1).reduce((n, i) => n + peersOf(i).length, 0) }}
+                <span v-if="peerErrorCount(a)" class="ml-1 text-red-400">({{ peerErrorCount(a) }} 异常)</span>
+              </td>
+              <td class="hidden px-2 py-3.5 xl:table-cell">
+                <p class="truncate text-xs leading-relaxed text-slate-500" :title="`${a.version} · ${a.osInfo}`">{{ a.version }} · {{ a.osInfo }}</p>
+                <p class="truncate text-xs text-slate-500">最后上报 {{ ago(a.lastSeen) }}<span v-if="!a.enabled" class="ml-1.5 text-amber-400">已停用</span></p>
+              </td>
+              <td class="px-2 py-3.5">
+                <div class="flex items-center justify-end gap-1.5">
+                  <button
+                    class="chip w-11 justify-center transition"
+                    :class="a.enabled ? 'bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/30 hover:bg-amber-500/10 hover:text-amber-400' : 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30'"
+                    @click="mesh.toggleAgentEnabled(a.id, app.username)"
+                  >
+                    {{ a.enabled ? '停用' : '启用' }}
+                  </button>
+                  <button class="rounded-lg p-2 text-slate-500 transition hover:bg-ink-800 hover:text-slate-200" @click="openMenu($event, a.id)">
+                    <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z" /></svg>
+                  </button>
+                </div>
+              </td>
+            </tr>
 
-          <div class="min-w-0">
-            <p class="truncate font-medium leading-snug text-white">{{ a.name }}</p>
-            <p class="truncate text-xs text-slate-500">{{ a.hostname }}</p>
-          </div>
-
-          <div class="hidden min-w-0 md:block">
-            <p class="text-xs text-slate-500">接口</p>
-            <p class="flex items-center gap-1 whitespace-nowrap text-sm text-slate-300">
-              <span class="truncate font-mono text-cyan-300">{{ a.interfaces.map((i) => i.name).join(', ') }}</span>
-              <span v-if="a.interfaces.length > 1" class="chip bg-cyan-500/10 text-cyan-300 ring-1 ring-cyan-500/30">{{ a.interfaces.length }}</span>
-            </p>
-          </div>
-
-          <div class="hidden min-w-0 md:block">
-            <p class="text-xs text-slate-500">隧道 IP</p>
-            <p class="truncate font-mono text-xs text-slate-300">{{ a.interfaces.map((i) => i.tunnelIP).join(', ') }}</p>
-          </div>
-
-          <div class="hidden min-w-0 xl:block">
-            <p class="text-xs text-slate-500">公网 Endpoint</p>
-            <p class="truncate font-mono text-xs text-slate-300">{{ a.publicIP }}</p>
-          </div>
-
-          <div class="hidden min-w-0 xl:block">
-            <p class="whitespace-nowrap text-xs text-slate-500">速率 (Mbps)</p>
-            <p class="whitespace-nowrap font-mono text-xs text-slate-300">↓{{ a.rxMbps }} ↑{{ a.txMbps }}</p>
-          </div>
-
-          <div class="hidden min-w-0 xl:block">
-            <p class="text-xs text-slate-500">Peer</p>
-            <p class="whitespace-nowrap text-xs text-slate-300">
-              {{ peersOf(a.interfaces[0]).length + a.interfaces.slice(1).reduce((n, i) => n + peersOf(i).length, 0) }}
-              <span v-if="peerErrorCount(a)" class="ml-1 text-red-400">({{ peerErrorCount(a) }} 异常)</span>
-            </p>
-          </div>
-
-          <div class="hidden min-w-0 lg:block">
-            <p class="truncate text-xs leading-relaxed text-slate-500" :title="`${a.version} · ${a.osInfo}`">{{ a.version }} · {{ a.osInfo }}</p>
-            <p class="truncate text-xs text-slate-500">最后上报 {{ ago(a.lastSeen) }}<span v-if="!a.enabled" class="ml-1.5 text-amber-400">已停用</span></p>
-          </div>
-
-          <div class="relative flex items-center justify-end gap-1.5">
-            <button
-              class="chip w-11 justify-center transition"
-              :class="a.enabled ? 'bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/30 hover:bg-amber-500/10 hover:text-amber-400' : 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30'"
-              @click="mesh.toggleAgentEnabled(a.id, app.username)"
-            >
-              {{ a.enabled ? '停用' : '启用' }}
-            </button>
-            <button class="rounded-lg p-2 text-slate-500 transition hover:bg-ink-800 hover:text-slate-200" @click="openMenu($event, a.id)">
-              <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z" /></svg>
-            </button>
-          </div>
-        </div>
-
-        <!-- 展开：接口详情 -->
-        <div v-if="expanded.has(a.id)" class="border-t border-ink-700 bg-ink-950/40 px-4 py-4 sm:px-5">
+            <!-- 展开：接口详情 -->
+            <tr v-if="expanded.has(a.id)" class="border-t border-ink-700/70 bg-ink-950/40">
+              <td colspan="10" class="px-4 py-4 sm:px-5">
           <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
             <div v-for="iface in a.interfaces" :key="iface.id" class="rounded-xl bg-ink-900/70 p-4 ring-1 ring-ink-600">
               <div class="flex items-center justify-between">
@@ -251,10 +257,14 @@ function openCustomPeer(a: Agent) {
               </div>
             </div>
           </div>
-        </div>
-      </div>
-
-      <p v-if="!filtered.length" class="panel py-12 text-center text-sm text-slate-500">没有匹配的 Agent</p>
+              </td>
+            </tr>
+          </template>
+          <tr v-if="!filtered.length">
+            <td colspan="10" class="py-12 text-center text-sm text-slate-500">没有匹配的 Agent</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
 
     <AddAgentDialog v-if="showAdd" @close="showAdd = false" />

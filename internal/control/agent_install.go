@@ -1,0 +1,153 @@
+package control
+
+import (
+	"io"
+	"net/http"
+	"os"
+	"runtime"
+	"strings"
+)
+
+const agentInstallerScript = `#!/usr/bin/env bash
+set -euo pipefail
+
+SERVER=""
+TOKEN=""
+PROJECT=""
+NETWORK=""
+NAME=""
+LABELS=""
+INTERFACES="auto"
+REPORT_INTERVAL="10s"
+PROBE_INTERVAL="15s"
+USE_MTLS="false"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --server) SERVER="$2"; shift 2 ;;
+    --token) TOKEN="$2"; shift 2 ;;
+    --project) PROJECT="$2"; shift 2 ;;
+    --network) NETWORK="$2"; shift 2 ;;
+    --name) NAME="$2"; shift 2 ;;
+    --labels) LABELS="$2"; shift 2 ;;
+    --interfaces) INTERFACES="$2"; shift 2 ;;
+    --report-interval) REPORT_INTERVAL="$2"; shift 2 ;;
+    --probe-interval) PROBE_INTERVAL="$2"; shift 2 ;;
+    --mtls) USE_MTLS="true"; shift ;;
+    *) echo "未知参数: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "请以 root 运行安装脚本（推荐通过 sudo bash 执行）" >&2
+  exit 1
+fi
+if [ -z "$SERVER" ] || [ -z "$TOKEN" ] || [ -z "$NAME" ]; then
+  echo "缺少必要参数：--server、--token 和 --name" >&2
+  exit 2
+fi
+case "$SERVER$NAME$LABELS$PROJECT$NETWORK" in
+  *$'\n'*|*$'\r'*) echo "参数中不能包含换行符" >&2; exit 2 ;;
+esac
+SERVER="${SERVER%/}"
+
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+case "$OS" in
+  linux) ;;
+  *) echo "一键安装当前仅支持 Linux，其他系统请使用手动安装" >&2; exit 1 ;;
+esac
+
+MACHINE="$(uname -m)"
+case "$MACHINE" in
+  x86_64|amd64) ARCH="amd64" ;;
+  aarch64|arm64) ARCH="arm64" ;;
+  *) echo "不支持的 CPU 架构: $MACHINE" >&2; exit 1 ;;
+esac
+
+TMP_FILE="$(mktemp)"
+trap 'rm -f "$TMP_FILE"' EXIT
+curl -fL "$SERVER/agent/download?os=$OS&arch=$ARCH" -o "$TMP_FILE"
+install -m 0755 "$TMP_FILE" /usr/local/bin/wiremesh-agent
+
+install -d -m 0700 /var/lib/wiremesh-agent /etc/wiremesh-agent
+umask 077
+printf '%s' "$TOKEN" > /etc/wiremesh-agent/enrollment-token
+
+escape_env() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+cat > /etc/wiremesh-agent/agent.env <<EOF
+WIREMESH_SERVER="$(escape_env "$SERVER")"
+WIREMESH_NAME="$(escape_env "$NAME")"
+WIREMESH_LABELS="$(escape_env "$LABELS")"
+WIREMESH_INTERFACES="$(escape_env "$INTERFACES")"
+WIREMESH_REPORT_INTERVAL="$(escape_env "$REPORT_INTERVAL")"
+WIREMESH_PROBE_INTERVAL="$(escape_env "$PROBE_INTERVAL")"
+WIREMESH_MTLS="$(escape_env "$USE_MTLS")"
+EOF
+chmod 0600 /etc/wiremesh-agent/agent.env
+
+cat > /etc/systemd/system/wiremesh-agent.service <<'EOF'
+[Unit]
+Description=WireMesh Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/wiremesh-agent/agent.env
+ExecStart=/usr/local/bin/wiremesh-agent --server "${WIREMESH_SERVER}" --token-file /etc/wiremesh-agent/enrollment-token --state-dir /var/lib/wiremesh-agent --name "${WIREMESH_NAME}" --labels "${WIREMESH_LABELS}" --interfaces "${WIREMESH_INTERFACES}" --report-interval "${WIREMESH_REPORT_INTERVAL}" --probe-interval "${WIREMESH_PROBE_INTERVAL}" --mtls="${WIREMESH_MTLS}"
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wiremesh-agent /etc/wiremesh-agent
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now wiremesh-agent.service
+
+echo "WireMesh Agent 已安装并启动。"
+echo "查看状态: systemctl status wiremesh-agent --no-pager"
+`
+
+func (a *App) agentInstallScript(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, agentInstallerScript)
+}
+
+func (a *App) agentDownload(w http.ResponseWriter, r *http.Request) {
+	configuredPath := strings.TrimSpace(a.agentBinaryPath)
+	if configuredPath == "" {
+		writeError(w, http.StatusServiceUnavailable, "agent binary is not configured on this control plane")
+		return
+	}
+	requestedOS, requestedArch := r.URL.Query().Get("os"), r.URL.Query().Get("arch")
+	if requestedOS != "linux" || (requestedArch != "amd64" && requestedArch != "arm64") {
+		writeError(w, http.StatusNotFound, "agent binary is not available for the requested platform")
+		return
+	}
+	binaryPath := configuredPath
+	if strings.Contains(binaryPath, "{os}") || strings.Contains(binaryPath, "{arch}") {
+		binaryPath = strings.ReplaceAll(binaryPath, "{os}", requestedOS)
+		binaryPath = strings.ReplaceAll(binaryPath, "{arch}", requestedArch)
+	} else if requestedOS != runtime.GOOS || requestedArch != runtime.GOARCH {
+		writeError(w, http.StatusNotFound, "agent binary is not available for the requested platform")
+		return
+	}
+	info, err := os.Stat(binaryPath)
+	if err != nil || info.IsDir() {
+		writeError(w, http.StatusServiceUnavailable, "agent binary is unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="wiremesh-agent-`+requestedOS+"-"+requestedArch+`"`)
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	http.ServeFile(w, r, binaryPath)
+}

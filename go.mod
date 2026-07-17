@@ -3,12 +3,15 @@ module github.com/wiremesh/wiremesh
 go 1.26.2
 
 require (
+	github.com/go-sql-driver/mysql v1.9.0
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/oschwald/maxminddb-golang v1.13.1
 	golang.org/x/crypto v0.54.0
 	modernc.org/sqlite v1.53.0
 )
 
 require (
+	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { api, session, type ApiUser } from '../api'
+import { api, session, type ApiUser, type DatabaseDriver, type DatabaseSetupConfig } from '../api'
 import type { SystemSettings } from '../types'
 
 const settings: SystemSettings = {
@@ -9,7 +9,7 @@ const settings: SystemSettings = {
   statusRules: { agentOfflineSec: 120, handshakeSec: 180, redFailCount: 3 },
   collect: { reportSec: 10, probeSec: 15, mapRefreshSec: 30 },
   retention: { rawDays: 0, hourlyDays: 0, dailyDays: 0 },
-  agent: { token: '', labels: '', upgradePolicy: 'manual' },
+  agent: { labels: '', upgradePolicy: 'manual' },
 }
 
 export const useAppStore = defineStore('app', {
@@ -17,6 +17,9 @@ export const useAppStore = defineStore('app', {
     onboarded: false,
     authed: false,
     initialized: false,
+    databaseConfigured: false,
+    databaseConfigurable: true,
+    databaseDriver: '' as DatabaseDriver | '',
     loading: false,
     error: '',
     user: null as ApiUser | null,
@@ -34,6 +37,9 @@ export const useAppStore = defineStore('app', {
       try {
         const status = await api.setupStatus()
         this.onboarded = status.initialized
+        this.databaseConfigured = status.database_configured ?? true
+        this.databaseConfigurable = status.database_configurable ?? true
+        this.databaseDriver = status.database_driver || ''
         if (!status.initialized) {
           session.clear()
           this.user = null
@@ -43,6 +49,7 @@ export const useAppStore = defineStore('app', {
         }
         if (!session.token) return
         this.user = await api.me()
+        this.settings = await api.settings()
         this.username = this.user.name || this.user.email
         this.authed = true
       } catch (reason) {
@@ -52,6 +59,34 @@ export const useAppStore = defineStore('app', {
         this.authed = false
         this.error = reason instanceof Error ? reason.message : '无法读取初始化状态'
       } finally { this.initialized = true }
+    },
+    async testDatabase(payload: DatabaseSetupConfig) {
+      this.loading = true
+      this.error = ''
+      try {
+        await api.testDatabase(payload)
+        return true
+      } catch (reason) {
+        this.error = reason instanceof Error ? reason.message : '数据库连接测试失败'
+        return false
+      } finally { this.loading = false }
+    },
+    async configureDatabase(payload: DatabaseSetupConfig) {
+      this.loading = true
+      this.error = ''
+      try {
+        const result = await api.configureDatabase(payload)
+        this.databaseConfigured = result.configured
+        this.databaseDriver = result.driver
+        if (result.initialized) {
+          this.onboarded = true
+          this.initialized = true
+        }
+        return result
+      } catch (reason) {
+        this.error = reason instanceof Error ? reason.message : '数据库配置失败'
+        return null
+      } finally { this.loading = false }
     },
     async setup(payload: { email: string; name: string; password: string }) {
       this.loading = true
@@ -77,6 +112,7 @@ export const useAppStore = defineStore('app', {
         const result = await api.login(email, password)
         session.token = result.token
         this.user = result.user
+        this.settings = await api.settings()
         this.username = result.user.name || result.user.email
         this.authed = true
         this.initialized = true
@@ -94,7 +130,17 @@ export const useAppStore = defineStore('app', {
       this.authed = false
       this.initialized = true
     },
-    updateSettings(patch: Partial<SystemSettings>) { this.settings = { ...this.settings, ...patch } },
+    async updateSettings(value: SystemSettings) {
+      this.loading = true
+      this.error = ''
+      try {
+        this.settings = await api.updateSettings(value)
+        return true
+      } catch (reason) {
+        this.error = reason instanceof Error ? reason.message : '保存系统设置失败'
+        return false
+      } finally { this.loading = false }
+    },
     resetAll() { this.logout(); this.settings = structuredClone(settings) },
     persist() {},
   },

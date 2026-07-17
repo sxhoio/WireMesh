@@ -97,12 +97,63 @@ export interface FeedEvent {
 // ---- 通知渠道 ----
 export type NotifyChannelType = 'webhook' | 'dingtalk' | 'wecom' | 'feishu' | 'telegram' | 'email'
 
+export interface NotificationHeader {
+  name: string
+  value?: string
+  valueConfigured?: boolean
+}
+
+export interface NotificationConfig {
+  url?: string
+  urlConfigured?: boolean
+  method?: 'POST' | 'PUT' | 'PATCH'
+  contentType?: string
+  headers?: NotificationHeader[]
+  signatureType?: 'none' | 'hmac-sha256' | 'bearer'
+  secret?: string
+  secretConfigured?: boolean
+  timeoutSec?: number
+  allowPrivate?: boolean
+  messageType?: 'text' | 'markdown' | 'post'
+  atAll?: boolean
+  atMobiles?: string[]
+  atMobilesConfigured?: boolean
+  atMobileCount?: number
+  atUserIds?: string[]
+  atUserIdsConfigured?: boolean
+  atUserIdCount?: number
+  botToken?: string
+  botTokenConfigured?: boolean
+  chatId?: string
+  chatIdConfigured?: boolean
+  threadId?: string
+  parseMode?: '' | 'HTML' | 'MarkdownV2'
+  disableWebPagePreview?: boolean
+  disableNotification?: boolean
+  smtpHost?: string
+  smtpPort?: number
+  username?: string
+  password?: string
+  passwordConfigured?: boolean
+  fromAddress?: string
+  fromName?: string
+  to?: string[]
+  recipientsConfigured?: boolean
+  recipientCount?: number
+  cc?: string[]
+  ccConfigured?: boolean
+  ccCount?: number
+  encryption?: 'none' | 'starttls' | 'tls'
+  skipTlsVerify?: boolean
+}
+
 export interface NotifyChannel {
   id: string
   name: string
   type: NotifyChannelType
-  /** Webhook URL / Bot Token / 邮箱地址等 */
-  target: string
+  config: NotificationConfig
+  template: string
+  subjectTemplate?: string
   enabled: boolean
   /** 'all' = 全部节点；否则为绑定的 Agent id 列表 */
   agents: 'all' | string[]
@@ -166,7 +217,7 @@ export interface SystemSettings {
   statusRules: { agentOfflineSec: number; handshakeSec: number; redFailCount: number }
   collect: { reportSec: number; probeSec: number; mapRefreshSec: number }
   retention: { rawDays: number; hourlyDays: number; dailyDays: number }
-  agent: { token: string; labels: string; upgradePolicy: 'manual' | 'auto-stable' }
+  agent: { labels: string; upgradePolicy: 'manual' | 'auto-stable' }
 }
 
 export const stateMeta: Record<PeerState, { label: string; color: string; text: string }> = {

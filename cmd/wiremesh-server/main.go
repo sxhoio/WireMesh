@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/wiremesh/wiremesh/internal/control"
 )
@@ -17,24 +19,62 @@ func main() {
 		address = ":8080"
 	}
 
-	databaseDriver := envOrDefault("WIREMESH_DATABASE_DRIVER", "sqlite")
-	databaseDSN := os.Getenv("WIREMESH_DATABASE_DSN")
-	if databaseDSN == "" {
-		if databaseDriver == "sqlite" {
-			databaseDSN = "file:wiremesh.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
-		} else {
-			log.Fatal("WIREMESH_DATABASE_DSN is required for PostgreSQL")
+	masterKey := os.Getenv("WIREMESH_MASTER_KEY")
+	databaseDriver := strings.TrimSpace(os.Getenv("WIREMESH_DATABASE_DRIVER"))
+	databaseDSN := strings.TrimSpace(os.Getenv("WIREMESH_DATABASE_DSN"))
+	var store control.Store
+	var database *control.DatabaseManager
+	if databaseDriver != "" || databaseDSN != "" {
+		if databaseDriver == "" {
+			databaseDriver = "sqlite"
+		}
+		if databaseDSN == "" {
+			if databaseDriver == "sqlite" || databaseDriver == "sqlite3" {
+				databaseDSN = "file:wiremesh.db?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+			} else {
+				log.Fatal("WIREMESH_DATABASE_DSN is required when WIREMESH_DATABASE_DRIVER is set")
+			}
+		}
+		sqlStore, err := control.OpenSQLStore(databaseDriver, databaseDSN)
+		if err != nil {
+			log.Fatalf("open database: %v", err)
+		}
+		defer sqlStore.Close()
+		databaseDriver = sqlStore.Driver()
+		store = sqlStore
+	} else {
+		configPath := envOrDefault("WIREMESH_DATABASE_CONFIG", "wiremesh-database.json")
+		manager, err := control.NewDatabaseManager(configPath, masterKey)
+		if err != nil {
+			log.Fatalf("load database setup: %v", err)
+		}
+		database = manager
+		defer database.Close()
+		// Preserve existing installations that predate the database setup file.
+		if !database.Status().Configured {
+			legacyPath := filepath.Join(filepath.Dir(configPath), "wiremesh.db")
+			if info, statErr := os.Stat(legacyPath); statErr == nil && !info.IsDir() {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				_, _, configureErr := database.Configure(ctx, control.DatabaseConfig{Driver: "sqlite", SQLitePath: "wiremesh.db"})
+				cancel()
+				if configureErr != nil {
+					log.Fatalf("adopt legacy SQLite database: %v", configureErr)
+				}
+			}
+		}
+		store = database.Store()
+		databaseDriver = database.Status().Driver
+		if databaseDriver == "" {
+			databaseDriver = "not configured"
 		}
 	}
-	store, err := control.OpenSQLStore(databaseDriver, databaseDSN)
-	if err != nil {
-		log.Fatalf("open database: %v", err)
-	}
-	defer store.Close()
 
 	app, err := control.NewApp(control.Config{
-		MasterKey: os.Getenv("WIREMESH_MASTER_KEY"),
-		Store:     store,
+		MasterKey:       masterKey,
+		Store:           store,
+		Database:        database,
+		DatabaseDriver:  databaseDriver,
+		AgentBinaryPath: strings.TrimSpace(os.Getenv("WIREMESH_AGENT_BINARY")),
 	})
 	if err != nil {
 		log.Fatal(err)

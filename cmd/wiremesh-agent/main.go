@@ -2,74 +2,347 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"syscall"
 	"time"
 )
 
+const agentVersion = "0.2.0"
+
 type enrollmentRequest struct {
-	Token, Name, Endpoint, Region, OS, AgentVersion string
-	Labels                                          map[string]string
+	Token        string            `json:"token"`
+	Name         string            `json:"name"`
+	Endpoint     string            `json:"endpoint,omitempty"`
+	Region       string            `json:"region,omitempty"`
+	OS           string            `json:"os"`
+	AgentVersion string            `json:"agent_version"`
+	Labels       map[string]string `json:"labels"`
 }
 
 type enrollmentResponse struct {
 	Node struct {
 		ID string `json:"id"`
 	} `json:"node"`
+	CertificatePEM string `json:"certificate_pem"`
+	PrivateKeyPEM  string `json:"private_key_pem"`
+	CAPEM          string `json:"ca_pem"`
+	ExpiresAt      string `json:"expires_at"`
+}
+
+type agentState struct {
+	NodeID         string `json:"node_id"`
+	Server         string `json:"server"`
+	CertificatePEM string `json:"certificate_pem,omitempty"`
+	PrivateKeyPEM  string `json:"private_key_pem,omitempty"`
+	CAPEM          string `json:"ca_pem,omitempty"`
+	ExpiresAt      string `json:"expires_at,omitempty"`
+}
+
+type heartbeatRequest struct {
+	Hostname     string            `json:"hostname"`
+	OS           string            `json:"os"`
+	AgentVersion string            `json:"agent_version"`
+	Labels       map[string]string `json:"labels"`
+	Interfaces   string            `json:"interfaces"`
+}
+
+type configResponse struct {
+	Version uint64          `json:"version"`
+	Config  json.RawMessage `json:"config"`
 }
 
 func main() {
 	server := flag.String("server", "http://localhost:8080", "WireMesh control plane URL")
 	enrollToken := flag.String("enroll-token", "", "one-time enrollment token")
-	nodeID := flag.String("node-id", "", "existing node identity")
+	tokenFile := flag.String("token-file", "", "file containing a one-time enrollment token")
+	nodeID := flag.String("node-id", "", "existing node identity for HTTP development mode")
 	name := flag.String("name", "", "node name used during enrollment")
+	labelsText := flag.String("labels", "", "comma-separated labels (key=value)")
+	interfaces := flag.String("interfaces", "auto", "WireGuard interface selection")
+	stateDir := flag.String("state-dir", "/var/lib/wiremesh-agent", "directory used for enrolled identity material")
+	reportInterval := flag.Duration("report-interval", 10*time.Second, "heartbeat interval")
+	probeInterval := flag.Duration("probe-interval", 15*time.Second, "configuration polling interval")
+	useMTLS := flag.Bool("mtls", false, "use the enrolled client certificate for HTTPS")
 	flag.Parse()
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	if *enrollToken != "" {
-		if *name == "" {
-			fmt.Fprintln(os.Stderr, "-name is required with -enroll-token")
-			os.Exit(2)
-		}
-		body, _ := json.Marshal(enrollmentRequest{Token: *enrollToken, Name: *name, OS: "unknown", AgentVersion: "0.1.0", Labels: map[string]string{}})
-		response, err := client.Post(*server+"/agent/v1/enroll", "application/json", bytes.NewReader(body))
+	if *reportInterval < time.Second || *probeInterval < time.Second {
+		log.Fatal("report and probe intervals must be at least one second")
+	}
+	*server = strings.TrimRight(strings.TrimSpace(*server), "/")
+	if *server == "" {
+		log.Fatal("server URL is required")
+	}
+
+	statePath := filepath.Join(*stateDir, "identity.json")
+	state, err := loadState(statePath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Fatalf("load agent identity: %v", err)
+	}
+	if state.NodeID == "" && *nodeID != "" {
+		state = agentState{NodeID: *nodeID, Server: *server}
+	}
+	if state.NodeID == "" {
+		token, err := readEnrollmentToken(*enrollToken, *tokenFile)
 		if err != nil {
-			panic(err)
+			log.Fatal(err)
 		}
-		defer response.Body.Close()
-		if response.StatusCode != http.StatusCreated {
-			fail(response.Body)
+		if strings.TrimSpace(*name) == "" {
+			log.Fatal("name is required for first-time enrollment")
 		}
-		var enrolled enrollmentResponse
-		_ = json.NewDecoder(response.Body).Decode(&enrolled)
-		fmt.Printf("enrolled node %s\n", enrolled.Node.ID)
-		fmt.Println("persist the returned certificate material before switching to mTLS transport")
-		return
+		state, err = enroll(*server, token, strings.TrimSpace(*name), parseLabels(*labelsText))
+		if err != nil {
+			log.Fatalf("enroll agent: %v", err)
+		}
+		if err := saveState(statePath, state); err != nil {
+			log.Fatalf("persist agent identity: %v", err)
+		}
+		if *tokenFile != "" {
+			if err := os.Remove(*tokenFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+				log.Printf("warning: remove consumed enrollment token file: %v", err)
+			}
+		}
+		log.Printf("enrolled node %s", state.NodeID)
 	}
-	if *nodeID == "" {
-		fmt.Fprintln(os.Stderr, "provide -enroll-token or -node-id")
-		os.Exit(2)
+	if state.Server == "" {
+		state.Server = *server
 	}
-	request, _ := http.NewRequest(http.MethodGet, *server+"/agent/v1/config", nil)
-	request.Header.Set("X-Agent-ID", *nodeID) // Development adapter; production transport uses mTLS.
+
+	client, err := authenticatedClient(state, *useMTLS)
+	if err != nil {
+		log.Fatalf("configure agent transport: %v", err)
+	}
+	hostname, _ := os.Hostname()
+	heartbeat := heartbeatRequest{
+		Hostname: hostname, OS: runtime.GOOS + "/" + runtime.GOARCH,
+		AgentVersion: agentVersion, Labels: parseLabels(*labelsText), Interfaces: *interfaces,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := postHeartbeat(ctx, client, state, heartbeat); err != nil {
+		log.Printf("initial heartbeat failed: %v", err)
+	}
+	if version, err := pollConfig(ctx, client, state); err != nil {
+		log.Printf("initial configuration check failed: %v", err)
+	} else if version > 0 {
+		log.Printf("configuration version %d is available", version)
+	}
+
+	reportTicker := time.NewTicker(*reportInterval)
+	probeTicker := time.NewTicker(*probeInterval)
+	defer reportTicker.Stop()
+	defer probeTicker.Stop()
+	var lastVersion uint64
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("agent stopped")
+			return
+		case <-reportTicker.C:
+			if err := postHeartbeat(ctx, client, state, heartbeat); err != nil {
+				log.Printf("heartbeat failed: %v", err)
+			}
+		case <-probeTicker.C:
+			version, err := pollConfig(ctx, client, state)
+			if err != nil {
+				log.Printf("configuration check failed: %v", err)
+				continue
+			}
+			if version > 0 && version != lastVersion {
+				lastVersion = version
+				log.Printf("configuration version %d is available", version)
+			}
+		}
+	}
+}
+
+func enroll(server, token, name string, labels map[string]string) (agentState, error) {
+	body, err := json.Marshal(enrollmentRequest{
+		Token: token, Name: name, OS: runtime.GOOS + "/" + runtime.GOARCH,
+		AgentVersion: agentVersion, Labels: labels,
+	})
+	if err != nil {
+		return agentState{}, err
+	}
+	client := &http.Client{Timeout: 20 * time.Second}
+	response, err := client.Post(server+"/agent/v1/enroll", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return agentState{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		return agentState{}, responseError(response)
+	}
+	var enrolled enrollmentResponse
+	if err := json.NewDecoder(response.Body).Decode(&enrolled); err != nil {
+		return agentState{}, err
+	}
+	if enrolled.Node.ID == "" || enrolled.CertificatePEM == "" || enrolled.PrivateKeyPEM == "" {
+		return agentState{}, errors.New("control plane returned incomplete agent identity")
+	}
+	return agentState{
+		NodeID: enrolled.Node.ID, Server: server, CertificatePEM: enrolled.CertificatePEM,
+		PrivateKeyPEM: enrolled.PrivateKeyPEM, CAPEM: enrolled.CAPEM, ExpiresAt: enrolled.ExpiresAt,
+	}, nil
+}
+
+func authenticatedClient(state agentState, useMTLS bool) (*http.Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if useMTLS && strings.HasPrefix(strings.ToLower(state.Server), "https://") {
+		certificate, err := tls.X509KeyPair([]byte(state.CertificatePEM), []byte(state.PrivateKeyPEM))
+		if err != nil {
+			return nil, err
+		}
+		roots, err := x509.SystemCertPool()
+		if err != nil || roots == nil {
+			roots = x509.NewCertPool()
+		}
+		if state.CAPEM != "" {
+			roots.AppendCertsFromPEM([]byte(state.CAPEM))
+		}
+		transport.TLSClientConfig = &tls.Config{
+			MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate}, RootCAs: roots,
+		}
+	}
+	return &http.Client{Timeout: 20 * time.Second, Transport: transport}, nil
+}
+
+func postHeartbeat(ctx context.Context, client *http.Client, state agentState, heartbeat heartbeatRequest) error {
+	body, err := json.Marshal(heartbeat)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, state.Server+"/agent/v1/heartbeat", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	setDevelopmentIdentity(request, state)
 	response, err := client.Do(request)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		fail(response.Body)
+		return responseError(response)
 	}
-	data, _ := io.ReadAll(response.Body)
-	fmt.Println(string(data))
+	return nil
 }
 
-func fail(body io.Reader) {
-	data, _ := io.ReadAll(body)
-	fmt.Fprintln(os.Stderr, string(data))
-	os.Exit(1)
+func pollConfig(ctx context.Context, client *http.Client, state agentState) (uint64, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, state.Server+"/agent/v1/config", nil)
+	if err != nil {
+		return 0, err
+	}
+	setDevelopmentIdentity(request, state)
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return 0, nil
+	}
+	if response.StatusCode != http.StatusOK {
+		return 0, responseError(response)
+	}
+	var payload configResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return 0, err
+	}
+	return payload.Version, nil
+}
+
+func setDevelopmentIdentity(request *http.Request, state agentState) {
+	if strings.HasPrefix(strings.ToLower(state.Server), "http://") {
+		request.Header.Set("X-Agent-ID", state.NodeID)
+	}
+}
+
+func readEnrollmentToken(value, filename string) (string, error) {
+	if strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value), nil
+	}
+	if filename == "" {
+		return "", errors.New("provide --enroll-token or --token-file for first-time enrollment")
+	}
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return "", fmt.Errorf("read enrollment token file: %w", err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", errors.New("enrollment token file is empty")
+	}
+	return token, nil
+}
+
+func parseLabels(value string) map[string]string {
+	labels := map[string]string{}
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		key, labelValue, found := strings.Cut(item, "=")
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if !found {
+			labelValue = "true"
+		}
+		labels[key] = strings.TrimSpace(labelValue)
+	}
+	return labels
+}
+
+func loadState(filename string) (agentState, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return agentState{}, err
+	}
+	var state agentState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return agentState{}, err
+	}
+	return state, nil
+}
+
+func saveState(filename string, state agentState) error {
+	if err := os.MkdirAll(filepath.Dir(filename), 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	temporary := filename + ".tmp"
+	if err := os.WriteFile(temporary, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(temporary, filename)
+}
+
+func responseError(response *http.Response) error {
+	data, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+	message := strings.TrimSpace(string(data))
+	if message == "" {
+		message = response.Status
+	}
+	return fmt.Errorf("control plane returned %s: %s", response.Status, message)
 }

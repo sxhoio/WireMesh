@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import * as echarts from 'echarts'
-import worldJson from '../assets/map/world.json'
+import { Map as OlMap, View, Feature } from 'ol'
+import TileLayer from 'ol/layer/Tile'
+import VectorLayer from 'ol/layer/Vector'
+import XYZ from 'ol/source/XYZ'
+import VectorSource from 'ol/source/Vector'
+import { Point, LineString } from 'ol/geom'
+import { Style, Circle as CircleStyle, Fill, Stroke, Text } from 'ol/style'
+import { fromLonLat } from 'ol/proj'
+import { defaults as defaultControls } from 'ol/control'
+import 'ol/ol.css'
 import type { Agent, PeerLink, PeerState, TempPeer } from '../types'
 
 export interface MapLink extends PeerLink {
@@ -16,64 +24,13 @@ const props = defineProps<{
   onlyErrors: boolean
 }>()
 
+const locatedAgents = () => props.agents.filter((agent) => Number.isFinite(agent.lng) && Number.isFinite(agent.lat))
+const locatedTempPeers = () => props.tempPeers.filter((peer) => peer.geo && Number.isFinite(peer.geo.lng) && Number.isFinite(peer.geo.lat))
+
 const emit = defineEmits<{
   (e: 'agent-click', agent: Agent): void
   (e: 'link-click', link: MapLink): void
 }>()
-
-const el = ref<HTMLDivElement>()
-let chart: echarts.ECharts | null = null
-let resizeObserver: ResizeObserver | null = null
-
-/** 视口状态：任何数据刷新、筛选切换都不重置用户当前的缩放与位置 */
-let zoomLevel = 1.15
-let centerPos: [number, number] = [20, 25]
-/** 用户是否手动调整过视口；自动适配只在未手动调整时生效 */
-let userRoamed = false
-/** 上次自动适配时的节点集合指纹，节点范围不变则不重复适配 */
-let lastFitKey = ''
-
-echarts.registerMap('world', worldJson as any)
-
-interface Cluster {
-  agents: Agent[]
-  lng: number
-  lat: number
-}
-
-/** 按地理距离聚合（阈值随缩放级别减小） */
-function clusterAgents(list: Agent[]): { singles: Agent[]; clusters: Cluster[] } {
-  const threshold = Math.max(2.5, 9 / zoomLevel)
-  const used = new Set<string>()
-  const clusters: Cluster[] = []
-  const singles: Agent[] = []
-  for (const a of list) {
-    if (used.has(a.id)) continue
-    const group = [a]
-    used.add(a.id)
-    for (const b of list) {
-      if (used.has(b.id)) continue
-      if (Math.abs(a.lng - b.lng) < threshold && Math.abs(a.lat - b.lat) < threshold) {
-        group.push(b)
-        used.add(b.id)
-      }
-    }
-    if (group.length > 1) {
-      clusters.push({
-        agents: group,
-        lng: group.reduce((s, x) => s + x.lng, 0) / group.length,
-        lat: group.reduce((s, x) => s + x.lat, 0) / group.length,
-      })
-    } else {
-      singles.push(a)
-    }
-  }
-  return { singles, clusters }
-}
-
-function locatedAgents() {
-  return props.agents.filter((agent) => Number.isFinite(agent.lng) && Number.isFinite(agent.lat))
-}
 
 const stateColor: Record<PeerState, string> = {
   ok: '#34d399',
@@ -82,240 +39,266 @@ const stateColor: Record<PeerState, string> = {
   unknown: '#64748b',
 }
 
-/** 只构建 series 数据；geo 配置只在初始化时设置一次，避免刷新重置视口 */
-function buildSeries(): echarts.SeriesOption[] {
-  const agents = locatedAgents()
-  const { singles, clusters } = clusterAgents(agents)
-  const clusteredIds = new Set(clusters.flatMap((c) => c.agents.map((a) => a.id)))
+const earthRadius = 6378245
+const gcjEccentricity = 0.006693421622965943
 
+function outsideChina(lng: number, lat: number) {
+  return lng < 72.004 || lng > 137.8347 || lat < 0.8293 || lat > 55.8271
+}
+
+function transformLatitude(lng: number, lat: number) {
+  let value = -100 + 2 * lng + 3 * lat + 0.2 * lat * lat + 0.1 * lng * lat + 0.2 * Math.sqrt(Math.abs(lng))
+  value += ((20 * Math.sin(6 * lng * Math.PI) + 20 * Math.sin(2 * lng * Math.PI)) * 2) / 3
+  value += ((20 * Math.sin(lat * Math.PI) + 40 * Math.sin((lat / 3) * Math.PI)) * 2) / 3
+  value += ((160 * Math.sin((lat / 12) * Math.PI) + 320 * Math.sin((lat * Math.PI) / 30)) * 2) / 3
+  return value
+}
+
+function transformLongitude(lng: number, lat: number) {
+  let value = 300 + lng + 2 * lat + 0.1 * lng * lng + 0.1 * lng * lat + 0.1 * Math.sqrt(Math.abs(lng))
+  value += ((20 * Math.sin(6 * lng * Math.PI) + 20 * Math.sin(2 * lng * Math.PI)) * 2) / 3
+  value += ((20 * Math.sin(lng * Math.PI) + 40 * Math.sin((lng / 3) * Math.PI)) * 2) / 3
+  value += ((150 * Math.sin((lng / 12) * Math.PI) + 300 * Math.sin((lng / 30) * Math.PI)) * 2) / 3
+  return value
+}
+
+/** 中文底图在中国大陆使用 GCJ-02；其他地区保持 WGS84。 */
+function mapCoordinate([lng, lat]: [number, number]): [number, number] {
+  if (outsideChina(lng, lat)) return [lng, lat]
+  let deltaLat = transformLatitude(lng - 105, lat - 35)
+  let deltaLng = transformLongitude(lng - 105, lat - 35)
+  const radLat = (lat / 180) * Math.PI
+  let magic = Math.sin(radLat)
+  magic = 1 - gcjEccentricity * magic * magic
+  const sqrtMagic = Math.sqrt(magic)
+  deltaLat = (deltaLat * 180) / (((earthRadius * (1 - gcjEccentricity)) / (magic * sqrtMagic)) * Math.PI)
+  deltaLng = (deltaLng * 180) / ((earthRadius / sqrtMagic) * Math.cos(radLat) * Math.PI)
+  return [lng + deltaLng, lat + deltaLat]
+}
+
+function toMapProjection(coordinate: [number, number]) {
+  return fromLonLat(mapCoordinate(coordinate))
+}
+
+const el = ref<HTMLDivElement>()
+let map: OlMap | null = null
+let linkSource: VectorSource | null = null
+let markerSource: VectorSource | null = null
+/** 用户是否手动调整过视口；自动适配只在未手动调整时生效 */
+let userRoamed = false
+let lastFitKey = ''
+let suppressFit = false
+
+/** 两点间生成贝塞尔曲线（弧线）投影坐标序列 */
+function curveCoords(a: [number, number], b: [number, number]): number[][] {
+  const pa = toMapProjection(a)
+  const pb = toMapProjection(b)
+  const dx = pb[0] - pa[0]
+  const dy = pb[1] - pa[1]
+  const dist = Math.hypot(dx, dy)
+  if (dist < 1) return [pa, pb]
+  // 垂直于连线方向的控制点偏移量，弧度随距离增大但封顶
+  const offset = Math.min(dist * 0.18, 2_200_000)
+  const mx = (pa[0] + pb[0]) / 2
+  const my = (pa[1] + pb[1]) / 2
+  // 垂直方向单位向量（取让弧线朝向上方/世界中心一侧）
+  let nx = -dy / dist
+  let ny = dx / dist
+  if (ny < 0) {
+    nx = -nx
+    ny = -ny
+  }
+  const cx = mx + nx * offset
+  const cy = my + ny * offset
+  // 二次贝塞尔采样
+  const pts: number[][] = []
+  const N = 48
+  for (let i = 0; i <= N; i++) {
+    const t = i / N
+    const mt = 1 - t
+    pts.push([mt * mt * pa[0] + 2 * mt * t * cx + t * t * pb[0], mt * mt * pa[1] + 2 * mt * t * cy + t * t * pb[1]])
+  }
+  return pts
+}
+
+/** 重建全部要素：链路曲线、节点、临时 Peer（瞬间重建，无补间动画） */
+function render() {
+  if (!map || !linkSource || !markerSource) return
+  linkSource.clear()
+  markerSource.clear()
+
+  // 不再聚合：每个节点始终单独显示，接口直接映射到所属 Agent 坐标
   const ifacePoint = new Map<string, [number, number]>()
-  for (const a of agents) {
-    for (const i of a.interfaces) {
-      if (clusteredIds.has(a.id)) {
-        const c = clusters.find((x) => x.agents.some((g) => g.id === a.id))!
-        ifacePoint.set(i.id, [c.lng, c.lat])
-      } else {
-        ifacePoint.set(i.id, [a.lng, a.lat])
-      }
-    }
+  for (const a of locatedAgents()) {
+    for (const i of a.interfaces) ifacePoint.set(i.id, [a.lng, a.lat])
   }
 
   let links = props.links
   if (props.onlyErrors) links = links.filter((l) => l.displayState === 'degraded' || l.displayState === 'down')
   if (props.linkFilter !== 'all') links = links.filter((l) => l.displayState === props.linkFilter)
 
-  const lineData = links
-    .filter((l) => ifacePoint.has(l.a) && ifacePoint.has(l.b))
-    .map((l) => {
-      const color = stateColor[l.displayState]
-      return {
-        linkId: l.id,
-        coords: [ifacePoint.get(l.a)!, ifacePoint.get(l.b)!],
-        lineStyle: {
+  const linkFeatures: Feature[] = []
+  for (const l of links) {
+    if (!ifacePoint.has(l.a) || !ifacePoint.has(l.b)) continue
+    const geom = new LineString(curveCoords(ifacePoint.get(l.a)!, ifacePoint.get(l.b)!))
+    const f = new Feature({ geometry: geom, linkRef: l })
+    const color = stateColor[l.displayState]
+    f.setStyle(
+      new Style({
+        stroke: new Stroke({
           color,
-          curveness: 0.18,
-          width: l.displayState === 'down' ? 2.6 : 1.8,
-          opacity: l.displayState === 'unknown' ? 0.55 : 0.9,
-          type: l.displayState === 'unknown' ? ('dashed' as const) : ('solid' as const),
-          shadowColor: color,
-          shadowBlur: l.displayState === 'ok' ? 4 : 8,
-        },
-      }
-    })
-
-  const onlineSingles = singles.filter((a) => a.status === 'online' && a.enabled)
-  const offlineSingles = singles.filter((a) => a.status === 'offline' || !a.enabled)
-
-  // 标签重叠时自动隐藏，低缩放级别下只显示节点名
-  const labelBase = {
-    position: 'right' as const,
-    fontSize: 10,
-    textBorderColor: '#070b14',
-    textBorderWidth: 2,
+          width: l.displayState === 'down' ? 3 : 2.2,
+          lineDash: l.displayState === 'unknown' ? [7, 7] : undefined,
+          lineCap: 'round',
+          lineJoin: 'round',
+        }),
+      }),
+    )
+    linkFeatures.push(f)
   }
-  const noOverlap = { hideOverlap: true, moveOverlap: 'shiftY' as const }
+  linkSource.addFeatures(linkFeatures)
 
-  return [
-    {
-      type: 'lines',
-      coordinateSystem: 'geo',
-      zlevel: 2,
-      data: lineData,
-      // 关闭动画：数据变化时线段直接重建，不做位置补间移动
-      animation: false,
-      animationDuration: 0,
-      animationDurationUpdate: 0,
-      animationEasingUpdate: 'linear',
-    } as any,
-    {
-      type: 'effectScatter',
-      coordinateSystem: 'geo',
-      zlevel: 3,
-      rippleEffect: { brushType: 'stroke', scale: 3 },
-      symbolSize: 10,
-      itemStyle: { color: '#34d399', shadowColor: 'rgba(52,211,153,0.8)', shadowBlur: 8 },
-      label: { ...labelBase, show: true, formatter: (p: any) => p.data.name, color: '#cbd5e1' },
-      labelLayout: noOverlap,
-      data: onlineSingles.map((a) => ({ ...a, value: [a.lng, a.lat], kind: 'agent' })),
-    } as any,
-    {
-      type: 'scatter',
-      coordinateSystem: 'geo',
-      zlevel: 3,
-      symbolSize: 10,
-      itemStyle: { color: '#475569', borderColor: '#94a3b8', borderWidth: 1 },
-      label: { ...labelBase, show: true, formatter: (p: any) => p.data.name, color: '#64748b' },
-      labelLayout: noOverlap,
-      data: offlineSingles.map((a) => ({ ...a, value: [a.lng, a.lat], kind: 'agent' })),
-    } as any,
-    {
-      type: 'scatter',
-      coordinateSystem: 'geo',
-      zlevel: 4,
-      symbolSize: (_v: number[], p: any) => 18 + Math.min(10, p.data.agents.length * 2),
-      itemStyle: {
-        color: 'rgba(52,211,153,0.18)',
-        borderColor: '#34d399',
-        borderWidth: 1.5,
-        shadowColor: 'rgba(52,211,153,0.5)',
-        shadowBlur: 10,
-      },
-      label: { show: true, formatter: (p: any) => String(p.data.agents.length), color: '#a7f3d0', fontSize: 12, fontWeight: 'bold' },
-      data: clusters.map((c) => ({ value: [c.lng, c.lat], agents: c.agents, kind: 'cluster', name: `${c.agents.length} 个节点` })),
-    } as any,
-    {
-      type: 'scatter',
-      coordinateSystem: 'geo',
-      zlevel: 3,
-      symbolSize: 8,
-      itemStyle: { color: 'transparent', borderColor: '#fbbf24', borderWidth: 1.6 },
-      label: { ...labelBase, show: true, formatter: () => '临时 Peer', color: '#d97706', fontSize: 9 },
-      labelLayout: noOverlap,
-      data: props.tempPeers.filter((t) => t.geo && Number.isFinite(t.geo.lng) && Number.isFinite(t.geo.lat)).map((t) => ({ value: [t.geo!.lng, t.geo!.lat], kind: 'temp', name: 'temp' })),
-    } as any,
-  ]
+  const markerFeatures: Feature[] = []
+  for (const a of locatedAgents()) {
+    const online = a.status === 'online' && a.enabled
+    const color = online ? '#059669' : '#94a3b8'
+    const f = new Feature({ geometry: new Point(toMapProjection([a.lng, a.lat])), agentRef: a })
+    f.setStyle(
+      new Style({
+        image: new CircleStyle({
+          radius: 6,
+          fill: new Fill({ color }),
+          stroke: new Stroke({ color: '#ffffff', width: 2.2 }),
+        }),
+        text: new Text({
+          text: a.name,
+          offsetX: 14,
+          textAlign: 'left',
+          font: '600 11px sans-serif',
+          fill: new Fill({ color: online ? '#1e293b' : '#94a3b8' }),
+          stroke: new Stroke({ color: 'rgba(255,255,255,0.92)', width: 3.5 }),
+          overflow: false,
+        }),
+      }),
+    )
+    markerFeatures.push(f)
+  }
+
+  for (const t of locatedTempPeers()) {
+    if (!t.geo) continue
+    const f = new Feature({ geometry: new Point(toMapProjection([t.geo.lng, t.geo.lat])) })
+    f.setStyle(
+      new Style({
+        image: new CircleStyle({
+          radius: 4.5,
+          fill: new Fill({ color: 'rgba(245,158,11,0.15)' }),
+          stroke: new Stroke({ color: '#d97706', width: 1.8 }),
+        }),
+      }),
+    )
+    markerFeatures.push(f)
+  }
+  markerSource.addFeatures(markerFeatures)
 }
 
-/** 根据可见节点计算最佳视野；zoom 基于容器宽高比换算，确保铺满 */
-function fitView(agents: Agent[]) {
-  if (!agents.length) return
-  const lngs = agents.map((a) => a.lng)
-  const lats = agents.map((a) => a.lat)
-  const minLng = Math.min(...lngs)
-  const maxLng = Math.max(...lngs)
-  const minLat = Math.min(...lats)
-  const maxLat = Math.max(...lats)
-  centerPos = [(minLng + maxLng) / 2, (minLat + maxLat) / 2]
-  const spanLng = maxLng - minLng || 1
-  const spanLat = maxLat - minLat || 1
-
-  // 世界地图经度跨度约 360、纬度跨度约 170；容器宽高比决定哪个维度先顶满
-  const rect = el.value?.getBoundingClientRect()
-  const aspect = rect ? rect.width / Math.max(1, rect.height) : 16 / 9
-  const worldAspect = 360 / 170
-  // 留 12% 边距
-  const margin = 0.88
-  let z: number
-  if (aspect >= worldAspect) {
-    // 容器更宽：纬度先顶满
-    z = (170 / Math.max(spanLat, 1)) * margin
-  } else {
-    // 容器更高：经度先顶满
-    z = (360 / Math.max(spanLng, 1)) * margin
+/** 首次及节点集合变化时自动适配视野；用户手动漫游后不再自动调整 */
+function fitIfNeeded(force = false) {
+  const agents = locatedAgents()
+  if (!map || !agents.length) return
+  const key = agents.map((a) => a.id).sort().join(',')
+  if (!force && (userRoamed || key === lastFitKey)) return
+  lastFitKey = key
+  const extent = markerSource?.getExtent()
+  if (extent && isFinite(extent[0])) {
+    suppressFit = true
+    map.getView().fit(extent, { padding: [60, 60, 60, 60], duration: 0, maxZoom: 6 })
+    setTimeout(() => (suppressFit = false), 200)
   }
-  zoomLevel = +Math.min(8, Math.max(1.0, z)).toFixed(2)
-}
-
-function applyViewport() {
-  if (!chart) return
-  chart.setOption({ geo: { center: centerPos, zoom: zoomLevel } })
-}
-
-/** 数据/筛选变化时只更新 series，geo 视口保持不变 */
-function render(fit = false) {
-  if (!chart) return
-  if (fit && !userRoamed) {
-    const agents = locatedAgents()
-    const key = agents.map((a) => a.id).sort().join(',')
-    if (key !== lastFitKey) {
-      lastFitKey = key
-      fitView(agents)
-      applyViewport()
-    }
-  }
-  chart.setOption({ series: buildSeries() })
 }
 
 onMounted(() => {
-  chart = echarts.init(el.value!)
-  // 首次按节点范围自动适配
-  const agents = locatedAgents()
-  if (agents.length) {
-    fitView(agents)
-    lastFitKey = agents.map((a) => a.id).sort().join(',')
-  }
-  chart.setOption({
-    backgroundColor: 'transparent',
-    geo: {
-      map: 'world',
-      roam: true,
-      zoom: zoomLevel,
-      center: centerPos,
-      scaleLimit: { min: 0.8, max: 12 },
-      itemStyle: { areaColor: '#111c30', borderColor: '#2a3c5e', borderWidth: 0.6 },
-      emphasis: { disabled: true },
-      select: { disabled: true },
-      silent: true,
-    },
-    series: buildSeries(),
-  } as echarts.EChartsOption)
+  linkSource = new VectorSource()
+  markerSource = new VectorSource()
+  map = new OlMap({
+    target: el.value!,
+    controls: defaultControls({ zoom: false, rotate: false, attribution: false }),
+    layers: [
+      new TileLayer({
+        source: new XYZ({
+          // 使用中文标注底图，并保持节点坐标与底图坐标系一致。
+          url: 'https://webrd0{1-4}.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}&lang=zh_cn&size=1&scale=1',
+          attributions: '© 高德地图',
+          maxZoom: 19,
+        }),
+      }),
+      new VectorLayer({ source: linkSource, zIndex: 2 }),
+      new VectorLayer({ source: markerSource, zIndex: 3 }),
+    ],
+    view: new View({
+      center: fromLonLat([20, 25]),
+      zoom: 3,
+      minZoom: 2,
+      maxZoom: 12,
+    }),
+  })
 
-  chart.on('georoam', () => {
-    userRoamed = true
-    const opt = chart?.getOption() as any
-    const z = opt?.geo?.[0]?.zoom
-    const c = opt?.geo?.[0]?.center
-    if (c) centerPos = c as [number, number]
-    if (z && Math.abs(z - zoomLevel) > 0.35) {
-      zoomLevel = z
-      // 仅因聚合阈值变化重绘 series，视口不动
-      render()
-    }
+  map.on('pointerdrag', () => {
+    if (!suppressFit) userRoamed = true
   })
-  chart.on('click', (params: any) => {
-    if (params.seriesType === 'lines') {
-      const l = props.links.find((x) => x.id === params.data.linkId)
-      if (l) emit('link-click', l)
-      return
-    }
-    const kind = params.data?.kind
-    if (kind === 'agent') {
-      emit('agent-click', params.data as Agent)
-    } else if (kind === 'cluster') {
-      // 点击聚合簇：平滑放大到簇中心
-      zoomLevel = Math.min(6, zoomLevel * 2)
-      centerPos = params.data.value as [number, number]
-      chart?.setOption({ geo: { center: centerPos, zoom: zoomLevel } })
-      render()
-    }
+  map.getView().on('change:resolution', () => render())
+  map.on('moveend', () => render())
+
+  map.on('singleclick', (evt) => {
+    let hit = false
+    map!.forEachFeatureAtPixel(evt.pixel, (f) => {
+      const agent = f.get('agentRef') as Agent | undefined
+      const link = f.get('linkRef') as MapLink | undefined
+      if (agent) {
+        emit('agent-click', agent)
+      } else if (link) {
+        emit('link-click', link)
+      }
+      hit = true
+      return true
+    }, { hitTolerance: 6 })
+    return hit
   })
-  resizeObserver = new ResizeObserver(() => chart?.resize())
-  resizeObserver.observe(el.value!)
+
+  render()
+  fitIfNeeded(true)
 })
 
 onBeforeUnmount(() => {
-  resizeObserver?.disconnect()
-  chart?.dispose()
-  chart = null
+  map?.setTarget(undefined)
+  map = null
 })
 
 watch(
   () => [props.agents, props.links, props.tempPeers, props.linkFilter, props.onlyErrors],
-  () => render(true),
+  () => {
+    render()
+    fitIfNeeded()
+  },
   { deep: true },
 )
 </script>
 
 <template>
-  <div ref="el" class="h-full w-full"></div>
+  <div class="relative h-full w-full">
+    <div ref="el" class="ol-map-wrap h-full w-full"></div>
+    <div v-if="!locatedAgents().length" class="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/45 p-6 text-center backdrop-blur-[1px]">
+      <div class="rounded-xl bg-white/90 px-5 py-4 text-sm text-slate-500 shadow-lg ring-1 ring-slate-200">
+        暂无带有效地理坐标的节点；地图不会生成模拟位置。
+      </div>
+    </div>
+  </div>
 </template>
+
+<style scoped>
+.ol-map-wrap {
+  background: #e8eef4;
+}
+.ol-map-wrap :deep(.ol-viewport) {
+  background: #e8eef4;
+}
+</style>

@@ -37,6 +37,7 @@ type User struct {
 	PasswordHash string    `json:"-"`
 	Name         string    `json:"name"`
 	Role         Role      `json:"role"`
+	LastLoginAt  time.Time `json:"last_login_at"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 type Network struct {
@@ -130,4 +131,73 @@ type AuditEvent struct {
 	ResourceID   string            `json:"resource_id"`
 	Metadata     map[string]string `json:"metadata"`
 	CreatedAt    time.Time         `json:"created_at"`
+}
+
+type NetworkDefaults struct {
+	DNS             string `json:"dns"`
+	Port            int    `json:"port"`
+	MTU             int    `json:"mtu"`
+	Keepalive       int    `json:"keepalive"`
+	DefaultTopology string `json:"defaultTopology"`
+}
+
+type StatusRules struct {
+	AgentOfflineSec int `json:"agentOfflineSec"`
+	HandshakeSec    int `json:"handshakeSec"`
+	RedFailCount    int `json:"redFailCount"`
+}
+
+type CollectionSettings struct {
+	ReportSec     int `json:"reportSec"`
+	ProbeSec      int `json:"probeSec"`
+	MapRefreshSec int `json:"mapRefreshSec"`
+}
+
+type RetentionSettings struct {
+	RawDays    int `json:"rawDays"`
+	HourlyDays int `json:"hourlyDays"`
+	DailyDays  int `json:"dailyDays"`
+}
+
+type AgentSettings struct {
+	Labels        string `json:"labels"`
+	UpgradePolicy string `json:"upgradePolicy"`
+}
+
+type SystemSettings struct {
+	TenantID          string             `json:"-"`
+	DashboardName     string             `json:"dashboardName"`
+	SessionTimeoutMin int                `json:"sessionTimeoutMin"`
+	NetDefaults       NetworkDefaults    `json:"netDefaults"`
+	StatusRules       StatusRules        `json:"statusRules"`
+	Collect           CollectionSettings `json:"collect"`
+	Retention         RetentionSettings  `json:"retention"`
+	Agent             AgentSettings      `json:"agent"`
+	GeoIPDBPath       string             `json:"-"`
+	UpdatedAt         time.Time          `json:"updatedAt"`
+}
+
+type NotificationChannel struct {
+	ID        string          `json:"id"`
+	TenantID  string          `json:"-"`
+	Name      string          `json:"name"`
+	Type      string          `json:"type"`
+	Target    EncryptedSecret `json:"-"`
+	Enabled   bool            `json:"enabled"`
+	AllAgents bool            `json:"-"`
+	AgentIDs  []string        `json:"-"`
+	CreatedAt time.Time       `json:"createdAt"`
+	UpdatedAt time.Time       `json:"updatedAt"`
+}
+
+type NotificationLog struct {
+	ID          string    `json:"id"`
+	TenantID    string    `json:"-"`
+	ChannelID   string    `json:"channelId"`
+	ChannelName string    `json:"channelName"`
+	ChannelType string    `json:"channelType"`
+	AgentName   string    `json:"agentName"`
+	Message     string    `json:"message"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"createdAt"`
 }

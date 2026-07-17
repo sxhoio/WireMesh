@@ -70,7 +70,7 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
     <!-- 统计卡片 -->
     <div class="grid shrink-0 grid-cols-2 gap-4 lg:grid-cols-4">
       <div class="panel px-4 py-3.5">
-        <p class="text-xs text-slate-500">Agent 总数</p>
+        <p class="text-xs text-slate-500">节点总数</p>
         <p class="mt-1 whitespace-nowrap text-xl font-bold text-white">{{ stats.agentTotal }}
           <span class="ml-1.5 text-xs font-normal"><span class="text-emerald-400">{{ stats.agentOnline }} 在线</span> · <span class="text-slate-500">{{ stats.agentTotal - stats.agentOnline }} 离线</span></span>
         </p>
@@ -80,13 +80,13 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
         <p class="mt-1 text-xl font-bold text-cyan-300">{{ stats.ifaceCount }}</p>
       </div>
       <div class="panel px-4 py-3.5">
-        <p class="text-xs text-slate-500">Peer 连接</p>
+        <p class="text-xs text-slate-500">对等连接</p>
         <p class="mt-1 whitespace-nowrap text-xl font-bold text-white">{{ stats.linkOk + stats.linkBad + stats.linkUnknown }}
           <span class="ml-1.5 text-xs font-normal"><span class="text-emerald-400">{{ stats.linkOk }}</span> / <span class="text-red-400">{{ stats.linkBad }}</span> / <span class="text-slate-500">{{ stats.linkUnknown }}</span></span>
         </p>
       </div>
       <button class="panel px-4 py-3.5 text-left transition hover:border-amber-500/40" @click="showTempPeers = true">
-        <p class="text-xs text-slate-500">临时 Peer</p>
+        <p class="text-xs text-slate-500">临时对等端</p>
         <p class="mt-1 text-xl font-bold" :class="stats.tempCount ? 'text-amber-400' : 'text-white'">{{ stats.tempCount }}</p>
       </button>
     </div>
@@ -122,7 +122,7 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
               </div>
               <dl class="mt-3 space-y-1.5 text-xs">
                 <div class="flex justify-between"><dt class="text-slate-500">状态</dt><dd :class="selectedAgent.status === 'online' ? 'text-emerald-400' : 'text-slate-500'">{{ selectedAgent.status === 'online' ? '在线' : '离线' }}{{ selectedAgent.enabled ? '' : ' · 已停用' }}</dd></div>
-                <div class="flex justify-between"><dt class="text-slate-500">公网 Endpoint</dt><dd class="font-mono text-slate-300">{{ agentEndpoint(selectedAgent) }}</dd></div>
+                <div class="flex justify-between"><dt class="text-slate-500">公网端点</dt><dd class="font-mono text-slate-300">{{ agentEndpoint(selectedAgent) }}</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">流量</dt><dd class="text-slate-300">↓{{ selectedAgent.rxMbps }} ↑{{ selectedAgent.txMbps }} Mbps</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">最后上报</dt><dd class="text-slate-300">{{ ago(selectedAgent.lastSeen) }}</dd></div>
                 <div class="flex justify-between"><dt class="text-slate-500">版本</dt><dd class="text-slate-300">{{ selectedAgent.version }}</dd></div>
@@ -180,9 +180,9 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
               <div class="flex items-center gap-2"><span class="h-0.5 w-4 rounded bg-emerald-400"></span>正常：3 分钟内握手且探测可达</div>
               <div class="flex items-center gap-2"><span class="h-0.5 w-4 rounded bg-amber-400"></span>波动：握手超时/探测波动/单侧数据</div>
               <div class="flex items-center gap-2"><span class="h-0.5 w-4 rounded bg-red-400"></span>异常：连续探测失败</div>
-              <div class="flex items-center gap-2"><span class="h-0 w-4 border-t border-dashed border-slate-500"></span>未知：Agent 离线/从未握手</div>
-              <div class="flex items-center gap-2 pt-1"><span class="h-2 w-2 rounded-full bg-emerald-400"></span>受管 Agent（实心）</div>
-              <div class="flex items-center gap-2"><span class="h-2 w-2 rounded-full border border-amber-400"></span>临时 Peer（空心）</div>
+              <div class="flex items-center gap-2"><span class="h-0 w-4 border-t border-dashed border-slate-500"></span>未知：节点离线/从未握手</div>
+              <div class="flex items-center gap-2 pt-1"><span class="h-2 w-2 rounded-full bg-emerald-400"></span>受管节点（实心）</div>
+              <div class="flex items-center gap-2"><span class="h-2 w-2 rounded-full border border-amber-400"></span>临时对等端（空心）</div>
             </div>
             <div class="mt-3 space-y-2.5 border-t border-ink-700 pt-3">
               <select v-model="mesh.linkFilter" class="input !py-1.5 !text-xs">
@@ -279,14 +279,14 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
             未知位置
             <span class="chip bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/30">{{ unknownTempPeers.length }}</span>
           </p>
-          <p class="mt-1 text-[11px] leading-relaxed text-slate-500">私网 IP、无 Endpoint 或 GeoIP 解析失败的 Peer</p>
+          <p class="mt-1 text-[11px] leading-relaxed text-slate-500">私网 IP、无公网端点或地理位置解析失败的对等端</p>
           <div class="mt-3 max-h-60 space-y-2 overflow-y-auto p-2 2xl:max-h-none 2xl:min-h-0 2xl:flex-1">
             <div v-for="t in unknownTempPeers" :key="t.id" class="flex items-center gap-2 rounded-lg bg-ink-800/60 px-3 py-2.5 ring-1 ring-ink-700">
               <span class="h-2 w-2 shrink-0 rounded-full border border-amber-400/70"></span>
               <span class="min-w-0 flex-1 truncate font-mono text-xs text-slate-400">{{ t.endpoint || shortKey(t.publicKey) }}</span>
               <span class="shrink-0 text-[11px] text-slate-600">{{ fmtHandshake(t.lastHandshakeSecAgo) }}</span>
             </div>
-            <p v-if="!unknownTempPeers.length" class="py-8 text-center text-xs text-slate-600">没有未知位置的 Peer</p>
+            <p v-if="!unknownTempPeers.length" class="py-8 text-center text-xs text-slate-600">没有未知位置的对等端</p>
           </div>
         </div>
       </div>

@@ -77,6 +77,30 @@ func TestInitialSetupFlow(t *testing.T) {
 	}
 }
 
+func TestEmptyListEndpointsReturnArrays(t *testing.T) {
+	app := testApp(t)
+	_, token := initializeTestAdmin(t, app, "empty@example.com", "strong-password")
+	for _, path := range []string{
+		"/api/v1/projects",
+		"/api/v1/networks?project_id=missing",
+		"/api/v1/nodes",
+		"/api/v1/deliveries",
+		"/api/v1/audit",
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		app.Router().ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s returned %d: %s", path, response.Code, response.Body.String())
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil || items == nil {
+			t.Fatalf("%s must return a JSON array, got %s (%v)", path, response.Body.String(), err)
+		}
+	}
+}
+
 func TestAllocateAddress(t *testing.T) {
 	address, err := AllocateAddress("10.0.0.0/30", []string{"10.0.0.1"})
 	if err != nil || address != "10.0.0.2" {

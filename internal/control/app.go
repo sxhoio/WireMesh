@@ -18,20 +18,30 @@ import (
 	"math/big"
 	"net/http"
 	"net/mail"
+	"reflect"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Config struct {
-	MasterKey string
-	Store     Store
+	MasterKey       string
+	Store           Store
+	Database        *DatabaseManager
+	DatabaseDriver  string
+	AgentBinaryPath string
 }
 type App struct {
-	store Store
-	box   *SecretBox
-	auth  *Authenticator
-	ca    *x509.Certificate
-	caKey any
+	store           Store
+	database        *DatabaseManager
+	databaseDriver  string
+	box             *SecretBox
+	auth            *Authenticator
+	ca              *x509.Certificate
+	caKey           any
+	geoMu           sync.RWMutex
+	geoReaders      map[string]*geoReaderState
+	agentBinaryPath string
 }
 
 func NewApp(cfg Config) (*App, error) {
@@ -43,7 +53,7 @@ func NewApp(cfg Config) (*App, error) {
 	if store == nil {
 		store = NewMemoryStore()
 	}
-	app := &App{store: store, box: box}
+	app := &App{store: store, database: cfg.Database, databaseDriver: cfg.DatabaseDriver, box: box, geoReaders: map[string]*geoReaderState{}, agentBinaryPath: cfg.AgentBinaryPath}
 	app.auth = newAuthenticator(store, cfg.MasterKey+"-auth")
 	if err := app.newCertificateAuthority(); err != nil {
 		return nil, err
@@ -55,6 +65,9 @@ func (a *App) Router() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", a.health)
 	mux.HandleFunc("GET /api/v1/setup/status", a.setupStatus)
+	mux.HandleFunc("GET /api/v1/setup/database", a.databaseStatus)
+	mux.HandleFunc("POST /api/v1/setup/database/test", a.testDatabase)
+	mux.HandleFunc("POST /api/v1/setup/database", a.configureDatabase)
 	mux.HandleFunc("POST /api/v1/setup", a.setup)
 	mux.HandleFunc("POST /api/v1/auth/login", a.login)
 	mux.HandleFunc("GET /api/v1/auth/me", a.withUser(RoleViewer, a.me))
@@ -68,10 +81,27 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /api/v1/networks/{id}/publish", a.withUser(RoleOperator, a.publish))
 	mux.HandleFunc("GET /api/v1/deliveries", a.withUser(RoleViewer, a.deliveries))
 	mux.HandleFunc("GET /api/v1/audit", a.withUser(RoleAdmin, a.audit))
+	mux.HandleFunc("GET /api/v1/settings", a.withUser(RoleViewer, a.settings))
+	mux.HandleFunc("PUT /api/v1/settings", a.withUser(RoleAdmin, a.settings))
+	mux.HandleFunc("GET /api/v1/settings/geoip", a.withUser(RoleViewer, a.geoIPStatus))
+	mux.HandleFunc("PUT /api/v1/settings/geoip", a.withUser(RoleAdmin, a.updateGeoIP))
+	mux.HandleFunc("POST /api/v1/settings/geoip/reload", a.withUser(RoleAdmin, a.reloadGeoIP))
+	mux.HandleFunc("GET /api/v1/settings/geoip/lookup", a.withUser(RoleViewer, a.lookupGeoIP))
+	mux.HandleFunc("GET /api/v1/settings/notifications", a.withUser(RoleViewer, a.notificationChannels))
+	mux.HandleFunc("POST /api/v1/settings/notifications", a.withUser(RoleAdmin, a.notificationChannels))
+	mux.HandleFunc("PUT /api/v1/settings/notifications/{id}", a.withUser(RoleAdmin, a.updateNotificationChannel))
+	mux.HandleFunc("DELETE /api/v1/settings/notifications/{id}", a.withUser(RoleAdmin, a.deleteNotificationChannel))
+	mux.HandleFunc("POST /api/v1/settings/notifications/{id}/test", a.withUser(RoleAdmin, a.testNotificationChannel))
+	mux.HandleFunc("GET /api/v1/settings/notification-logs", a.withUser(RoleViewer, a.notificationLogs))
+	mux.HandleFunc("GET /api/v1/users", a.withUser(RoleAdmin, a.users))
+	mux.HandleFunc("POST /api/v1/users", a.withUser(RoleAdmin, a.users))
 	mux.HandleFunc("POST /api/v1/agent/enrollment-tokens", a.withUser(RoleAdmin, a.createEnrollment))
+	mux.HandleFunc("GET /agent/install.sh", a.agentInstallScript)
+	mux.HandleFunc("GET /agent/download", a.agentDownload)
 	mux.HandleFunc("POST /agent/v1/enroll", a.enroll)
 	mux.HandleFunc("GET /agent/v1/config", a.agentConfig)
 	mux.HandleFunc("POST /agent/v1/status", a.agentStatus)
+	mux.HandleFunc("POST /agent/v1/heartbeat", a.agentHeartbeat)
 	return cors(mux)
 }
 
@@ -85,10 +115,23 @@ func (a *App) setupStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to read setup status")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"initialized": initialized})
+	status := DatabaseStatus{Configured: true, Driver: a.databaseDriver}
+	if a.database != nil {
+		status = a.database.Status()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"initialized":           initialized,
+		"database_configured":   status.Configured,
+		"database_driver":       status.Driver,
+		"database_configurable": a.database != nil,
+	})
 }
 
 func (a *App) setup(w http.ResponseWriter, r *http.Request) {
+	if a.database != nil && !a.database.Status().Configured {
+		writeError(w, http.StatusConflict, "configure a database before creating the administrator")
+		return
+	}
 	var in struct {
 		Email    string
 		Name     string
@@ -126,9 +169,19 @@ func (a *App) setup(w http.ResponseWriter, r *http.Request) {
 		PasswordHash: passwordHash,
 		CreatedAt:    time.Now().UTC(),
 	}
-	if err := a.store.CreateInitialAdmin(user); err != nil {
+	var createErr error
+	if a.database != nil {
+		createErr = a.database.CreateInitialAdmin(user)
+	} else {
+		createErr = a.store.CreateInitialAdmin(user)
+	}
+	if err := createErr; err != nil {
 		if errors.Is(err, errAlreadyInitialized) {
 			writeError(w, http.StatusConflict, "WireMesh is already initialized")
+			return
+		}
+		if errors.Is(err, errDatabaseNotConfigured) {
+			writeError(w, http.StatusConflict, "configure a database before creating the administrator")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to create administrator")
@@ -154,7 +207,11 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	}
 	token, user, err := a.auth.Login(in.Email, in.Password)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, err.Error())
+		if errors.Is(err, errLoginPersistence) {
+			writeError(w, http.StatusInternalServerError, "failed to record login")
+		} else {
+			writeError(w, http.StatusUnauthorized, err.Error())
+		}
 		return
 	}
 	a.auditEvent(user.TenantID, user.ID, "auth.login", "user", user.ID, nil)
@@ -165,7 +222,11 @@ func (a *App) me(w http.ResponseWriter, r *http.Request, c claims) {
 	writeJSON(w, http.StatusOK, publicUser(user))
 }
 func publicUser(u User) map[string]any {
-	return map[string]any{"id": u.ID, "tenant_id": u.TenantID, "email": u.Email, "name": u.Name, "role": u.Role}
+	var lastLoginAt any
+	if !u.LastLoginAt.IsZero() {
+		lastLoginAt = u.LastLoginAt
+	}
+	return map[string]any{"id": u.ID, "tenant_id": u.TenantID, "email": u.Email, "name": u.Name, "role": u.Role, "last_login_at": lastLoginAt}
 }
 
 func (a *App) projects(w http.ResponseWriter, r *http.Request, c claims) {
@@ -469,6 +530,38 @@ func (a *App) agentStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "recorded"})
 }
 
+func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
+	node, ok := a.agentNode(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Hostname     string            `json:"hostname"`
+		OS           string            `json:"os"`
+		AgentVersion string            `json:"agent_version"`
+		Labels       map[string]string `json:"labels"`
+		Interfaces   string            `json:"interfaces"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	node.LastSeen = time.Now()
+	if strings.TrimSpace(in.OS) != "" {
+		node.OS = strings.TrimSpace(in.OS)
+	}
+	if strings.TrimSpace(in.AgentVersion) != "" {
+		node.AgentVersion = strings.TrimSpace(in.AgentVersion)
+	}
+	if in.Labels != nil {
+		node.Labels = in.Labels
+	}
+	if err := a.store.UpdateNode(node); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record agent heartbeat")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "recorded", "server_time": node.LastSeen})
+}
+
 func (a *App) createNode(tenantID string, network Network, name, endpoint, region, os, agentVersion string, labels map[string]string) (Node, error) {
 	if strings.TrimSpace(name) == "" {
 		return Node{}, errors.New("node name is required")
@@ -561,6 +654,10 @@ func decode(w http.ResponseWriter, r *http.Request, target any) bool {
 	return true
 }
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	value := reflect.ValueOf(v)
+	if value.IsValid() && value.Kind() == reflect.Slice && value.IsNil() {
+		v = reflect.MakeSlice(value.Type(), 0, 0).Interface()
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
