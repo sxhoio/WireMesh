@@ -295,7 +295,7 @@ function channelConfigSummary(c: NotifyChannel) {
     </aside>
 
     <!-- 右侧内容 -->
-    <div class="min-w-0 w-full space-y-5">
+    <div class="min-w-0 w-full space-y-5 px-4 sm:px-6 lg:pl-0 lg:pr-6 xl:pl-0 xl:pr-8 2xl:pl-0 2xl:pr-10">
       <!-- 网络默认值 -->
       <section v-if="tab === 'net'" class="panel p-4 sm:p-6 2xl:p-7">
         <h2 class="text-sm font-semibold text-white">网络默认值</h2>
