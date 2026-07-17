@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const agentVersion = "0.2.0"
+const agentVersion = "0.3.0"
 
 type enrollmentRequest struct {
 	Token        string            `json:"token"`
@@ -44,25 +44,24 @@ type enrollmentResponse struct {
 }
 
 type agentState struct {
-	NodeID         string `json:"node_id"`
-	Server         string `json:"server"`
-	CertificatePEM string `json:"certificate_pem,omitempty"`
-	PrivateKeyPEM  string `json:"private_key_pem,omitempty"`
-	CAPEM          string `json:"ca_pem,omitempty"`
-	ExpiresAt      string `json:"expires_at,omitempty"`
+	NodeID           string `json:"node_id"`
+	Server           string `json:"server"`
+	CertificatePEM   string `json:"certificate_pem,omitempty"`
+	PrivateKeyPEM    string `json:"private_key_pem,omitempty"`
+	CAPEM            string `json:"ca_pem,omitempty"`
+	ExpiresAt        string `json:"expires_at,omitempty"`
+	AppliedVersion   uint64 `json:"applied_version,omitempty"`
+	AttemptedVersion uint64 `json:"attempted_version,omitempty"`
 }
 
 type heartbeatRequest struct {
-	Hostname     string            `json:"hostname"`
-	OS           string            `json:"os"`
-	AgentVersion string            `json:"agent_version"`
-	Labels       map[string]string `json:"labels"`
-	Interfaces   string            `json:"interfaces"`
-}
-
-type configResponse struct {
-	Version uint64          `json:"version"`
-	Config  json.RawMessage `json:"config"`
+	Hostname        string                     `json:"hostname"`
+	OS              string                     `json:"os"`
+	AgentVersion    string                     `json:"agent_version"`
+	Labels          map[string]string          `json:"labels"`
+	Interfaces      string                     `json:"interfaces"`
+	WireGuard       []wireGuardInterfaceStatus `json:"wireguard"`
+	CollectionError string                     `json:"collection_error,omitempty"`
 }
 
 func main() {
@@ -126,46 +125,61 @@ func main() {
 		log.Fatalf("configure agent transport: %v", err)
 	}
 	hostname, _ := os.Hostname()
-	heartbeat := heartbeatRequest{
+	baseHeartbeat := heartbeatRequest{
 		Hostname: hostname, OS: runtime.GOOS + "/" + runtime.GOARCH,
 		AgentVersion: agentVersion, Labels: parseLabels(*labelsText), Interfaces: *interfaces,
 	}
+	manager := wireGuardManager{runner: execCommandRunner{}, configDir: "/etc/wireguard"}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := postHeartbeat(ctx, client, state, heartbeat); err != nil {
-		log.Printf("initial heartbeat failed: %v", err)
+	sendHeartbeat := func() {
+		heartbeat := baseHeartbeat
+		heartbeat.WireGuard, heartbeat.CollectionError = collectWireGuard(ctx, *interfaces, manager.runner)
+		if err := postHeartbeat(ctx, client, state, heartbeat); err != nil {
+			log.Printf("heartbeat failed: %v", err)
+		}
 	}
-	if version, err := pollConfig(ctx, client, state); err != nil {
-		log.Printf("initial configuration check failed: %v", err)
-	} else if version > 0 {
-		log.Printf("configuration version %d is available", version)
+	reconcileConfiguration := func() {
+		payload, found, err := pollConfig(ctx, client, state)
+		if err != nil {
+			log.Printf("configuration check failed: %v", err)
+			return
+		}
+		if !found || payload.Version == 0 || payload.Version <= state.AttemptedVersion {
+			return
+		}
+		status, message := manager.Apply(ctx, payload.Config, state.NodeID)
+		if err := postConfigStatus(ctx, client, state, payload.Version, status, message); err != nil {
+			log.Printf("report configuration version %d result: %v", payload.Version, err)
+			return
+		}
+		state.AttemptedVersion = payload.Version
+		if status == "applied" {
+			state.AppliedVersion = payload.Version
+		}
+		if err := saveState(statePath, state); err != nil {
+			log.Printf("persist configuration state: %v", err)
+		}
+		log.Printf("configuration version %d: %s", payload.Version, status)
 	}
+
+	sendHeartbeat()
+	reconcileConfiguration()
 
 	reportTicker := time.NewTicker(*reportInterval)
 	probeTicker := time.NewTicker(*probeInterval)
 	defer reportTicker.Stop()
 	defer probeTicker.Stop()
-	var lastVersion uint64
 	for {
 		select {
 		case <-ctx.Done():
 			log.Printf("agent stopped")
 			return
 		case <-reportTicker.C:
-			if err := postHeartbeat(ctx, client, state, heartbeat); err != nil {
-				log.Printf("heartbeat failed: %v", err)
-			}
+			sendHeartbeat()
 		case <-probeTicker.C:
-			version, err := pollConfig(ctx, client, state)
-			if err != nil {
-				log.Printf("configuration check failed: %v", err)
-				continue
-			}
-			if version > 0 && version != lastVersion {
-				lastVersion = version
-				log.Printf("configuration version %d is available", version)
-			}
+			reconcileConfiguration()
 		}
 	}
 }
@@ -243,28 +257,50 @@ func postHeartbeat(ctx context.Context, client *http.Client, state agentState, h
 	return nil
 }
 
-func pollConfig(ctx context.Context, client *http.Client, state agentState) (uint64, error) {
+func postConfigStatus(ctx context.Context, client *http.Client, state agentState, version uint64, status, message string) error {
+	body, err := json.Marshal(map[string]any{"version": version, "state": status, "message": message})
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, state.Server+"/agent/v1/status", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	setDevelopmentIdentity(request, state)
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return responseError(response)
+	}
+	return nil
+}
+
+func pollConfig(ctx context.Context, client *http.Client, state agentState) (configResponse, bool, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, state.Server+"/agent/v1/config", nil)
 	if err != nil {
-		return 0, err
+		return configResponse{}, false, err
 	}
 	setDevelopmentIdentity(request, state)
 	response, err := client.Do(request)
 	if err != nil {
-		return 0, err
+		return configResponse{}, false, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusNotFound {
-		return 0, nil
+		return configResponse{}, false, nil
 	}
 	if response.StatusCode != http.StatusOK {
-		return 0, responseError(response)
+		return configResponse{}, false, responseError(response)
 	}
 	var payload configResponse
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return 0, err
+		return configResponse{}, false, err
 	}
-	return payload.Version, nil
+	return payload, true, nil
 }
 
 func setDevelopmentIdentity(request *http.Request, state agentState) {

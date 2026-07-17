@@ -7,6 +7,7 @@ import type {
 import { useAppStore } from './app'
 
 let pollingTimer: number | undefined
+const trafficSamples = new Map<string, { time: number; receiveBytes: number; transmitBytes: number }>()
 
 function timestamp(value?: string | null) {
   if (!value || value.startsWith('0001-')) return 0
@@ -20,10 +21,6 @@ function apiTopology(value: Network['topology']): ApiNetwork['topology'] {
   return value === 'full-mesh' ? 'full_mesh' : value === 'hub-spoke' ? 'hub_spoke' : 'custom'
 }
 
-function endpointPort(value: string) {
-  const match = value.match(/:(\d+)$/)
-  return match ? Number(match[1]) : 0
-}
 function nodeRole(node: ApiNode): WGInterface['role'] {
   const value = node.labels?.['wiremesh.role']
   return value === 'hub' || value === 'spoke' || value === 'mesh' ? value : 'mesh'
@@ -31,6 +28,15 @@ function nodeRole(node: ApiNode): WGInterface['role'] {
 function toAgent(node: ApiNode, offlineSeconds: number): Agent {
   const seen = timestamp(node.last_seen)
   const online = seen > 0 && Date.now() - seen <= offlineSeconds * 1000
+  const observed = node.wireguard || []
+  const receiveBytes = observed.flatMap((iface) => iface.peers || []).reduce((total, peer) => total + (peer.receive_bytes || 0), 0)
+  const transmitBytes = observed.flatMap((iface) => iface.peers || []).reduce((total, peer) => total + (peer.transmit_bytes || 0), 0)
+  const sampleTime = Date.now()
+  const previousSample = trafficSamples.get(node.id)
+  const elapsedSeconds = previousSample ? (sampleTime - previousSample.time) / 1000 : 0
+  const rxMbps = previousSample && elapsedSeconds > 0 ? Math.max(0, receiveBytes - previousSample.receiveBytes) * 8 / elapsedSeconds / 1_000_000 : 0
+  const txMbps = previousSample && elapsedSeconds > 0 ? Math.max(0, transmitBytes - previousSample.transmitBytes) * 8 / elapsedSeconds / 1_000_000 : 0
+  trafficSamples.set(node.id, { time: sampleTime, receiveBytes, transmitBytes })
   return {
     id: node.id,
     projectId: node.project_id,
@@ -47,23 +53,89 @@ function toAgent(node: ApiNode, offlineSeconds: number): Agent {
     lng: Number.NaN,
     lat: Number.NaN,
     lastSeen: seen,
-    rxMbps: 0,
-    txMbps: 0,
-    totalRxGB: 0,
-    totalTxGB: 0,
-    interfaces: [{
-      id: node.id + ':wg0',
+    rxMbps,
+    txMbps,
+    totalRxGB: receiveBytes / 1024 / 1024 / 1024,
+    totalTxGB: transmitBytes / 1024 / 1024 / 1024,
+    interfaces: observed.map((iface) => ({
+      id: node.id + ':' + iface.name,
       agentId: node.id,
       networkId: node.network_id,
-      name: 'wg0',
-      listenPort: endpointPort(node.endpoint),
-      mtu: 0,
-      publicKey: node.public_key || '',
-      tunnelIP: node.address || '',
+      name: iface.name,
+      listenPort: iface.listen_port || 0,
+      mtu: iface.mtu || 0,
+      publicKey: iface.public_key || '',
+      tunnelIP: iface.addresses?.[0]?.split('/')[0] || '',
       role: nodeRole(node),
-    }],
+      addresses: iface.addresses || [],
+      up: Boolean(iface.up),
+      peers: (iface.peers || []).map((peer) => ({
+        publicKey: peer.public_key,
+        endpoint: peer.endpoint || '',
+        allowedIPs: peer.allowed_ips || [],
+        latestHandshake: timestamp(peer.latest_handshake_at),
+        receiveBytes: peer.receive_bytes || 0,
+        transmitBytes: peer.transmit_bytes || 0,
+        persistentKeepalive: peer.persistent_keepalive || 0,
+      })),
+    })),
   }
 }
+function observedPeerState(secondsAgo: number, handshakeThreshold: number): PeerState {
+  if (secondsAgo < 0) return 'unknown'
+  if (secondsAgo > handshakeThreshold) return 'down'
+  if (secondsAgo > handshakeThreshold / 2) return 'degraded'
+  return 'ok'
+}
+function observedTopology(agents: Agent[], handshakeThreshold: number): { links: PeerLink[]; tempPeers: TempPeer[] } {
+  const interfaceByKey = new Map<string, WGInterface>()
+  agents.forEach((agent) => agent.interfaces.forEach((iface) => {
+    if (iface.publicKey) interfaceByKey.set(iface.publicKey, iface)
+  }))
+  const links = new Map<string, PeerLink>()
+  const tempPeers: TempPeer[] = []
+  const now = Date.now()
+  agents.forEach((agent) => agent.interfaces.forEach((source) => source.peers.forEach((peer) => {
+    const handshakeSeconds = peer.latestHandshake > 0 ? Math.max(0, Math.floor((now - peer.latestHandshake) / 1000)) : -1
+    const target = interfaceByKey.get(peer.publicKey)
+    if (!target || target.id === source.id) {
+      tempPeers.push({
+        id: source.id + ':' + peer.publicKey,
+        publicKey: peer.publicKey,
+        endpoint: peer.endpoint,
+        allowedIPs: peer.allowedIPs.join(', '),
+        sourceIfaceId: source.id,
+        lastHandshakeSecAgo: handshakeSeconds,
+        rxMB: peer.receiveBytes / 1024 / 1024,
+        txMB: peer.transmitBytes / 1024 / 1024,
+        firstSeen: peer.latestHandshake || agent.lastSeen,
+      })
+      return
+    }
+    const endpoints = [source.id, target.id].sort()
+    const id = 'observed:' + endpoints.join(':')
+    const current = links.get(id)
+    if (!current || current.lastHandshakeSecAgo < 0 || (handshakeSeconds >= 0 && handshakeSeconds < current.lastHandshakeSecAgo)) {
+      links.set(id, {
+        id,
+        networkId: source.networkId,
+        a: source.id,
+        b: target.id,
+        state: observedPeerState(handshakeSeconds, handshakeThreshold),
+        latencyMs: 0,
+        lossPct: 0,
+        lastHandshakeSecAgo: handshakeSeconds,
+        rxMbps: 0,
+        txMbps: 0,
+        singleSide: true,
+      })
+    } else if (current) {
+      current.singleSide = false
+    }
+  })))
+  return { links: [...links.values()], tempPeers }
+}
+
 function deliveryStatus(state: string): 'success' | 'pending' | 'failed' {
   if (state === 'applied') return 'success'
   if (state === 'pending') return 'pending'
@@ -172,8 +244,9 @@ export const useMeshStore = defineStore('mesh', {
         this.projects = projects.map((project) => ({ id: project.id, name: project.name, desc: project.description || '' }))
         this.networks = networkGroups.flat().map((network) => ({ id: network.id, projectId: network.project_id, name: network.name, cidr: network.cidr, topology: topology(network.topology), customPairs: [] }))
         this.agents = nodes.map((node) => toAgent(node, app.settings.statusRules.agentOfflineSec))
-        this.links = []
-        this.tempPeers = []
+        const observed = observedTopology(this.agents, app.settings.statusRules.handshakeSec)
+        this.links = observed.links
+        this.tempPeers = observed.tempPeers
         this.audit = auditEntries(audits)
         this.feed = feedEntries(audits, deliveries)
         this.revisions = revisionsFrom(deliveries, this.agents, app.username)

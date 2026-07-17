@@ -536,11 +536,13 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Hostname     string            `json:"hostname"`
-		OS           string            `json:"os"`
-		AgentVersion string            `json:"agent_version"`
-		Labels       map[string]string `json:"labels"`
-		Interfaces   string            `json:"interfaces"`
+		Hostname        string                     `json:"hostname"`
+		OS              string                     `json:"os"`
+		AgentVersion    string                     `json:"agent_version"`
+		Labels          map[string]string          `json:"labels"`
+		Interfaces      string                     `json:"interfaces"`
+		WireGuard       []WireGuardInterfaceStatus `json:"wireguard"`
+		CollectionError string                     `json:"collection_error,omitempty"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -554,6 +556,9 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.Labels != nil {
 		node.Labels = in.Labels
+	}
+	if in.WireGuard != nil {
+		node.WireGuard = in.WireGuard
 	}
 	if err := a.store.UpdateNode(node); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record agent heartbeat")

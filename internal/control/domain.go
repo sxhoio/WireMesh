@@ -50,22 +50,43 @@ type Network struct {
 	Topology  Topology  `json:"topology"`
 	CreatedAt time.Time `json:"created_at"`
 }
+type WireGuardPeerStatus struct {
+	PublicKey           string    `json:"public_key"`
+	Endpoint            string    `json:"endpoint"`
+	AllowedIPs          []string  `json:"allowed_ips"`
+	LatestHandshakeAt   time.Time `json:"latest_handshake_at,omitempty"`
+	ReceiveBytes        int64     `json:"receive_bytes"`
+	TransmitBytes       int64     `json:"transmit_bytes"`
+	PersistentKeepalive int       `json:"persistent_keepalive,omitempty"`
+}
+
+type WireGuardInterfaceStatus struct {
+	Name       string                `json:"name"`
+	PublicKey  string                `json:"public_key"`
+	ListenPort int                   `json:"listen_port"`
+	Addresses  []string              `json:"addresses"`
+	MTU        int                   `json:"mtu"`
+	Up         bool                  `json:"up"`
+	Peers      []WireGuardPeerStatus `json:"peers"`
+}
+
 type Node struct {
-	ID           string            `json:"id"`
-	TenantID     string            `json:"tenant_id"`
-	ProjectID    string            `json:"project_id"`
-	NetworkID    string            `json:"network_id"`
-	Name         string            `json:"name"`
-	Address      string            `json:"address"`
-	Endpoint     string            `json:"endpoint"`
-	Region       string            `json:"region"`
-	OS           string            `json:"os"`
-	AgentVersion string            `json:"agent_version"`
-	Labels       map[string]string `json:"labels"`
-	PublicKey    string            `json:"public_key"`
-	PrivateKey   EncryptedSecret   `json:"-"`
-	LastSeen     time.Time         `json:"last_seen"`
-	CreatedAt    time.Time         `json:"created_at"`
+	ID           string                     `json:"id"`
+	TenantID     string                     `json:"tenant_id"`
+	ProjectID    string                     `json:"project_id"`
+	NetworkID    string                     `json:"network_id"`
+	Name         string                     `json:"name"`
+	Address      string                     `json:"address"`
+	Endpoint     string                     `json:"endpoint"`
+	Region       string                     `json:"region"`
+	OS           string                     `json:"os"`
+	AgentVersion string                     `json:"agent_version"`
+	Labels       map[string]string          `json:"labels"`
+	PublicKey    string                     `json:"public_key"`
+	PrivateKey   EncryptedSecret            `json:"-"`
+	WireGuard    []WireGuardInterfaceStatus `json:"wireguard"`
+	LastSeen     time.Time                  `json:"last_seen"`
+	CreatedAt    time.Time                  `json:"created_at"`
 }
 type PeerRelation struct {
 	ID           string    `json:"id"`

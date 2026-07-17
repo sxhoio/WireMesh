@@ -228,6 +228,47 @@ func TestSQLiteMigratesExistingSystemSettingsGeoIPColumn(t *testing.T) {
 	}
 }
 
+func TestSQLiteMigratesNodeWireGuardColumn(t *testing.T) {
+	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "legacy-nodes.db"))
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE nodes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, project_id TEXT NOT NULL, network_id TEXT NOT NULL, name TEXT NOT NULL, address TEXT NOT NULL, endpoint TEXT NOT NULL, region TEXT NOT NULL, os TEXT NOT NULL, agent_version TEXT NOT NULL, labels_json TEXT NOT NULL, public_key TEXT NOT NULL, private_key_json TEXT NOT NULL, last_seen TEXT NOT NULL, created_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := db.Exec(`INSERT INTO nodes (id, tenant_id, project_id, network_id, name, address, endpoint, region, os, agent_version, labels_json, public_key, private_key_json, last_seen, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"legacy-node", "legacy-tenant", "legacy-project", "legacy-network", "Legacy", "10.0.0.1/32", "", "", "linux", "0.2.0", "{}", "public", "{}", timeText(now), timeText(now)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenSQLStore("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open legacy node database: %v", err)
+	}
+	defer store.Close()
+	var count int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('nodes') WHERE name = 'wireguard_json'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("wireguard_json column was not migrated: count=%d err=%v", count, err)
+	}
+	node, err := store.GetNode("legacy-tenant", "legacy-node")
+	if err != nil || node.WireGuard == nil || len(node.WireGuard) != 0 {
+		t.Fatalf("legacy WireGuard status was not initialized: %#v %v", node, err)
+	}
+	node.WireGuard = []WireGuardInterfaceStatus{{Name: "wg0", ListenPort: 51820, Up: true}}
+	if err := store.UpdateNode(node); err != nil {
+		t.Fatal(err)
+	}
+	node, err = store.GetNode("legacy-tenant", "legacy-node")
+	if err != nil || len(node.WireGuard) != 1 || node.WireGuard[0].Name != "wg0" {
+		t.Fatalf("WireGuard status was not persisted: %#v %v", node, err)
+	}
+}
+
 func TestPostgresPlaceholderBinding(t *testing.T) {
 	store := &SQLStore{driver: "postgres"}
 	got := store.query("SELECT * FROM users WHERE tenant_id = ? AND email = ?")

@@ -22,6 +22,16 @@ export interface Network {
   customPairs: [string, string][]
 }
 
+export interface WGObservedPeer {
+  publicKey: string
+  endpoint: string
+  allowedIPs: string[]
+  latestHandshake: number
+  receiveBytes: number
+  transmitBytes: number
+  persistentKeepalive: number
+}
+
 export interface WGInterface {
   id: string
   agentId: string
@@ -32,6 +42,9 @@ export interface WGInterface {
   publicKey: string
   tunnelIP: string
   role: 'hub' | 'spoke' | 'mesh' // hub-spoke 拓扑用
+  addresses: string[]
+  up: boolean
+  peers: WGObservedPeer[]
 }
 
 export interface Agent {

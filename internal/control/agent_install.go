@@ -64,6 +64,42 @@ case "$MACHINE" in
   *) echo "不支持的 CPU 架构: $MACHINE" >&2; exit 1 ;;
 esac
 
+install_wireguard() {
+  if command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1 && command -v ip >/dev/null 2>&1; then
+    echo "WireGuard 工具已安装。"
+    return
+  fi
+
+  echo "正在安装 WireGuard 工具..."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-tools iproute2
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y wireguard-tools iproute
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y wireguard-tools iproute
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache wireguard-tools iproute2
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm wireguard-tools iproute2
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install wireguard-tools iproute2
+  else
+    echo "无法识别系统包管理器，请先手动安装 wg、wg-quick 和 ip 命令。" >&2
+    exit 1
+  fi
+
+  for command_name in wg wg-quick ip; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+      echo "WireGuard 安装不完整，缺少命令: $command_name" >&2
+      exit 1
+    fi
+  done
+}
+
+install_wireguard
+install -d -m 0700 /etc/wireguard
+
 TMP_FILE="$(mktemp)"
 trap 'rm -f "$TMP_FILE"' EXIT
 curl -fL "$SERVER/agent/download?os=$OS&arch=$ARCH" -o "$TMP_FILE"
@@ -99,11 +135,12 @@ EnvironmentFile=/etc/wiremesh-agent/agent.env
 ExecStart=/usr/local/bin/wiremesh-agent --server "${WIREMESH_SERVER}" --token-file /etc/wiremesh-agent/enrollment-token --state-dir /var/lib/wiremesh-agent --name "${WIREMESH_NAME}" --labels "${WIREMESH_LABELS}" --interfaces "${WIREMESH_INTERFACES}" --report-interval "${WIREMESH_REPORT_INTERVAL}" --probe-interval "${WIREMESH_PROBE_INTERVAL}" --mtls="${WIREMESH_MTLS}"
 Restart=on-failure
 RestartSec=5s
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/wiremesh-agent /etc/wiremesh-agent
+ReadWritePaths=/var/lib/wiremesh-agent /etc/wiremesh-agent /etc/wireguard
 
 [Install]
 WantedBy=multi-user.target

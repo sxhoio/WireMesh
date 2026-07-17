@@ -4,7 +4,9 @@ const TOKEN_KEY = 'wiremesh.token'
 export interface ApiUser { id: string; tenant_id: string; email: string; name: string; role: 'admin' | 'operator' | 'viewer'; last_login_at?: string | null; created_at?: string }
 export interface ApiProject { id: string; tenant_id: string; name: string; description: string; created_at: string }
 export interface ApiNetwork { id: string; tenant_id: string; project_id: string; name: string; cidr: string; dns: string; topology: 'full_mesh' | 'hub_spoke' | 'custom'; created_at: string }
-export interface ApiNode { id: string; tenant_id: string; project_id: string; network_id: string; name: string; address: string; endpoint: string; region: string; os: string; agent_version: string; labels: Record<string, string>; public_key: string; last_seen: string; created_at: string }
+export interface ApiWireGuardPeer { public_key: string; endpoint: string; allowed_ips: string[]; latest_handshake_at?: string; receive_bytes: number; transmit_bytes: number; persistent_keepalive?: number }
+export interface ApiWireGuardInterface { name: string; public_key: string; listen_port: number; addresses: string[]; mtu: number; up: boolean; peers: ApiWireGuardPeer[] }
+export interface ApiNode { id: string; tenant_id: string; project_id: string; network_id: string; name: string; address: string; endpoint: string; region: string; os: string; agent_version: string; labels: Record<string, string>; public_key: string; wireguard?: ApiWireGuardInterface[]; last_seen: string; created_at: string }
 export interface ApiDelivery { id: string; tenant_id: string; node_id: string; version: number; state: string; message: string; updated_at: string }
 export interface ApiAudit { id: string; tenant_id: string; actor_id: string; action: string; resource_type: string; resource_id: string; metadata?: Record<string, string>; created_at: string }
 export interface EnrollmentResult { token: string; expires_at: string; network_id: string }
