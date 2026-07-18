@@ -59,6 +59,27 @@ func TestAgentInstallerAndBinaryDownload(t *testing.T) {
 	}
 }
 
+func TestAgentUninstallerScriptIsDirectlyExecutable(t *testing.T) {
+	app, err := NewApp(Config{MasterKey: "test-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/agent/uninstall.sh", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("uninstaller returned %d: %s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "text/x-shellscript") {
+		t.Fatalf("unexpected uninstaller content type %q", contentType)
+	}
+	script := response.Body.String()
+	for _, required := range []string{"#!/usr/bin/env bash", "systemctl disable --now wiremesh-agent.service", "rm -f /usr/local/bin/wiremesh-agent", "rm -rf /var/lib/wiremesh-agent /etc/wiremesh-agent"} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("uninstaller is missing %q", required)
+		}
+	}
+}
+
 func TestAgentInstallerUsesRequestURLAndBuiltInDefaults(t *testing.T) {
 	app, err := NewApp(Config{MasterKey: "test-key"})
 	if err != nil {

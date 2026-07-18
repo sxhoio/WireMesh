@@ -8,8 +8,8 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 const app = useAppStore()
 const mesh = useMeshStore()
 
-const tab = ref<'script' | 'manual'>('script')
-const copied = ref<'script' | 'manual' | ''>('')
+const tab = ref<'script' | 'manual' | 'uninstall'>('script')
+const copied = ref<'script' | 'manual' | 'uninstall' | ''>('')
 const issuing = ref(false)
 const enrollmentToken = ref('')
 const expiresAt = ref('')
@@ -39,6 +39,8 @@ const installScript = computed(() => {
   const continuation = ` ${String.fromCharCode(92)}\n`
   return `curl -fsSL ${serverUrl.value}/agent/install.sh | sudo bash -s --${continuation}${args.join(continuation)}`
 })
+
+const uninstallScript = computed(() => `curl -fsSL ${serverUrl.value}/agent/uninstall.sh | sudo bash`)
 
 const manualCommand = computed(() => enrollmentToken.value
   ? `# 手动下载 Linux amd64 Agent（arm64 主机请将 arch 改为 arm64）
@@ -95,9 +97,9 @@ async function issueToken() {
   }
 }
 
-async function copy(kind: 'script' | 'manual') {
-  if (!enrollmentToken.value) return
-  const value = kind === 'script' ? installScript.value : manualCommand.value
+async function copy(kind: 'script' | 'manual' | 'uninstall') {
+  if (kind !== 'uninstall' && !enrollmentToken.value) return
+  const value = kind === 'script' ? installScript.value : kind === 'manual' ? manualCommand.value : uninstallScript.value
   try {
     await navigator.clipboard.writeText(value)
   } catch {
@@ -128,11 +130,11 @@ async function copy(kind: 'script' | 'manual') {
 
       <div class="flex gap-1 border-b border-ink-700 px-6 pt-3">
         <button
-          v-for="item in [{ key: 'script', label: '一键脚本（推荐）' }, { key: 'manual', label: '手动安装' }]"
+          v-for="item in [{ key: 'script', label: '一键脚本（推荐）' }, { key: 'manual', label: '手动安装' }, { key: 'uninstall', label: '卸载' }]"
           :key="item.key"
           class="rounded-t-lg px-4 py-2 text-sm font-medium transition"
           :class="tab === item.key ? 'bg-ink-800 text-emerald-300 ring-1 ring-inset ring-ink-600' : 'text-slate-500 hover:text-slate-300'"
-          @click="tab = item.key as 'script' | 'manual'"
+          @click="tab = item.key as 'script' | 'manual' | 'uninstall'"
         >
           {{ item.label }}
         </button>
@@ -207,7 +209,7 @@ async function copy(kind: 'script' | 'manual') {
             </ul>
           </div>
 
-          <div v-else>
+          <div v-else-if="tab === 'manual'">
             <div class="relative">
               <pre class="overflow-x-auto rounded-xl bg-ink-950 p-4 pr-24 font-mono text-xs leading-relaxed text-sky-200/90 ring-1 ring-ink-600">{{ manualCommand }}</pre>
               <button v-if="enrollmentToken" class="btn-ghost absolute right-3 top-3 !px-3 !py-1.5 text-xs" @click="copy('manual')">
@@ -217,6 +219,21 @@ async function copy(kind: 'script' | 'manual') {
             <div class="mt-4 rounded-xl bg-amber-500/10 px-4 py-3 text-[11px] leading-relaxed text-amber-200/80 ring-1 ring-amber-500/20">
               手动方式不会自动创建 systemd 服务，适合调试或自定义进程管理。生产环境建议使用一键脚本。
             </div>
+          </div>
+
+          <div v-else>
+            <div class="relative">
+              <pre class="overflow-x-auto rounded-xl bg-ink-950 p-4 pr-24 font-mono text-xs leading-relaxed text-red-200/90 ring-1 ring-ink-600">{{ uninstallScript }}</pre>
+              <button class="btn-ghost absolute right-3 top-3 !px-3 !py-1.5 text-xs" @click="copy('uninstall')">
+                {{ copied === 'uninstall' ? '已复制' : '复制' }}
+              </button>
+            </div>
+            <ul class="mt-4 space-y-1.5 text-[11px] leading-relaxed text-slate-500">
+              <li>· 停止并禁用 wiremesh-agent.service，移除 systemd 服务文件。</li>
+              <li>· 删除 Agent 二进制、注册身份和本地状态目录。</li>
+              <li>· 默认不会删除 /etc/wireguard 中的 WireGuard 配置，避免影响正在运行的隧道。</li>
+              <li>· 卸载完成后，可以直接重新运行“一键脚本”或“手动安装”命令重新部署。</li>
+            </ul>
           </div>
         </template>
       </div>

@@ -106,6 +106,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /api/v1/users", a.withUser(RoleAdmin, a.users))
 	mux.HandleFunc("POST /api/v1/agent/enrollment-tokens", a.withUser(RoleAdmin, a.createEnrollment))
 	mux.HandleFunc("GET /agent/install.sh", a.agentInstallScript)
+	mux.HandleFunc("GET /agent/uninstall.sh", a.agentUninstallScript)
 	mux.HandleFunc("GET /agent/download", a.agentDownload)
 	mux.HandleFunc("POST /agent/v1/enroll", a.enroll)
 	mux.HandleFunc("GET /agent/v1/config", a.agentConfig)

@@ -172,6 +172,26 @@ func (a *App) agentInstallScript(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, script)
 }
 
+const agentUninstallerScript = `#!/usr/bin/env bash
+set -euo pipefail
+
+systemctl disable --now wiremesh-agent.service 2>/dev/null || true
+rm -f /etc/systemd/system/wiremesh-agent.service
+systemctl daemon-reload
+systemctl reset-failed wiremesh-agent.service 2>/dev/null || true
+rm -f /usr/local/bin/wiremesh-agent
+rm -rf /var/lib/wiremesh-agent /etc/wiremesh-agent
+
+echo "WireMesh Agent 已卸载"
+echo "节点在面板中的历史记录仍会保留，可稍后重新运行接入命令部署"
+`
+
+func (a *App) agentUninstallScript(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, agentUninstallerScript)
+}
+
 func agentInstallerServerURL(r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil {
