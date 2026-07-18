@@ -46,6 +46,7 @@ type enrollmentResponse struct {
 type agentState struct {
 	NodeID           string `json:"node_id"`
 	Server           string `json:"server"`
+	PublicIP         string `json:"public_ip,omitempty"`
 	CertificatePEM   string `json:"certificate_pem,omitempty"`
 	PrivateKeyPEM    string `json:"private_key_pem,omitempty"`
 	CAPEM            string `json:"ca_pem,omitempty"`
@@ -151,6 +152,18 @@ func main() {
 	client, err := authenticatedClient(state, *useMTLS)
 	if err != nil {
 		log.Fatalf("configure agent transport: %v", err)
+	}
+	// Resolve the real public IPv4 once at startup and reuse it for the whole
+	// process lifetime; it is refreshed only when the agent process restarts.
+	publicIPEndpoint := strings.TrimSpace(os.Getenv("WIREMESH_PUBLIC_IP_URL"))
+	if publicIPEndpoint == "" {
+		publicIPEndpoint = "https://ipv4.ip.sb"
+	}
+	if publicIP, publicErr := fetchRealPublicIPv4(context.Background(), client, publicIPEndpoint); publicErr != nil {
+		log.Printf("public IPv4 discovery warning: %v; the server will GeoIP-locate the connection source address instead", publicErr)
+	} else {
+		state.PublicIP = publicIP
+		log.Printf("public IPv4 discovered at startup: %s", publicIP)
 	}
 	hostname, _ := os.Hostname()
 	baseHeartbeat := heartbeatRequest{
@@ -525,6 +538,9 @@ func pollConfig(ctx context.Context, client *http.Client, state agentState) (con
 func setDevelopmentIdentity(request *http.Request, state agentState) {
 	if state.NodeID != "" {
 		request.Header.Set("X-Agent-ID", state.NodeID)
+	}
+	if state.PublicIP != "" {
+		request.Header.Set("X-Agent-Public-IP", state.PublicIP)
 	}
 }
 

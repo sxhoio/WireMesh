@@ -48,6 +48,25 @@ func TestRequestPublicIPUsesForwardedAddressOnlyBehindProxy(t *testing.T) {
 	}
 }
 
+func TestRequestPublicIPPrefersAgentReportedAddress(t *testing.T) {
+	// The agent reports its own public IPv4 at startup; it must win over the
+	// connection source address, which may be a NAT or proxy egress.
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.RemoteAddr = "198.51.100.1:54321"
+	request.Header.Set("X-Agent-Public-IP", "203.0.113.9")
+	if got := requestPublicIP(request); got != "203.0.113.9" {
+		t.Fatalf("agent-reported public IP was not preferred: %q", got)
+	}
+
+	// An invalid or private reported address is ignored in favor of the source.
+	request = httptest.NewRequest(http.MethodGet, "/", nil)
+	request.RemoteAddr = "198.51.100.1:54321"
+	request.Header.Set("X-Agent-Public-IP", "10.0.0.5")
+	if got := requestPublicIP(request); got != "198.51.100.1" {
+		t.Fatalf("private agent-reported IP must be ignored: %q", got)
+	}
+}
+
 func TestAgentLocationEndpointReturnsObservedGeoIP(t *testing.T) {
 	app := testApp(t)
 	node := createGeolocationTestNode(t, app)

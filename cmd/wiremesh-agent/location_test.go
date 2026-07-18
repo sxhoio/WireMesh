@@ -57,3 +57,36 @@ func TestFetchAgentLocationDropsInvalidAutomaticCoordinates(t *testing.T) {
 		t.Fatalf("invalid automatic location was retained: %#v", location)
 	}
 }
+
+func TestFetchRealPublicIPv4AcceptsPlainText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("203.0.113.9\n"))
+	}))
+	defer server.Close()
+
+	address, err := fetchRealPublicIPv4(context.Background(), server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if address != "203.0.113.9" {
+		t.Fatalf("unexpected public IPv4: %q", address)
+	}
+}
+
+func TestFetchRealPublicIPv4RejectsPrivateAndIPv6(t *testing.T) {
+	for _, body := range []string{"192.168.1.20", "10.0.0.5", "2001:4860:4860::8888", "not-an-ip"} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		if _, err := fetchRealPublicIPv4(context.Background(), server.Client(), server.URL); err == nil {
+			t.Fatalf("invalid address %q must be rejected", body)
+		}
+		server.Close()
+	}
+}
+
+func TestFetchRealPublicIPv4RequiresEndpoint(t *testing.T) {
+	if _, err := fetchRealPublicIPv4(context.Background(), http.DefaultClient, "  "); err == nil {
+		t.Fatal("an empty endpoint must be rejected")
+	}
+}

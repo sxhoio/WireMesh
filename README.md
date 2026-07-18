@@ -67,7 +67,7 @@ go run ./cmd/wiremesh-agent -server http://localhost:8080 -enroll-token <token> 
 
 ## Automatic node location
 
-The Agent periodically calls the authenticated `GET /agent/v1/location` endpoint. The control plane observes the Agent's public source address, resolves it with the tenant GeoIP database, and the Agent includes the result in subsequent heartbeats. Heartbeats from older Agents are also located directly from their request source address, so server upgrades can improve existing nodes without waiting for every Agent to be replaced.
+At startup the Agent resolves its real public IPv4 address once from `https://ipv4.ip.sb` (override with `WIREMESH_PUBLIC_IP_URL`) and attaches it to every subsequent report as the `X-Agent-Public-IP` header. It is not refreshed on a timer — only when the Agent process restarts — so the node makes a single outbound request at boot rather than a periodic pattern that could be mistaken for C2. The control plane prefers this self-reported address for GeoIP, so nodes are located from their own public IP even when NAT or a proxy egress would otherwise show a different source address. When the header is absent (older Agents, or discovery failed), the control plane falls back to the reporting connection's observed source address; heartbeats from older Agents are located the same way, so server upgrades can improve existing nodes without waiting for every Agent to be replaced.
 
 Manual coordinates always take priority. Clearing a manual location returns the node to automatic Agent/GeoIP discovery. When WireMesh is behind a reverse proxy, preserve the client address with `X-Forwarded-For` or `X-Real-IP`; forwarded headers are only trusted when the direct connection comes from a private, loopback, or link-local address.
 

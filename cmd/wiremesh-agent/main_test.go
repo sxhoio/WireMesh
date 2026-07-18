@@ -50,6 +50,20 @@ func TestSetDevelopmentIdentitySupportsHTTPSReverseProxy(t *testing.T) {
 	}
 }
 
+func TestSetDevelopmentIdentityAttachesPublicIP(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "http://wiremesh.example.com/agent/v1/heartbeat", nil)
+	setDevelopmentIdentity(request, agentState{NodeID: "node-test", Server: "http://wiremesh.example.com", PublicIP: "203.0.113.9"})
+	if value := request.Header.Get("X-Agent-Public-IP"); value != "203.0.113.9" {
+		t.Fatalf("X-Agent-Public-IP = %q, want 203.0.113.9", value)
+	}
+
+	noIP := httptest.NewRequest(http.MethodPost, "http://wiremesh.example.com/agent/v1/heartbeat", nil)
+	setDevelopmentIdentity(noIP, agentState{NodeID: "node-test", Server: "http://wiremesh.example.com"})
+	if value := noIP.Header.Get("X-Agent-Public-IP"); value != "" {
+		t.Fatalf("X-Agent-Public-IP must be omitted when unknown, got %q", value)
+	}
+}
+
 func TestAuthenticatedClientAllowsPreEnrollmentHTTPSProbe(t *testing.T) {
 	client, err := authenticatedClient(agentState{Server: "http://wiremesh.example.com"}, true)
 	if err != nil {
