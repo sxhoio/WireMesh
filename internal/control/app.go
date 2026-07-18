@@ -83,6 +83,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/nodes/{id}", a.withUser(RoleOperator, a.updateNode))
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}", a.withUser(RoleAdmin, a.deleteNode))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/collect", a.withUser(RoleOperator, a.createNodeCommand("collect")))
+	mux.HandleFunc("POST /api/v1/nodes/collect", a.withUser(RoleOperator, a.collectNodes))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/connectivity-check", a.withUser(RoleOperator, a.createNodeCommand("connectivity_check")))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/logs", a.withUser(RoleViewer, a.nodeLogs))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/traffic", a.withUser(RoleViewer, a.nodeTraffic))

@@ -42,6 +42,14 @@ const customPeerNetwork = ref<string | null>(null)
 const copiedKey = ref<string | null>(null)
 const editingAgent = ref<Agent | null>(null)
 const logsAgent = ref<Agent | null>(null)
+const refreshing = ref(false)
+
+async function refreshAll() {
+  if (refreshing.value) return
+  refreshing.value = true
+  await mesh.collectAll()
+  setTimeout(() => (refreshing.value = false), 1200)
+}
 
 const filtered = computed(() => {
   let list = mesh.scopedAgents.filter((a) => {
@@ -134,7 +142,11 @@ function openCustomPeer(a: Agent) {
         <option value="lastSeen">按最近上报</option>
         <option value="rx">按流量</option>
       </select>
-      <div class="ml-auto">
+      <div class="ml-auto flex items-center gap-2">
+        <button v-if="app.canOperate" class="btn-secondary flex items-center gap-1.5" :disabled="refreshing" title="强制所有在线节点立即上传最新状态" @click="refreshAll">
+          <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" :class="{ 'animate-spin': refreshing }" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
+          {{ refreshing ? '刷新中…' : '刷新' }}
+        </button>
         <button v-if="app.isAdmin" class="btn-primary" @click="showAdd = true">
           <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
           接入节点
@@ -156,7 +168,7 @@ function openCustomPeer(a: Agent) {
             <th class="hidden w-24 px-2 py-3 2xl:table-cell">速率 (Mbps)</th>
             <th class="hidden w-20 px-2 py-3 2xl:table-cell">Peer</th>
             <th class="hidden w-56 px-2 py-3 xl:table-cell">版本 · 上报</th>
-            <th class="w-28 px-2 py-3 text-right">操作</th>
+            <th class="w-28 px-2 py-3 text-left">操作</th>
           </tr>
         </thead>
         <tbody>

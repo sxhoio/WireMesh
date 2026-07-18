@@ -384,6 +384,15 @@ export const useMeshStore = defineStore('mesh', {
       try { await api.collectNode(id); this.notice = '立即采集命令已下发，Agent 将在下一个探测周期执行'; return true }
       catch (reason) { this.error = reason instanceof Error ? reason.message : '下发采集命令失败'; return false }
     },
+    async collectAll() {
+      this.error = ''
+      try {
+        const result = await api.collectAllNodes()
+        this.notice = '已向 ' + result.created + ' 个节点下发强制上报命令，Agent 将在下一个探测周期上传最新状态'
+        await this.refresh()
+        return true
+      } catch (reason) { this.error = reason instanceof Error ? reason.message : '强制上报下发失败'; return false }
+    },
     async checkConnectivity(id: string) {
       this.error = ''
       try { await api.checkNodeConnectivity(id); this.notice = '连通性检测命令已下发，可稍后在 Agent 日志中查看结果'; return true }

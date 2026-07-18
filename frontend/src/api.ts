@@ -111,6 +111,7 @@ export const api = {
   updateNode: (id: string, payload: Partial<Pick<ApiNode, 'name' | 'address' | 'endpoint' | 'listen_port' | 'mtu' | 'enabled' | 'interface_selector' | 'labels' | 'location_name' | 'location_source' | 'latitude' | 'longitude'>>) => request<ApiNode>('/api/v1/nodes/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteNode: (id: string) => request<void>('/api/v1/nodes/' + encodeURIComponent(id), { method: 'DELETE' }),
   collectNode: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/collect', { method: 'POST' }),
+  collectAllNodes: (nodeIds?: string[]) => request<{ created: number }>('/api/v1/nodes/collect', { method: 'POST', body: JSON.stringify({ node_ids: nodeIds || [] }) }),
   checkNodeConnectivity: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/connectivity-check', { method: 'POST' }),
   nodeLogs: (id: string) => requestArray<ApiNodeLog>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs'),
   traffic: (id: string, interfaceName: string, range: '24h' | '7d' | '30d') => requestArray<ApiTrafficPoint>('/api/v1/nodes/' + encodeURIComponent(id) + '/traffic?interface=' + encodeURIComponent(interfaceName) + '&range=' + range),

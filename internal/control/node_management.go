@@ -283,6 +283,49 @@ func (a *App) createNodeCommand(commandType string) func(http.ResponseWriter, *h
 	}
 }
 
+// collectNodes fans a collect command out to many nodes at once so the console
+// can force every online agent to report fresh state on its next probe cycle.
+// An empty node_ids list targets all enabled nodes in the tenant.
+func (a *App) collectNodes(w http.ResponseWriter, r *http.Request, c claims) {
+	var in struct {
+		NodeIDs []string `json:"node_ids"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	targets := make([]Node, 0, len(in.NodeIDs))
+	if len(in.NodeIDs) == 0 {
+		for _, node := range a.store.ListNodes(c.TenantID, "") {
+			if node.Enabled {
+				targets = append(targets, node)
+			}
+		}
+	} else {
+		for _, id := range in.NodeIDs {
+			node, err := a.store.GetNode(c.TenantID, id)
+			if err != nil {
+				continue
+			}
+			targets = append(targets, node)
+		}
+	}
+	if len(targets) == 0 {
+		writeJSON(w, http.StatusAccepted, map[string]any{"created": 0})
+		return
+	}
+	created := 0
+	for _, node := range targets {
+		command := AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: "collect", State: "pending", CreatedAt: time.Now()}
+		if err := a.store.CreateCommand(command); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create agent command")
+			return
+		}
+		created++
+	}
+	a.auditEvent(c.TenantID, c.Subject, "agent.command.collect_all", "tenant", c.TenantID, map[string]string{"count": fmt.Sprint(created)})
+	writeJSON(w, http.StatusAccepted, map[string]any{"created": created})
+}
+
 func (a *App) nodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
 	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 	if err != nil {

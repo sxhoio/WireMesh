@@ -128,7 +128,7 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
 
           <!-- Agent 详情浮层 -->
           <transition name="fade">
-            <div v-if="selectedAgent" class="absolute right-4 top-4 z-10 w-80 rounded-xl bg-ink-950/92 p-4 ring-1 ring-ink-600 backdrop-blur">
+            <div v-if="selectedAgent" class="absolute right-4 top-4 z-10 w-80 rounded-xl border border-slate-700/80 bg-slate-950/95 p-4 text-slate-100 shadow-2xl shadow-black/40 ring-1 ring-ink-600 backdrop-blur">
               <div class="flex items-start justify-between">
                 <div>
                   <p class="font-semibold text-white">{{ selectedAgent.name }}</p>
@@ -171,9 +171,14 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
             >
               <div class="flex items-start justify-between">
                 <p class="font-semibold text-white">链路详情</p>
-                <span class="chip" :class="selectedLink.displayState === 'ok' ? 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30' : selectedLink.displayState === 'degraded' ? 'bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30' : 'bg-red-500/10 text-red-400 ring-1 ring-red-500/30'">
-                  {{ stateMeta[selectedLink.displayState].label }}
-                </span>
+                <div class="flex items-center gap-2">
+                  <span class="chip" :class="selectedLink.displayState === 'ok' ? 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30' : selectedLink.displayState === 'degraded' ? 'bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30' : 'bg-red-500/10 text-red-400 ring-1 ring-red-500/30'">
+                    {{ stateMeta[selectedLink.displayState].label }}
+                  </span>
+                  <button class="rounded-lg p-1 text-slate-500 transition hover:bg-ink-800 hover:text-slate-200" title="关闭" @click="selectedLink = null">
+                    <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
+                </div>
               </div>
               <dl class="mt-3 space-y-1.5 text-xs">
                 <div class="flex justify-between gap-3 rounded-lg bg-white/[0.04] px-3 py-2"><dt class="text-slate-300">A 端</dt><dd class="truncate font-mono font-medium text-cyan-200">{{ linkEndLabel(selectedLink.a) }}</dd></div>
