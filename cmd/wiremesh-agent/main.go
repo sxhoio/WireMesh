@@ -190,6 +190,20 @@ func main() {
 			lastLocationError = message
 			return
 		}
+		if publicIP, publicErr := fetchPublicIPv4WithTimeout(ctx, client, publicIPv4URLs(os.Getenv("WIREMESH_PUBLIC_IP_URL")), 8*time.Second); publicErr != nil {
+			log.Printf("public IPv4 discovery warning: %v; falling back to the server-observed address", publicErr)
+		} else {
+			if publicIP != location.PublicIP {
+				log.Printf("public IPv4 discovered by the agent: %s (server observed %s)", publicIP, location.PublicIP)
+			}
+			location.PublicIP = publicIP
+			// The server-resolved coordinates describe the observed address, not
+			// the discovered one; drop them so the server re-resolves via GeoIP.
+			location.LocationName = ""
+			location.LocationSource = ""
+			location.Latitude = 0
+			location.Longitude = 0
+		}
 		if lastLocationError != "" {
 			log.Printf("location discovery recovered")
 		}

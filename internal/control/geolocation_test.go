@@ -133,6 +133,36 @@ func TestAgentLocationEndpointRequiresAgentIdentity(t *testing.T) {
 	}
 }
 
+func TestAgentHeartbeatGeoIPsClientReportedPublicIP(t *testing.T) {
+	app := testApp(t)
+	node := createGeolocationTestNode(t, app)
+	app.geoLookup = func(tenant, ip string) (geoIPLocation, error) {
+		if tenant != node.TenantID || ip != "203.0.113.9" {
+			t.Fatalf("GeoIP must use the client-reported public IP, got tenant=%q ip=%q", tenant, ip)
+		}
+		return geoIPLocation{PublicIP: ip, LocationName: "中国 · 上海", LocationSource: "geoip", Region: "上海", Latitude: 31.2304, Longitude: 121.4737}, nil
+	}
+
+	// The connection source address differs from the agent-reported address,
+	// as it would behind NAT; the reported one must win.
+	request := httptest.NewRequest(http.MethodPost, "/agent/v1/heartbeat", strings.NewReader(`{"location":{"public_ip":"203.0.113.9"},"wireguard":[]}`))
+	request.RemoteAddr = "198.51.100.1:54321"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Agent-ID", node.ID)
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("heartbeat failed: %d %s", response.Code, response.Body.String())
+	}
+	stored, err := app.store.GetNodeByID(node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.LocationSource != "geoip" || stored.LocationName != "中国 · 上海" || stored.Latitude != 31.2304 || stored.Longitude != 121.4737 {
+		t.Fatalf("client-reported public IP was not GeoIP located: %#v", stored)
+	}
+}
+
 func TestLegacyAgentHeartbeatUsesObservedPublicIP(t *testing.T) {
 	app := testApp(t)
 	node := createGeolocationTestNode(t, app)
