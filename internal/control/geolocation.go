@@ -266,3 +266,39 @@ func (a *App) applyAutomaticNodeLocation(node *Node, report geoIPLocation, r *ht
 		node.Region = resolved.Region
 	}
 }
+
+// geoLocatePeerEndpoints GeoIP-resolves each peer's public endpoint address so
+// the console can place otherwise-unknown peers (temp peers) on the map. Only
+// public endpoint IPs are looked up; private/empty endpoints are left without
+// coordinates and stay in the unknown-location panel. Lookups are cached per
+// heartbeat so peers sharing an egress address cost a single GeoIP query.
+func (a *App) geoLocatePeerEndpoints(tenant string, interfaces []WireGuardInterfaceStatus) {
+	if len(interfaces) == 0 {
+		return
+	}
+	cache := map[string]*geoIPLocation{}
+	for i := range interfaces {
+		for j := range interfaces[i].Peers {
+			peer := &interfaces[i].Peers[j]
+			address, ok := publicAddress(peer.Endpoint)
+			if !ok {
+				continue
+			}
+			ip := address.String()
+			resolved, seen := cache[ip]
+			if !seen {
+				if location, err := a.geoLookup(tenant, ip); err == nil && validAutomaticLocationCoordinates(location.Latitude, location.Longitude) {
+					found := location
+					resolved = &found
+				}
+				cache[ip] = resolved
+			}
+			if resolved == nil {
+				continue
+			}
+			peer.LocationName = automaticLocationName(*resolved)
+			peer.Latitude = resolved.Latitude
+			peer.Longitude = resolved.Longitude
+		}
+	}
+}

@@ -298,7 +298,7 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
             未知位置
             <span class="chip bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/30">{{ unknownTempPeers.length }}</span>
           </p>
-          <p class="mt-1 text-[11px] leading-relaxed text-slate-500">私网 IP、无公网端点或地理位置解析失败的对等端</p>
+          <p class="mt-1 text-[11px] leading-relaxed text-slate-500">私网 IP、无公网端点或 GeoIP 解析失败的对等端；有公网端点的已按 IP 标注在地图上</p>
           <div class="mt-3 max-h-60 space-y-2 overflow-y-auto p-2 2xl:max-h-none 2xl:min-h-0 2xl:flex-1">
             <div v-for="t in unknownTempPeers" :key="t.id" class="flex items-center gap-2 rounded-lg bg-ink-800/60 px-3 py-2.5 ring-1 ring-ink-700">
               <span class="h-2 w-2 shrink-0 rounded-full border border-amber-400/70"></span>

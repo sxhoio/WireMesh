@@ -591,6 +591,7 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	adoptedConfiguration := false
 	if in.WireGuard != nil {
 		node.WireGuard = in.WireGuard
+		a.geoLocatePeerEndpoints(node.TenantID, node.WireGuard)
 		adoptedInterface, adoptedConfiguration = a.adoptReportedNodeConfiguration(&node)
 	}
 	a.applyAutomaticNodeLocation(&node, in.Location, r)

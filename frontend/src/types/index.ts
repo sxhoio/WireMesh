@@ -30,6 +30,9 @@ export interface WGObservedPeer {
   receiveBytes: number
   transmitBytes: number
   persistentKeepalive: number
+  locationName?: string
+  lng?: number
+  lat?: number
 }
 
 export interface WGInterface {

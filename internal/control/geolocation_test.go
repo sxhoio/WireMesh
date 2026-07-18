@@ -210,6 +210,49 @@ func TestLegacyAgentHeartbeatUsesObservedPublicIP(t *testing.T) {
 	}
 }
 
+func TestAgentHeartbeatGeoLocatesPublicPeerEndpoints(t *testing.T) {
+	app := testApp(t)
+	node := createGeolocationTestNode(t, app)
+	app.geoLookup = func(tenant, ip string) (geoIPLocation, error) {
+		// Only the peer endpoint resolves; the node's own location lookup uses the
+		// connection source address, which we leave unresolved here.
+		if tenant != node.TenantID || ip != "203.0.113.50" {
+			return geoIPLocation{}, errGeoIPNotFound
+		}
+		return geoIPLocation{PublicIP: ip, LocationName: "中国 · 香港", LocationSource: "geoip", Region: "香港", Latitude: 22.3193, Longitude: 114.1694}, nil
+	}
+
+	body := `{"wireguard":[{"name":"wg0","peers":[
+		{"public_key":"peer-public","endpoint":"203.0.113.50:51820","allowed_ips":["10.88.0.9/32"]},
+		{"public_key":"peer-private","endpoint":"10.0.0.9:51820","allowed_ips":["10.88.0.10/32"]}
+	]}]}`
+	request := httptest.NewRequest(http.MethodPost, "/agent/v1/heartbeat", strings.NewReader(body))
+	request.RemoteAddr = "198.51.100.1:54321"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Agent-ID", node.ID)
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("heartbeat failed: %d %s", response.Code, response.Body.String())
+	}
+
+	stored, err := app.store.GetNodeByID(node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.WireGuard) != 1 || len(stored.WireGuard[0].Peers) != 2 {
+		t.Fatalf("unexpected stored wireguard state: %#v", stored.WireGuard)
+	}
+	publicPeer := stored.WireGuard[0].Peers[0]
+	if publicPeer.LocationName != "中国 · 香港" || publicPeer.Latitude != 22.3193 || publicPeer.Longitude != 114.1694 {
+		t.Fatalf("public peer endpoint was not GeoIP located: %#v", publicPeer)
+	}
+	privatePeer := stored.WireGuard[0].Peers[1]
+	if privatePeer.LocationName != "" || privatePeer.Latitude != 0 || privatePeer.Longitude != 0 {
+		t.Fatalf("private peer endpoint must not be GeoIP located: %#v", privatePeer)
+	}
+}
+
 func TestAutomaticLocationRejectsZeroCoordinatesAndUnknownSources(t *testing.T) {
 	if validAutomaticLocationCoordinates(0, 0) {
 		t.Fatal("automatic location must not place unknown nodes at 0,0")

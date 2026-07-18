@@ -58,6 +58,9 @@ type WireGuardPeerStatus struct {
 	ReceiveBytes        int64     `json:"receive_bytes"`
 	TransmitBytes       int64     `json:"transmit_bytes"`
 	PersistentKeepalive int       `json:"persistent_keepalive,omitempty"`
+	LocationName        string    `json:"location_name,omitempty"`
+	Latitude            float64   `json:"latitude,omitempty"`
+	Longitude           float64   `json:"longitude,omitempty"`
 }
 
 type WireGuardInterfaceStatus struct {

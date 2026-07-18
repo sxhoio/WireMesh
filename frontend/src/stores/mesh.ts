@@ -85,6 +85,9 @@ function toAgent(node: ApiNode, offlineSeconds: number): Agent {
         receiveBytes: peer.receive_bytes || 0,
         transmitBytes: peer.transmit_bytes || 0,
         persistentKeepalive: peer.persistent_keepalive || 0,
+        locationName: peer.location_name || '',
+        lng: Number.isFinite(peer.longitude) ? peer.longitude : undefined,
+        lat: Number.isFinite(peer.latitude) ? peer.latitude : undefined,
       })),
     })),
   }
@@ -107,6 +110,7 @@ function observedTopology(agents: Agent[], handshakeThreshold: number): { links:
     const handshakeSeconds = peer.latestHandshake > 0 ? Math.max(0, Math.floor((now - peer.latestHandshake) / 1000)) : -1
     const target = interfaceByKey.get(peer.publicKey)
     if (!target || target.id === source.id) {
+      const hasGeo = Number.isFinite(peer.lng) && Number.isFinite(peer.lat) && (peer.lng !== 0 || peer.lat !== 0)
       tempPeers.push({
         id: source.id + ':' + peer.publicKey,
         publicKey: peer.publicKey,
@@ -117,6 +121,7 @@ function observedTopology(agents: Agent[], handshakeThreshold: number): { links:
         rxMB: peer.receiveBytes / 1024 / 1024,
         txMB: peer.transmitBytes / 1024 / 1024,
         firstSeen: peer.latestHandshake || agent.lastSeen,
+        geo: hasGeo ? { city: peer.locationName || '', country: '', lng: peer.lng as number, lat: peer.lat as number } : undefined,
       })
       return
     }
