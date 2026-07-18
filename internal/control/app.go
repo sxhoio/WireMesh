@@ -595,6 +595,7 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		adoptedInterface, adoptedConfiguration = a.adoptReportedNodeConfiguration(&node)
 	}
 	a.applyAutomaticNodeLocation(&node, in.Location, r)
+	a.adoptPublicEndpoint(&node, in.Location, r)
 	if err := a.store.UpdateNode(node); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record agent heartbeat")
 		return

@@ -82,8 +82,9 @@ function peersOf(iface?: WGInterface) {
 }
 
 function peerErrorCount(a: Agent) {
+  // 只统计真实异常（down）的链路；波动（degraded）不标记为异常。
   return mesh.links.filter(
-    (l) => (a.interfaces.some((i) => i.id === l.a || i.id === l.b)) && (l.state === 'down' || l.state === 'degraded'),
+    (l) => (a.interfaces.some((i) => i.id === l.a || i.id === l.b)) && l.state === 'down',
   ).length
 }
 

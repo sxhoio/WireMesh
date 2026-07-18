@@ -267,6 +267,32 @@ func (a *App) applyAutomaticNodeLocation(node *Node, report geoIPLocation, r *ht
 	}
 }
 
+// adoptPublicEndpoint fills node.Endpoint from the agent's real public IPv4
+// and its WireGuard listen port when the operator has not set one manually.
+// The agent reports the address it discovered at startup in location.public_ip
+// (X-Agent-Public-IP); the connection source address is the fallback. A
+// manually configured endpoint is never overwritten.
+func (a *App) adoptPublicEndpoint(node *Node, report geoIPLocation, r *http.Request) {
+	if strings.TrimSpace(node.Endpoint) != "" {
+		return
+	}
+	publicIP := ""
+	if address, ok := publicAddress(report.PublicIP); ok {
+		publicIP = address.String()
+	}
+	if publicIP == "" {
+		publicIP = requestPublicIP(r)
+	}
+	if publicIP == "" {
+		return
+	}
+	port := node.ListenPort
+	if port < 1 || port > 65535 {
+		port = defaultNodeListenPort
+	}
+	node.Endpoint = publicIP + ":" + fmt.Sprint(port)
+}
+
 // geoLocatePeerEndpoints GeoIP-resolves each peer's public endpoint address so
 // the console can place otherwise-unknown peers (temp peers) on the map. Only
 // public endpoint IPs are looked up; private/empty endpoints are left without

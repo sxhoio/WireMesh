@@ -261,3 +261,53 @@ func TestAutomaticLocationRejectsZeroCoordinatesAndUnknownSources(t *testing.T) 
 		t.Fatalf("unexpected automatic location source: %q", source)
 	}
 }
+
+func TestAgentHeartbeatAdoptsPublicEndpoint(t *testing.T) {
+	app := testApp(t)
+	node := createGeolocationTestNode(t, app)
+	app.geoLookup = func(tenant, ip string) (geoIPLocation, error) {
+		return geoIPLocation{}, errGeoIPNotFound
+	}
+
+	// Endpoint is empty; the reported public IP plus the listen port is adopted.
+	request := httptest.NewRequest(http.MethodPost, "/agent/v1/heartbeat", strings.NewReader(`{"location":{"public_ip":"203.0.113.60"},"wireguard":[{"name":"wg0","listen_port":51822}]}`))
+	request.RemoteAddr = "198.51.100.1:54321"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Agent-ID", node.ID)
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("heartbeat failed: %d %s", response.Code, response.Body.String())
+	}
+	stored, err := app.store.GetNodeByID(node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The node keeps its authoritative listen port (default 51820); the endpoint
+	// is built from it, not from the observed interface port.
+	if stored.Endpoint != "203.0.113.60:51820" {
+		t.Fatalf("public endpoint was not adopted: %#v", stored.Endpoint)
+	}
+
+	// A manually configured endpoint is never overwritten by a later heartbeat.
+	stored.Endpoint = "vpn.example.com:51820"
+	if err := app.store.UpdateNode(stored); err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/agent/v1/heartbeat", strings.NewReader(`{"location":{"public_ip":"203.0.113.99"},"wireguard":[]}`))
+	request.RemoteAddr = "198.51.100.1:54321"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Agent-ID", node.ID)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("manual-preservation heartbeat failed: %d %s", response.Code, response.Body.String())
+	}
+	stored, err = app.store.GetNodeByID(node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Endpoint != "vpn.example.com:51820" {
+		t.Fatalf("manual endpoint was overwritten: %#v", stored.Endpoint)
+	}
+}

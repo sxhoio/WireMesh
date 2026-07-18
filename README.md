@@ -71,6 +71,8 @@ At startup the Agent resolves its real public IPv4 address once from `https://ip
 
 Manual coordinates always take priority. Clearing a manual location returns the node to automatic Agent/GeoIP discovery. When WireMesh is behind a reverse proxy, preserve the client address with `X-Forwarded-For` or `X-Real-IP`; forwarded headers are only trusted when the direct connection comes from a private, loopback, or link-local address.
 
+The same public IPv4 also fills the node's public Endpoint automatically: when a node has no manually configured endpoint, the control plane records it as `public-ip:listen-port` from the heartbeat, so peers can reach the node without an operator typing the address by hand. A manually set endpoint is never overwritten.
+
 ## Production boundaries
 
 SQLite, MySQL, and PostgreSQL are supported through the same SQL repository and automatic schema creation. Setting `WIREMESH_TLS_CERT_FILE` and `WIREMESH_TLS_KEY_FILE` starts HTTPS and verifies presented Agent certificates; plain HTTP retains an `X-Agent-ID` development adapter and must not be exposed. The certificate authority is currently generated at process start, so CA persistence and KMS integration are still required before production use.
