@@ -63,12 +63,13 @@ watch(
   },
   { immediate: true },
 )
+// Selecting a project/network only re-targets future enrollments; it must not
+// discard an already-generated install command, which stays visible until the
+// operator regenerates it or closes the dialog.
 watch(
   [() => form.projectId, networks],
   () => {
     if (!networks.value.some((network) => network.id === form.networkId)) form.networkId = networks.value[0]?.id || ''
-    enrollmentToken.value = ''
-    expiresAt.value = ''
   },
   { immediate: true },
 )
@@ -141,7 +142,23 @@ async function copy(kind: 'script' | 'manual' | 'uninstall') {
       </div>
 
       <div class="min-h-0 flex-1 overflow-y-auto p-6">
-        <div v-if="!mesh.projects.length || !mesh.networks.length" class="rounded-xl bg-amber-500/10 px-4 py-6 text-center ring-1 ring-amber-500/30">
+        <!-- Uninstall is self-contained: it shows only the command, never the enrollment form. -->
+        <div v-if="tab === 'uninstall'">
+          <div class="relative">
+            <pre class="overflow-x-auto rounded-xl bg-ink-950 p-4 pr-24 font-mono text-xs leading-relaxed text-red-200/90 ring-1 ring-ink-600">{{ uninstallScript }}</pre>
+            <button class="btn-ghost absolute right-3 top-3 !px-3 !py-1.5 text-xs" @click="copy('uninstall')">
+              {{ copied === 'uninstall' ? '已复制' : '复制' }}
+            </button>
+          </div>
+          <ul class="mt-4 space-y-1.5 text-[11px] leading-relaxed text-slate-500">
+            <li>· 停止并禁用 wiremesh-agent.service，移除 systemd 服务文件。</li>
+            <li>· 删除 Agent 二进制、注册身份和本地状态目录。</li>
+            <li>· 默认不会删除 /etc/wireguard 中的 WireGuard 配置，避免影响正在运行的隧道。</li>
+            <li>· 卸载完成后，可以直接重新运行“一键脚本”或“手动安装”命令重新部署。</li>
+          </ul>
+        </div>
+
+        <div v-else-if="!mesh.projects.length || !mesh.networks.length" class="rounded-xl bg-amber-500/10 px-4 py-6 text-center ring-1 ring-amber-500/30">
           <p class="text-sm text-amber-300">还没有可用的{{ mesh.projects.length ? '网络' : '项目' }}</p>
           <p class="mt-1 text-xs text-slate-500">请先到「系统设置 → 项目与网络」中创建{{ mesh.projects.length ? '网络' : '项目与网络' }}，再接入节点</p>
         </div>
@@ -183,7 +200,7 @@ async function copy(kind: 'script' | 'manual' | 'uninstall') {
           </div>
 
           <div class="mb-4 flex flex-col gap-3 rounded-xl bg-ink-800/60 p-3 ring-1 ring-ink-700 sm:flex-row sm:items-center sm:justify-between">
-            <p class="text-xs leading-relaxed text-slate-500">项目和网络会写入后端签发的一次性令牌；令牌成功使用后立即失效。</p>
+            <p class="text-xs leading-relaxed text-slate-500">项目和网络会写入后端签发的一次性令牌；令牌成功使用后立即失效。已生成的命令会一直显示，直到重新生成。</p>
             <button class="btn-primary shrink-0" :disabled="issuing || !form.networkId || !form.name.trim()" @click="issueToken">
               {{ issuing ? '生成中…' : enrollmentToken ? '重新生成接入命令' : '生成接入命令' }}
             </button>
@@ -219,21 +236,6 @@ async function copy(kind: 'script' | 'manual' | 'uninstall') {
             <div class="mt-4 rounded-xl bg-amber-500/10 px-4 py-3 text-[11px] leading-relaxed text-amber-200/80 ring-1 ring-amber-500/20">
               手动方式不会自动创建 systemd 服务，适合调试或自定义进程管理。生产环境建议使用一键脚本。
             </div>
-          </div>
-
-          <div v-else>
-            <div class="relative">
-              <pre class="overflow-x-auto rounded-xl bg-ink-950 p-4 pr-24 font-mono text-xs leading-relaxed text-red-200/90 ring-1 ring-ink-600">{{ uninstallScript }}</pre>
-              <button class="btn-ghost absolute right-3 top-3 !px-3 !py-1.5 text-xs" @click="copy('uninstall')">
-                {{ copied === 'uninstall' ? '已复制' : '复制' }}
-              </button>
-            </div>
-            <ul class="mt-4 space-y-1.5 text-[11px] leading-relaxed text-slate-500">
-              <li>· 停止并禁用 wiremesh-agent.service，移除 systemd 服务文件。</li>
-              <li>· 删除 Agent 二进制、注册身份和本地状态目录。</li>
-              <li>· 默认不会删除 /etc/wireguard 中的 WireGuard 配置，避免影响正在运行的隧道。</li>
-              <li>· 卸载完成后，可以直接重新运行“一键脚本”或“手动安装”命令重新部署。</li>
-            </ul>
           </div>
         </template>
       </div>
