@@ -266,8 +266,9 @@ onMounted(() => {
     }),
   })
 
-  map.getView().on('change:resolution', () => render())
-  map.on('moveend', () => render())
+  // 矢量要素是地理定位的，平移/缩放时由 OpenLayers 自动跟随地图，无需重建。
+  // 只在数据变化（下方 watch）或首次挂载时 render；在 change:resolution /
+  // moveend 里 clear+重建会导致移动过程中要素短暂消失。
 
   map.on('singleclick', (evt) => {
     let hit = false
