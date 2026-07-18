@@ -48,7 +48,7 @@ async function save() {
     const index = value.indexOf('='); return index >= 0 ? [value.slice(0, index), value.slice(index + 1)] : [value, 'true']
   }))
   labels['wiremesh.role'] = form.role
-  const ok = await mesh.updateNodeConfig(props.agent.id, {
+  const ok = await mesh.updateNodeAndPublish(props.agent.id, {
     name: form.name.trim(), address: form.address.trim(), endpoint: form.endpoint.trim(),
     listen_port: Number(form.listenPort), mtu: Number(form.mtu), enabled: form.enabled,
     interface_selector: form.interfaceSelector.trim() || 'auto', labels,
@@ -64,7 +64,7 @@ async function save() {
   <div class="fixed inset-0 z-[80] flex items-center justify-center bg-black/65 p-4" @click.self="emit('close')">
     <form class="panel flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden" @submit.prevent="save">
       <div class="flex shrink-0 items-start justify-between border-b border-ink-700 px-6 py-5">
-        <div><h3 class="text-base font-semibold text-white">编辑节点配置</h3><p class="mt-1 text-xs text-slate-500">WireGuard 参数发布后下发到 Agent；地理位置默认由客户端与服务器 GeoIP 自动维护。</p></div>
+        <div><h3 class="text-base font-semibold text-white">编辑节点配置</h3><p class="mt-1 text-xs text-slate-500">保存后立即发布到所在网络，Agent 下一个探测周期自动更新；地理位置默认由客户端与服务器 GeoIP 自动维护。</p></div>
         <button type="button" class="text-slate-500 hover:text-white" @click="emit('close')">✕</button>
       </div>
       <div class="grid min-h-0 flex-1 gap-4 overflow-y-auto p-6 sm:grid-cols-2">

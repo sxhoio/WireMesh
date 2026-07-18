@@ -361,6 +361,24 @@ export const useMeshStore = defineStore('mesh', {
       try { await api.updateNode(id, patch); await this.refresh(); this.notice = '节点配置已保存，发布网络配置后将下发到 Agent'; return true }
       catch (reason) { this.error = reason instanceof Error ? reason.message : '保存节点配置失败'; return false }
     },
+    // Save the node and immediately publish its network so the change is pushed
+    // to the Agent on the next probe cycle, without a separate manual publish.
+    async updateNodeAndPublish(id: string, patch: { name?: string; address?: string; endpoint?: string; listen_port?: number; mtu?: number; enabled?: boolean; interface_selector?: string; labels?: Record<string, string>; location_name?: string; location_source?: string; latitude?: number; longitude?: number }) {
+      this.error = ''
+      try {
+        await api.updateNode(id, patch)
+      } catch (reason) { this.error = reason instanceof Error ? reason.message : '保存节点配置失败'; return false }
+      const networkId = this.agentById(id)?.networkId
+      if (!networkId) { await this.refresh(); this.notice = '节点配置已保存'; return true }
+      try {
+        const result = await api.publish(networkId)
+        this.notice = '节点配置已保存并发布（v' + result.version + '），Agent 将在下一个探测周期自动更新'
+      } catch (reason) {
+        this.notice = '节点配置已保存，但自动发布失败：' + (reason instanceof Error ? reason.message : '未知错误')
+      }
+      await this.refresh()
+      return true
+    },
     async collectNow(id: string) {
       this.error = ''
       try { await api.collectNode(id); this.notice = '立即采集命令已下发，Agent 将在下一个探测周期执行'; return true }
