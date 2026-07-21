@@ -107,7 +107,7 @@ async function doPublish() {
             <path stroke-linecap="round" stroke-linejoin="round" :d="item.icon" />
           </svg>
           {{ item.label }}
-          <span v-if="item.name === 'nodes' && mesh.stats.linkBad" class="absolute right-3 top-1/2 flex h-5 min-w-5 -translate-y-1/2 items-center justify-center rounded-full bg-red-500/20 px-1.5 text-[10px] font-bold text-red-400 ring-1 ring-red-500/40">{{ mesh.stats.linkBad }}</span>
+          <span v-if="item.name === 'nodes' && mesh.stats.linkDown" class="absolute right-3 top-1/2 flex h-5 min-w-5 -translate-y-1/2 items-center justify-center rounded-full bg-red-500/20 px-1.5 text-[10px] font-bold text-red-400 ring-1 ring-red-500/40">{{ mesh.stats.linkDown }}</span>
         </router-link>
       </nav>
 
@@ -164,7 +164,7 @@ async function doPublish() {
             <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400"></span>
             节点 {{ mesh.stats.agentOnline }}/{{ mesh.stats.agentTotal }} 在线
           </span>
-          <span v-if="mesh.stats.linkBad" class="chip bg-red-500/10 text-red-400 ring-1 ring-red-500/30">异常链路 {{ mesh.stats.linkBad }}</span>
+          <span v-if="mesh.stats.linkDown" class="chip bg-red-500/10 text-red-400 ring-1 ring-red-500/30">异常链路 {{ mesh.stats.linkDown }}</span>
           <span v-if="mesh.stats.tempCount" class="chip bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30">临时对等端 {{ mesh.stats.tempCount }}</span>
         </div>
       </header>

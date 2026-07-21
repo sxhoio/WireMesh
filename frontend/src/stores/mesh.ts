@@ -224,7 +224,7 @@ export const useMeshStore = defineStore('mesh', {
       return s.links.filter((link) => this.scopedNetworkIds.has(link.networkId)).map((link) => ({ ...link, displayState: link.state }))
     },
     scopedTempPeers(s): TempPeer[] { return s.tempPeers.filter((peer) => this.scopedNetworkIds.has(this.ifaceById(peer.sourceIfaceId)?.networkId || '')) },
-    stats(): { agentTotal: number; agentOnline: number; ifaceCount: number; linkOk: number; linkBad: number; linkUnknown: number; rx: number; tx: number; tempCount: number } {
+    stats(): { agentTotal: number; agentOnline: number; ifaceCount: number; linkOk: number; linkBad: number; linkDown: number; linkUnknown: number; rx: number; tx: number; tempCount: number } {
       const agents = this.scopedAgents
       const links = this.scopedLinks
       return {
@@ -233,6 +233,8 @@ export const useMeshStore = defineStore('mesh', {
         ifaceCount: agents.reduce((count, agent) => count + agent.interfaces.filter((iface) => this.scopedNetworkIds.has(iface.networkId)).length, 0),
         linkOk: links.filter((link) => link.displayState === 'ok').length,
         linkBad: links.filter((link) => link.displayState === 'degraded' || link.displayState === 'down').length,
+        // 仅真实异常（down），用于侧边栏徽章与顶部异常提示；波动不计入。
+        linkDown: links.filter((link) => link.displayState === 'down').length,
         linkUnknown: links.filter((link) => link.displayState === 'unknown').length,
         rx: agents.reduce((count, agent) => count + agent.rxMbps, 0),
         tx: agents.reduce((count, agent) => count + agent.txMbps, 0),

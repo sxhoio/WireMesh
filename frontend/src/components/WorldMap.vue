@@ -158,6 +158,27 @@ function render() {
     )
     linkFeatures.push(f)
   }
+
+  // 临时对等端 → 所属受管节点：琥珀色虚线连接
+  for (const t of locatedTempPeers()) {
+    if (!t.geo) continue
+    const sourcePoint = ifacePoint.get(t.sourceIfaceId)
+    if (!sourcePoint) continue
+    const geom = new LineString(curveCoords([t.geo.lng, t.geo.lat], sourcePoint))
+    const f = new Feature({ geometry: geom })
+    f.setStyle(
+      new Style({
+        stroke: new Stroke({
+          color: 'rgba(217,119,6,0.6)',
+          width: 1.6,
+          lineDash: [5, 6],
+          lineCap: 'round',
+          lineJoin: 'round',
+        }),
+      }),
+    )
+    linkFeatures.push(f)
+  }
   linkSource.addFeatures(linkFeatures)
 
   const markerFeatures: Feature[] = []
