@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import AddAgentDialog from '../components/AddAgentDialog.vue'
-import CustomPeerModal from '../components/CustomPeerModal.vue'
 import EditNodeConfigModal from '../components/EditNodeConfigModal.vue'
 import AgentLogsModal from '../components/AgentLogsModal.vue'
+import PeerConfigEditorModal from '../components/PeerConfigEditorModal.vue'
 import TrafficChart from '../components/TrafficChart.vue'
 import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
@@ -38,9 +38,9 @@ function openMenu(e: MouseEvent, id: string) {
 function closeMenu() {
   menuFor.value = null
 }
-const customPeerNetwork = ref<string | null>(null)
 const copiedKey = ref<string | null>(null)
 const editingAgent = ref<Agent | null>(null)
+const peerEditingAgent = ref<Agent | null>(null)
 const logsAgent = ref<Agent | null>(null)
 const refreshing = ref(false)
 
@@ -113,11 +113,6 @@ async function copyText(text: string, key: string) {
 async function confirmDelete(a: Agent) {
   if (!window.confirm(`确定删除节点“${a.name}”吗？相关 Peer、命令和配置下发记录将一并清理。`)) return
   await mesh.removeAgent(a.id, app.username)
-}
-
-function openCustomPeer(a: Agent) {
-  customPeerNetwork.value = a.networkId
-  menuFor.value = null
 }
 
 </script>
@@ -302,8 +297,8 @@ function openCustomPeer(a: Agent) {
     </div>
 
     <AddAgentDialog v-if="showAdd" @close="showAdd = false" />
-    <CustomPeerModal v-if="customPeerNetwork" :network-id="customPeerNetwork" @close="customPeerNetwork = null" />
     <EditNodeConfigModal v-if="editingAgent" :agent="editingAgent" @close="editingAgent = null" />
+    <PeerConfigEditorModal v-if="peerEditingAgent" :agent="peerEditingAgent" @close="peerEditingAgent = null" />
     <AgentLogsModal v-if="logsAgent" :agent="logsAgent" @close="logsAgent = null" />
 
     <!-- 更多操作菜单：Teleport 到 body，避免被行容器裁剪 -->
@@ -316,7 +311,7 @@ function openCustomPeer(a: Agent) {
       >
         <template v-for="a in filtered" :key="a.id">
           <template v-if="menuFor === a.id">
-            <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="openCustomPeer(a); closeMenu()">快速配置 Peer</button>
+            <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="peerEditingAgent = a; closeMenu()">编辑 Peer</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.collectNow(a.id); closeMenu()">立即采集状态</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.checkConnectivity(a.id); closeMenu()">连通性检测</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="editingAgent = a; closeMenu()">编辑接口设置</button>

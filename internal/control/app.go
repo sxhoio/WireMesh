@@ -92,6 +92,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /api/v1/nodes/{id}", a.withUser(RoleViewer, a.nodeByID))
 	mux.HandleFunc("PATCH /api/v1/nodes/{id}", a.withUser(RoleOperator, a.updateNode))
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}", a.withUser(RoleAdmin, a.deleteNode))
+	mux.HandleFunc("GET /api/v1/nodes/{id}/peer-config", a.withUser(RoleViewer, a.nodePeerConfig))
+	mux.HandleFunc("PUT /api/v1/nodes/{id}/peer-config", a.withUser(RoleOperator, a.updateNodePeerConfig))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/collect", a.withUser(RoleOperator, a.createNodeCommand("collect")))
 	mux.HandleFunc("POST /api/v1/nodes/collect", a.withUser(RoleOperator, a.collectNodes))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/connectivity-check", a.withUser(RoleOperator, a.createNodeCommand("connectivity_check")))
@@ -123,6 +125,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /agent/download", a.agentDownload)
 	mux.HandleFunc("POST /agent/v1/enroll", a.enroll)
 	mux.HandleFunc("GET /agent/v1/config", a.agentConfig)
+	mux.HandleFunc("GET /agent/v1/peer-config", a.agentPeerConfig)
 	mux.HandleFunc("GET /agent/v1/location", a.agentLocation)
 	mux.HandleFunc("POST /agent/v1/status", a.agentStatus)
 	mux.HandleFunc("POST /agent/v1/heartbeat", a.agentHeartbeat)
@@ -696,6 +699,7 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		Labels          map[string]string          `json:"labels"`
 		Interfaces      string                     `json:"interfaces"`
 		WireGuard       []WireGuardInterfaceStatus `json:"wireguard"`
+		PeerConfigs     *[]PeerConfigFile          `json:"peer_configs,omitempty"`
 		CollectionError string                     `json:"collection_error,omitempty"`
 		Location        geoIPLocation              `json:"location,omitempty"`
 	}
@@ -723,6 +727,9 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 		node.WireGuard = in.WireGuard
 		a.geoLocatePeerEndpoints(node.TenantID, node.WireGuard)
 		adoptedInterface, adoptedConfiguration = a.adoptReportedNodeConfiguration(&node)
+	}
+	if in.PeerConfigs != nil {
+		node.PeerConfigFiles = sanitizeAgentPeerConfigFiles(*in.PeerConfigs, node.LastSeen)
 	}
 	a.applyAutomaticNodeLocation(&node, in.Location, r)
 	a.adoptPublicEndpoint(&node, in.Location, r)

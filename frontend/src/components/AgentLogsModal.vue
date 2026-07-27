@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api, type ApiNodeLog } from '../api'
 import type { Agent } from '../types'
 import { useAppStore } from '../stores/app'
@@ -18,6 +18,29 @@ const onlyErrors = ref(false)
 const hasMore = ref(false)
 const offset = ref(0)
 const pageSize = 50
+
+function logLevelClass(level: string) {
+  const value = level.toLowerCase()
+  if (value === 'error' || value === 'fatal') return 'text-red-300'
+  if (value === 'warning' || value === 'warn') return 'text-amber-300'
+  if (value === 'debug') return 'text-violet-300'
+  return 'text-cyan-300'
+}
+
+function logLevelLabel(level: string) {
+  return (level || 'info').toUpperCase().padEnd(5, ' ')
+}
+
+function time(value: string) { return value ? new Date(value).toLocaleString('zh-CN') : '-' }
+
+const terminalLogs = computed(() => logs.value.map((log) => ({
+  id: log.id,
+  level: logLevelLabel(log.level),
+  levelClass: logLevelClass(log.level),
+  source: log.source || 'agent',
+  time: time(log.created_at),
+  message: log.message || '',
+})))
 
 async function load(reset = true) {
   if (loading.value) return
@@ -57,7 +80,6 @@ function toggleErrors() {
 }
 
 onMounted(load)
-function time(value: string) { return value ? new Date(value).toLocaleString('zh-CN') : '-' }
 </script>
 <template>
   <div class="fixed inset-0 z-[80] flex items-center justify-center bg-black/65 p-4" @click.self="emit('close')">
@@ -76,12 +98,26 @@ function time(value: string) { return value ? new Date(value).toLocaleString('zh
         <p v-if="currentError" class="mb-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-300 ring-1 ring-amber-500/30">当前 WireGuard 采集异常：{{ currentError }}</p>
         <p v-if="loading && !logs.length" class="py-10 text-center text-sm text-slate-500">加载中…</p>
         <p v-else-if="!logs.length" class="py-10 text-center text-sm text-slate-500">暂无 Agent 日志</p>
-        <div v-else class="space-y-2">
-          <div v-for="log in logs" :key="log.id" class="rounded-xl border border-ink-700 bg-ink-900/60 px-4 py-3">
-            <div class="flex items-center gap-2 text-[11px]"><span class="chip" :class="log.level === 'error' ? 'bg-red-500/10 text-red-300' : log.level === 'warning' ? 'bg-amber-500/10 text-amber-300' : 'bg-cyan-500/10 text-cyan-300'">{{ log.level }}</span><span class="text-slate-500">{{ log.source }}</span><span class="ml-auto text-slate-600">{{ time(log.created_at) }}</span></div>
-            <p class="mt-2 whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-slate-300">{{ log.message }}</p>
+        <div v-else class="border-y border-ink-700 bg-[#05070a] font-mono text-[11px] leading-5 text-slate-400">
+          <div class="sticky top-0 z-10 flex min-w-[48rem] border-b border-ink-800 bg-[#05070a] px-3 py-1 text-[10px] uppercase tracking-wide text-slate-600">
+            <span class="w-40 shrink-0">time</span>
+            <span class="w-16 shrink-0">level</span>
+            <span class="w-24 shrink-0">source</span>
+            <span class="min-w-0 flex-1">message</span>
           </div>
-          <button v-if="hasMore" class="btn-secondary mx-auto mt-3 block" :disabled="loading" @click="load(false)">{{ loading ? '加载中…' : '加载更多' }}</button>
+          <div class="max-h-[52vh] overflow-auto">
+            <div
+              v-for="log in terminalLogs"
+              :key="log.id"
+              class="flex min-w-[48rem] items-start border-b border-white/[0.025] px-3 py-0.5 last:border-b-0 hover:bg-white/[0.035]"
+            >
+              <span class="w-40 shrink-0 select-none text-slate-600">{{ log.time }}</span>
+              <span class="w-16 shrink-0 select-none whitespace-pre" :class="log.levelClass">{{ log.level }}</span>
+              <span class="w-24 shrink-0 select-none truncate text-slate-500">{{ log.source }}</span>
+              <span class="min-w-0 flex-1 whitespace-pre-wrap break-all text-slate-300">{{ log.message }}</span>
+            </div>
+            <button v-if="hasMore" class="block w-full border-t border-ink-800 px-3 py-2 text-center text-xs text-cyan-300 hover:bg-cyan-500/10 disabled:text-slate-600" :disabled="loading" @click="load(false)">{{ loading ? '加载中…' : '加载更多' }}</button>
+          </div>
         </div>
       </div>
     </div>

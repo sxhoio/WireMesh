@@ -152,6 +152,20 @@ async function clearAuditLogs() {
   await mesh.clearAudit()
 }
 
+function auditActionClass(action: string) {
+  const normalized = action.toLowerCase()
+  if (normalized.includes('failed') || normalized.includes('fail') || normalized.includes('error') || normalized.includes('delete') || normalized.includes('clear') || normalized.includes('清空') || normalized.includes('删除')) {
+    return 'text-red-300'
+  }
+  if (normalized.includes('publish') || normalized.includes('config') || normalized.includes('save') || normalized.includes('update') || normalized.includes('发布') || normalized.includes('配置') || normalized.includes('保存') || normalized.includes('更新')) {
+    return 'text-emerald-300'
+  }
+  if (normalized.includes('login') || normalized.includes('setup') || normalized.includes('create') || normalized.includes('登录') || normalized.includes('初始化') || normalized.includes('创建')) {
+    return 'text-violet-300'
+  }
+  return 'text-slate-300'
+}
+
 // ---- 通知配置 ----
 const channelTypeMeta: Record<NotifyChannelType, { l: string; c: string; description: string }> = {
   webhook: { l: 'Webhook', c: 'bg-cyan-500/10 text-cyan-300 ring-cyan-500/30', description: '自定义 HTTP 请求、请求头和签名' },
@@ -677,19 +691,27 @@ function channelConfigSummary(c: NotifyChannel) {
             <button v-if="app.isAdmin" class="btn-secondary !py-2 text-xs text-red-300" :disabled="mesh.auditLoading || !mesh.audit.length" @click="clearAuditLogs">清空日志</button>
           </div>
         </div>
-        <div class="mt-4 space-y-2">
+        <div class="mt-4">
           <p v-if="!mesh.audit.length" class="py-8 text-center text-xs text-slate-500">后端未返回审计记录</p>
-          <div v-for="e in mesh.audit" :key="e.id" class="flex items-start gap-3 rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600">
-            <span class="chip mt-0.5 shrink-0 bg-cyan-500/10 text-cyan-300 ring-1 ring-cyan-500/30">{{ e.user }}</span>
-            <div class="min-w-0 flex-1">
-              <p class="text-sm text-slate-200">{{ e.action }}</p>
-              <p class="text-xs text-slate-500">{{ e.detail }}</p>
+          <div v-else class="border-y border-ink-700 bg-[#05070a] font-mono text-[11px] leading-5 text-slate-400">
+            <div class="sticky top-0 z-10 flex min-w-[54rem] border-b border-ink-800 bg-[#05070a] px-3 py-1 text-[10px] uppercase tracking-wide text-slate-600">
+              <span class="w-40 shrink-0">time</span>
+              <span class="w-28 shrink-0">actor</span>
+              <span class="w-48 shrink-0">action</span>
+              <span class="min-w-0 flex-1">detail</span>
             </div>
-            <span class="shrink-0 text-[11px] text-slate-600">{{ fmtDateTime(e.time) }}</span>
+            <div class="max-h-[56vh] overflow-auto">
+              <div v-for="e in mesh.audit" :key="e.id" class="flex min-w-[54rem] items-start border-b border-white/[0.025] px-3 py-0.5 last:border-b-0 hover:bg-white/[0.035]">
+                <span class="w-40 shrink-0 select-none text-slate-600">{{ fmtDateTime(e.time) }}</span>
+                <span class="w-28 shrink-0 truncate text-cyan-300">{{ e.user || 'system' }}</span>
+                <span class="w-48 shrink-0 truncate" :class="auditActionClass(e.action)">{{ e.action }}</span>
+                <span class="min-w-0 flex-1 truncate text-slate-300">{{ e.detail }}</span>
+              </div>
+              <button v-if="mesh.auditHasMore" class="block w-full border-t border-ink-800 px-3 py-2 text-center text-xs text-cyan-300 hover:bg-cyan-500/10 disabled:text-slate-600" :disabled="mesh.auditLoading" @click="mesh.loadAuditPage(false)">
+                {{ mesh.auditLoading ? '加载中…' : '加载更多' }}
+              </button>
+            </div>
           </div>
-          <button v-if="mesh.auditHasMore" class="btn-secondary mx-auto mt-3 block !py-2 text-xs" :disabled="mesh.auditLoading" @click="mesh.loadAuditPage(false)">
-            {{ mesh.auditLoading ? '加载中…' : '加载更多' }}
-          </button>
         </div>
       </section>
 

@@ -64,7 +64,7 @@ func commonSchemaStatements() []string {
 		`CREATE INDEX IF NOT EXISTS projects_tenant_idx ON projects (tenant_id, created_at)`,
 		`CREATE TABLE IF NOT EXISTS networks (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, project_id TEXT NOT NULL, name TEXT NOT NULL, cidr TEXT NOT NULL, dns TEXT NOT NULL, topology TEXT NOT NULL, created_at TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS networks_project_idx ON networks (tenant_id, project_id)`,
-		`CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, project_id TEXT NOT NULL, network_id TEXT NOT NULL, name TEXT NOT NULL, hostname TEXT NOT NULL DEFAULT '', interface_selector TEXT NOT NULL DEFAULT '', collection_error TEXT NOT NULL DEFAULT '', enabled BOOLEAN NOT NULL DEFAULT TRUE, listen_port INTEGER NOT NULL DEFAULT 51820, mtu INTEGER NOT NULL DEFAULT 1420, address TEXT NOT NULL, endpoint TEXT NOT NULL, region TEXT NOT NULL, location_name VARCHAR(255) NOT NULL DEFAULT '', location_source VARCHAR(32) NOT NULL DEFAULT '', latitude DOUBLE PRECISION NOT NULL DEFAULT 0, longitude DOUBLE PRECISION NOT NULL DEFAULT 0, os TEXT NOT NULL, agent_version TEXT NOT NULL, labels_json TEXT NOT NULL, public_key TEXT NOT NULL, private_key_json TEXT NOT NULL, wireguard_json TEXT NOT NULL, last_seen TEXT NOT NULL, created_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, project_id TEXT NOT NULL, network_id TEXT NOT NULL, name TEXT NOT NULL, hostname TEXT NOT NULL DEFAULT '', interface_selector TEXT NOT NULL DEFAULT '', collection_error TEXT NOT NULL DEFAULT '', enabled BOOLEAN NOT NULL DEFAULT TRUE, listen_port INTEGER NOT NULL DEFAULT 51820, mtu INTEGER NOT NULL DEFAULT 1420, address TEXT NOT NULL, endpoint TEXT NOT NULL, region TEXT NOT NULL, location_name VARCHAR(255) NOT NULL DEFAULT '', location_source VARCHAR(32) NOT NULL DEFAULT '', latitude DOUBLE PRECISION NOT NULL DEFAULT 0, longitude DOUBLE PRECISION NOT NULL DEFAULT 0, os TEXT NOT NULL, agent_version TEXT NOT NULL, labels_json TEXT NOT NULL, public_key TEXT NOT NULL, private_key_json TEXT NOT NULL, wireguard_json TEXT NOT NULL, peer_config_json TEXT NOT NULL DEFAULT '[]', desired_peer_config_json TEXT NOT NULL DEFAULT '[]', last_seen TEXT NOT NULL, created_at TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS nodes_network_idx ON nodes (tenant_id, network_id)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS nodes_address_idx ON nodes (network_id, address)`,
 		`CREATE TABLE IF NOT EXISTS traffic_samples (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, node_id TEXT NOT NULL, interface_name TEXT NOT NULL, receive_bytes BIGINT NOT NULL, transmit_bytes BIGINT NOT NULL, recorded_at TEXT NOT NULL)`,
@@ -94,7 +94,7 @@ func mysqlSchemaStatements() []string {
 		`CREATE TABLE IF NOT EXISTS users (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, email VARCHAR(320) NOT NULL UNIQUE, password_hash VARCHAR(255) NOT NULL, name VARCHAR(255) NOT NULL, role VARCHAR(32) NOT NULL, last_login_at VARCHAR(40), created_at VARCHAR(40) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS projects (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, name VARCHAR(255) NOT NULL, description TEXT NOT NULL, created_at VARCHAR(40) NOT NULL, INDEX projects_tenant_idx (tenant_id, created_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS networks (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, project_id VARCHAR(191) NOT NULL, name VARCHAR(255) NOT NULL, cidr VARCHAR(64) NOT NULL, dns TEXT NOT NULL, topology VARCHAR(32) NOT NULL, created_at VARCHAR(40) NOT NULL, INDEX networks_project_idx (tenant_id, project_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS nodes (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, project_id VARCHAR(191) NOT NULL, network_id VARCHAR(191) NOT NULL, name VARCHAR(255) NOT NULL, hostname VARCHAR(255) NOT NULL DEFAULT '', interface_selector VARCHAR(255) NOT NULL DEFAULT '', collection_error LONGTEXT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, listen_port INTEGER NOT NULL DEFAULT 51820, mtu INTEGER NOT NULL DEFAULT 1420, address VARCHAR(64) NOT NULL, endpoint TEXT NOT NULL, region VARCHAR(255) NOT NULL, location_name VARCHAR(255) NOT NULL DEFAULT '', location_source VARCHAR(32) NOT NULL DEFAULT '', latitude DOUBLE PRECISION NOT NULL DEFAULT 0, longitude DOUBLE PRECISION NOT NULL DEFAULT 0, os VARCHAR(255) NOT NULL, agent_version VARCHAR(255) NOT NULL, labels_json LONGTEXT NOT NULL, public_key TEXT NOT NULL, private_key_json LONGTEXT NOT NULL, wireguard_json LONGTEXT NOT NULL, last_seen VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL, INDEX nodes_network_idx (tenant_id, network_id), UNIQUE INDEX nodes_address_idx (network_id, address)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS nodes (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, project_id VARCHAR(191) NOT NULL, network_id VARCHAR(191) NOT NULL, name VARCHAR(255) NOT NULL, hostname VARCHAR(255) NOT NULL DEFAULT '', interface_selector VARCHAR(255) NOT NULL DEFAULT '', collection_error LONGTEXT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, listen_port INTEGER NOT NULL DEFAULT 51820, mtu INTEGER NOT NULL DEFAULT 1420, address VARCHAR(64) NOT NULL, endpoint TEXT NOT NULL, region VARCHAR(255) NOT NULL, location_name VARCHAR(255) NOT NULL DEFAULT '', location_source VARCHAR(32) NOT NULL DEFAULT '', latitude DOUBLE PRECISION NOT NULL DEFAULT 0, longitude DOUBLE PRECISION NOT NULL DEFAULT 0, os VARCHAR(255) NOT NULL, agent_version VARCHAR(255) NOT NULL, labels_json LONGTEXT NOT NULL, public_key TEXT NOT NULL, private_key_json LONGTEXT NOT NULL, wireguard_json LONGTEXT NOT NULL, peer_config_json LONGTEXT NULL, desired_peer_config_json LONGTEXT NULL, last_seen VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL, INDEX nodes_network_idx (tenant_id, network_id), UNIQUE INDEX nodes_address_idx (network_id, address)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS traffic_samples (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, node_id VARCHAR(191) NOT NULL, interface_name VARCHAR(191) NOT NULL, receive_bytes BIGINT NOT NULL, transmit_bytes BIGINT NOT NULL, recorded_at VARCHAR(40) NOT NULL, INDEX traffic_samples_node_idx (tenant_id, node_id, interface_name, recorded_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS peer_relations (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, network_id VARCHAR(191) NOT NULL, source_node_id VARCHAR(191) NOT NULL, target_node_id VARCHAR(191) NOT NULL, created_at VARCHAR(40) NOT NULL, INDEX peers_network_idx (tenant_id, network_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS config_revisions (id VARCHAR(191) PRIMARY KEY, tenant_id VARCHAR(191) NOT NULL, project_id VARCHAR(191) NOT NULL, network_id VARCHAR(191) NOT NULL, version BIGINT NOT NULL, configs_json LONGTEXT NOT NULL, created_at VARCHAR(40) NOT NULL, UNIQUE INDEX revisions_network_version_idx (network_id, version)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
@@ -278,6 +278,8 @@ func (s *SQLStore) ensureNodeConfigColumns(ctx context.Context) error {
 		{name: "location_source", definition: "VARCHAR(32) NOT NULL DEFAULT ''"},
 		{name: "latitude", definition: "DOUBLE PRECISION NOT NULL DEFAULT 0"},
 		{name: "longitude", definition: "DOUBLE PRECISION NOT NULL DEFAULT 0"},
+		{name: "peer_config_json", definition: "TEXT NOT NULL DEFAULT '[]'"},
+		{name: "desired_peer_config_json", definition: "TEXT NOT NULL DEFAULT '[]'"},
 	}
 	for _, column := range columns {
 		var count int
@@ -296,7 +298,11 @@ func (s *SQLStore) ensureNodeConfigColumns(ctx context.Context) error {
 		if count > 0 {
 			continue
 		}
-		if _, err := s.db.ExecContext(ctx, "ALTER TABLE nodes ADD COLUMN "+column.name+" "+column.definition); err != nil {
+		definition := column.definition
+		if s.driver == "mysql" && (column.name == "peer_config_json" || column.name == "desired_peer_config_json") {
+			definition = "LONGTEXT NULL"
+		}
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE nodes ADD COLUMN "+column.name+" "+definition); err != nil {
 			return fmt.Errorf("add nodes %s column: %w", column.name, err)
 		}
 	}
@@ -356,7 +362,9 @@ func (s *SQLStore) CreateNode(v Node) error {
 	labels, _ := json.Marshal(v.Labels)
 	secret, _ := json.Marshal(v.PrivateKey)
 	wireGuard, _ := json.Marshal(v.WireGuard)
-	_, err := s.db.Exec(s.query(`INSERT INTO nodes (id, tenant_id, project_id, network_id, name, hostname, interface_selector, collection_error, enabled, listen_port, mtu, address, endpoint, region, location_name, location_source, latitude, longitude, os, agent_version, labels_json, public_key, private_key_json, wireguard_json, last_seen, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ProjectID, v.NetworkID, v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Enabled, v.ListenPort, v.MTU, v.Address, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.OS, v.AgentVersion, string(labels), v.PublicKey, string(secret), string(wireGuard), timeText(v.LastSeen), timeText(v.CreatedAt))
+	peerConfig, _ := json.Marshal(v.PeerConfigFiles)
+	desiredPeerConfig, _ := json.Marshal(v.DesiredPeerConfig)
+	_, err := s.db.Exec(s.query(`INSERT INTO nodes (id, tenant_id, project_id, network_id, name, hostname, interface_selector, collection_error, enabled, listen_port, mtu, address, endpoint, region, location_name, location_source, latitude, longitude, os, agent_version, labels_json, public_key, private_key_json, wireguard_json, peer_config_json, desired_peer_config_json, last_seen, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ProjectID, v.NetworkID, v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Enabled, v.ListenPort, v.MTU, v.Address, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.OS, v.AgentVersion, string(labels), v.PublicKey, string(secret), string(wireGuard), string(peerConfig), string(desiredPeerConfig), timeText(v.LastSeen), timeText(v.CreatedAt))
 	return err
 }
 func (s *SQLStore) GetNode(tenant, id string) (Node, error) {
@@ -392,7 +400,9 @@ func (s *SQLStore) UpdateNode(v Node) error {
 	labels, _ := json.Marshal(v.Labels)
 	secret, _ := json.Marshal(v.PrivateKey)
 	wireGuard, _ := json.Marshal(v.WireGuard)
-	result, err := s.db.Exec(s.query(`UPDATE nodes SET name=?, hostname=?, interface_selector=?, collection_error=?, enabled=?, listen_port=?, mtu=?, address=?, endpoint=?, region=?, location_name=?, location_source=?, latitude=?, longitude=?, os=?, agent_version=?, labels_json=?, public_key=?, private_key_json=?, wireguard_json=?, last_seen=? WHERE id=? AND tenant_id=?`), v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Enabled, v.ListenPort, v.MTU, v.Address, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.OS, v.AgentVersion, string(labels), v.PublicKey, string(secret), string(wireGuard), timeText(v.LastSeen), v.ID, v.TenantID)
+	peerConfig, _ := json.Marshal(v.PeerConfigFiles)
+	desiredPeerConfig, _ := json.Marshal(v.DesiredPeerConfig)
+	result, err := s.db.Exec(s.query(`UPDATE nodes SET name=?, hostname=?, interface_selector=?, collection_error=?, enabled=?, listen_port=?, mtu=?, address=?, endpoint=?, region=?, location_name=?, location_source=?, latitude=?, longitude=?, os=?, agent_version=?, labels_json=?, public_key=?, private_key_json=?, wireguard_json=?, peer_config_json=?, desired_peer_config_json=?, last_seen=? WHERE id=? AND tenant_id=?`), v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Enabled, v.ListenPort, v.MTU, v.Address, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.OS, v.AgentVersion, string(labels), v.PublicKey, string(secret), string(wireGuard), string(peerConfig), string(desiredPeerConfig), timeText(v.LastSeen), v.ID, v.TenantID)
 	return changed(result, err)
 }
 
@@ -986,7 +996,7 @@ func scanNotificationChannel(row scanner) (NotificationChannel, error) {
 	return v, nil
 }
 
-const nodeSelect = `SELECT id, tenant_id, project_id, network_id, name, COALESCE(hostname, ''), COALESCE(interface_selector, ''), COALESCE(collection_error, ''), enabled, listen_port, mtu, address, endpoint, region, COALESCE(location_name, ''), COALESCE(location_source, ''), COALESCE(latitude, 0), COALESCE(longitude, 0), os, agent_version, labels_json, public_key, private_key_json, wireguard_json, last_seen, created_at FROM nodes`
+const nodeSelect = `SELECT id, tenant_id, project_id, network_id, name, COALESCE(hostname, ''), COALESCE(interface_selector, ''), COALESCE(collection_error, ''), enabled, listen_port, mtu, address, endpoint, region, COALESCE(location_name, ''), COALESCE(location_source, ''), COALESCE(latitude, 0), COALESCE(longitude, 0), os, agent_version, labels_json, public_key, private_key_json, wireguard_json, COALESCE(peer_config_json, '[]'), COALESCE(desired_peer_config_json, '[]'), last_seen, created_at FROM nodes`
 
 func scanCommand(row scanner) (AgentCommand, error) {
 	var v AgentCommand
@@ -1052,7 +1062,8 @@ func scanNode(row scanner) (Node, error) {
 	var v Node
 	var labels, secret, lastSeen, created string
 	var wireGuard sql.NullString
-	if err := row.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.NetworkID, &v.Name, &v.Hostname, &v.InterfaceSelector, &v.CollectionError, &v.Enabled, &v.ListenPort, &v.MTU, &v.Address, &v.Endpoint, &v.Region, &v.LocationName, &v.LocationSource, &v.Latitude, &v.Longitude, &v.OS, &v.AgentVersion, &labels, &v.PublicKey, &secret, &wireGuard, &lastSeen, &created); err != nil {
+	var peerConfig, desiredPeerConfig sql.NullString
+	if err := row.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.NetworkID, &v.Name, &v.Hostname, &v.InterfaceSelector, &v.CollectionError, &v.Enabled, &v.ListenPort, &v.MTU, &v.Address, &v.Endpoint, &v.Region, &v.LocationName, &v.LocationSource, &v.Latitude, &v.Longitude, &v.OS, &v.AgentVersion, &labels, &v.PublicKey, &secret, &wireGuard, &peerConfig, &desiredPeerConfig, &lastSeen, &created); err != nil {
 		return Node{}, notFound(err)
 	}
 	if err := json.Unmarshal([]byte(labels), &v.Labels); err != nil {
@@ -1068,6 +1079,22 @@ func scanNode(row scanner) (Node, error) {
 	}
 	if v.WireGuard == nil {
 		v.WireGuard = []WireGuardInterfaceStatus{}
+	}
+	if peerConfig.Valid && strings.TrimSpace(peerConfig.String) != "" {
+		if err := json.Unmarshal([]byte(peerConfig.String), &v.PeerConfigFiles); err != nil {
+			return Node{}, err
+		}
+	}
+	if desiredPeerConfig.Valid && strings.TrimSpace(desiredPeerConfig.String) != "" {
+		if err := json.Unmarshal([]byte(desiredPeerConfig.String), &v.DesiredPeerConfig); err != nil {
+			return Node{}, err
+		}
+	}
+	if v.PeerConfigFiles == nil {
+		v.PeerConfigFiles = []PeerConfigFile{}
+	}
+	if v.DesiredPeerConfig == nil {
+		v.DesiredPeerConfig = []PeerConfigFile{}
 	}
 	v.LastSeen = parseTime(lastSeen)
 	v.CreatedAt = parseTime(created)

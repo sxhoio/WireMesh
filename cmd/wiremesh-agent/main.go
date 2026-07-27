@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	agentVersion                  = "0.3.4"
+	agentVersion                  = "0.3.5"
 	agentCommandWait              = 25 * time.Second
 	commandPollFallbackRetryDelay = 2 * time.Second
 )
@@ -72,6 +72,7 @@ type heartbeatRequest struct {
 	Labels          map[string]string          `json:"labels"`
 	Interfaces      string                     `json:"interfaces"`
 	WireGuard       []wireGuardInterfaceStatus `json:"wireguard"`
+	PeerConfigs     []peerConfigFile           `json:"peer_configs,omitempty"`
 	CollectionError string                     `json:"collection_error,omitempty"`
 	Location        *agentLocation             `json:"location,omitempty"`
 }
@@ -221,6 +222,15 @@ func main() {
 		refreshLocation()
 		heartbeat := baseHeartbeat
 		heartbeat.WireGuard, heartbeat.CollectionError = collectWireGuard(ctx, *interfaces, manager.runner)
+		if peerConfigs, peerConfigWarning := collectPeerConfigFiles(*interfaces, manager.configDir, heartbeat.WireGuard); peerConfigWarning != "" {
+			if heartbeat.CollectionError != "" {
+				heartbeat.CollectionError += "; "
+			}
+			heartbeat.CollectionError += peerConfigWarning
+			heartbeat.PeerConfigs = peerConfigs
+		} else {
+			heartbeat.PeerConfigs = peerConfigs
+		}
 		if heartbeat.CollectionError != lastCollectionError {
 			if heartbeat.CollectionError != "" {
 				log.Printf("WireGuard collection warning: %s", heartbeat.CollectionError)
@@ -299,6 +309,19 @@ func main() {
 				}
 			case "apply_config":
 				result, commandErr = reconcileConfiguration()
+			case "apply_peer_config":
+				payload, found, err := pollPeerConfig(ctx, client, state)
+				if err != nil {
+					commandErr = err
+					result = "peer_config_fetch=failed"
+				} else if !found {
+					result = "no pending peer config"
+				} else {
+					result, commandErr = manager.ApplyPeerConfigFiles(ctx, payload.Files)
+					if commandErr == nil {
+						_, _, _ = sendHeartbeat()
+					}
+				}
 			case "connectivity_check":
 				result, commandErr = connectivityCheck(ctx, *interfaces, manager.runner)
 			default:
@@ -575,6 +598,33 @@ func pollConfig(ctx context.Context, client *http.Client, state agentState) (con
 	var payload configResponse
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		return configResponse{}, false, err
+	}
+	return payload, true, nil
+}
+
+func pollPeerConfig(ctx context.Context, client *http.Client, state agentState) (peerConfigResponse, bool, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, state.Server+"/agent/v1/peer-config", nil)
+	if err != nil {
+		return peerConfigResponse{}, false, err
+	}
+	setDevelopmentIdentity(request, state)
+	response, err := client.Do(request)
+	if err != nil {
+		return peerConfigResponse{}, false, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return peerConfigResponse{}, false, nil
+	}
+	if response.StatusCode != http.StatusOK {
+		return peerConfigResponse{}, false, responseError(response)
+	}
+	var payload peerConfigResponse
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return peerConfigResponse{}, false, err
+	}
+	if payload.Files == nil {
+		payload.Files = []peerConfigFile{}
 	}
 	return payload, true, nil
 }

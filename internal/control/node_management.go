@@ -28,6 +28,12 @@ func normalizeNodeDefaults(node Node) Node {
 	if node.WireGuard == nil {
 		node.WireGuard = []WireGuardInterfaceStatus{}
 	}
+	if node.PeerConfigFiles == nil {
+		node.PeerConfigFiles = []PeerConfigFile{}
+	}
+	if node.DesiredPeerConfig == nil {
+		node.DesiredPeerConfig = []PeerConfigFile{}
+	}
 	return node
 }
 
@@ -504,6 +510,12 @@ func (a *App) agentCommandResult(w http.ResponseWriter, r *http.Request) {
 	if err := a.store.UpdateCommand(*command); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update command")
 		return
+	}
+	if command.Type == "apply_peer_config" {
+		if err := a.recordPeerConfigCommandResult(&node, in.State); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to record peer config result")
+			return
+		}
 	}
 	a.auditEvent(node.TenantID, node.ID, "agent.command."+in.State, "node", node.ID, map[string]string{"command_id": command.ID, "type": command.Type})
 	writeJSON(w, http.StatusOK, command)

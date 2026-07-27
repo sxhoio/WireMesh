@@ -73,6 +73,13 @@ type WireGuardInterfaceStatus struct {
 	Peers      []WireGuardPeerStatus `json:"peers"`
 }
 
+type PeerConfigFile struct {
+	Interface string    `json:"interface"`
+	Path      string    `json:"path,omitempty"`
+	Content   string    `json:"content"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
 type Node struct {
 	ID                string                     `json:"id"`
 	TenantID          string                     `json:"tenant_id"`
@@ -98,6 +105,8 @@ type Node struct {
 	PublicKey         string                     `json:"public_key"`
 	PrivateKey        EncryptedSecret            `json:"-"`
 	WireGuard         []WireGuardInterfaceStatus `json:"wireguard"`
+	PeerConfigFiles   []PeerConfigFile           `json:"-"`
+	DesiredPeerConfig []PeerConfigFile           `json:"-"`
 	LastSeen          time.Time                  `json:"last_seen"`
 	CreatedAt         time.Time                  `json:"created_at"`
 }
