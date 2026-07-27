@@ -55,10 +55,32 @@ function closeMenu() {
 const copiedKey = ref<string | null>(null)
 const editingAgent = ref<Agent | null>(null)
 const peerEditingAgent = ref<Agent | null>(null)
+const peerEditingMode = ref<'manual' | 'form'>('manual')
+const peerEditingInterface = ref('')
 const logsAgent = ref<Agent | null>(null)
 const refreshing = ref(false)
 const updating = ref(false)
 const selectedAgentIds = ref<Set<string>>(new Set())
+const deletingAgentIds = ref<Set<string>>(new Set())
+
+function setAgentDeleting(id: string, deleting: boolean) {
+  const next = new Set(deletingAgentIds.value)
+  if (deleting) next.add(id)
+  else next.delete(id)
+  deletingAgentIds.value = next
+}
+
+function openPeerEditor(agent: Agent, mode: 'manual' | 'form' = 'manual', iface = '') {
+  peerEditingAgent.value = agent
+  peerEditingMode.value = mode
+  peerEditingInterface.value = iface
+}
+
+function closePeerEditor() {
+  peerEditingAgent.value = null
+  peerEditingMode.value = 'manual'
+  peerEditingInterface.value = ''
+}
 
 async function refreshAll() {
   if (refreshing.value) return
@@ -209,6 +231,7 @@ async function copyText(text: string, key: string) {
 }
 
 async function confirmDelete(a: Agent) {
+  if (deletingAgentIds.value.has(a.id)) return
   const confirmed = await requestConfirm({
     title: '删除节点',
     message: `确定删除节点“${a.name}”吗？\n相关 Peer、命令和配置下发记录将一并清理，此操作无法恢复。`,
@@ -216,7 +239,13 @@ async function confirmDelete(a: Agent) {
     variant: 'danger',
   })
   if (!confirmed) return
-  await mesh.removeAgent(a.id, app.username)
+  setAgentDeleting(a.id, true)
+  if (editingAgent.value?.id === a.id) editingAgent.value = null
+  if (peerEditingAgent.value?.id === a.id) closePeerEditor()
+  if (logsAgent.value?.id === a.id) logsAgent.value = null
+  selectedAgentIds.value.delete(a.id)
+  selectedAgentIds.value = new Set(selectedAgentIds.value)
+  void mesh.removeAgent(a.id, app.username).finally(() => setAgentDeleting(a.id, false))
 }
 
 </script>
@@ -275,7 +304,7 @@ async function confirmDelete(a: Agent) {
             <th class="hidden w-24 px-2 py-3 2xl:table-cell">速率 (Mbps)</th>
             <th class="hidden w-20 px-2 py-3 2xl:table-cell">Peer</th>
             <th class="hidden w-56 px-2 py-3 xl:table-cell">版本 · 上报</th>
-            <th class="w-28 px-2 py-3 text-left">操作</th>
+            <th class="w-28 px-2 py-3 text-center">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -323,11 +352,12 @@ async function confirmDelete(a: Agent) {
                 <p class="truncate text-xs text-slate-500">最后上报 {{ ago(a.lastSeen) }}<span v-if="!a.enabled" class="ml-1.5 text-amber-400">已停用</span></p>
               </td>
               <td class="px-2 py-3.5">
-                <div class="flex items-center justify-end gap-1.5">
+                <div class="flex items-center justify-center gap-1.5">
                   <button
                     v-if="app.canOperate"
                     class="chip w-11 justify-center transition"
                     :class="a.enabled ? 'bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/30 hover:bg-amber-500/10 hover:text-amber-400' : 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30'"
+                    :disabled="deletingAgentIds.has(a.id)"
                     @click="mesh.toggleAgentEnabled(a.id, app.username)"
                   >
                     {{ a.enabled ? '停用' : '启用' }}
@@ -368,7 +398,10 @@ async function confirmDelete(a: Agent) {
 
               <!-- Peer 表 -->
               <div class="mt-3 border-t border-ink-700 pt-3">
-                <p class="mb-2 text-[11px] font-medium text-slate-500">Peer（{{ peersOf(iface).length }}）</p>
+                <div class="mb-2 flex items-center justify-between gap-2">
+                  <p class="text-[11px] font-medium text-slate-500">Peer（{{ peersOf(iface).length }}）</p>
+                  <button v-if="app.canOperate" class="rounded-md px-2 py-1 text-[11px] text-cyan-300 transition hover:bg-cyan-500/10" @click="openPeerEditor(a, 'form', iface.name)">+ 添加 Peer</button>
+                </div>
                 <div class="space-y-1.5">
                   <div v-for="p in peersOf(iface)" :key="p.link.id" class="flex items-center gap-2.5 text-xs">
                     <span class="h-1.5 w-1.5 shrink-0 rounded-full" :style="{ background: stateMeta[p.link.displayState].color }"></span>
@@ -413,7 +446,7 @@ async function confirmDelete(a: Agent) {
 
     <AddAgentDialog v-if="showAdd" @close="showAdd = false" />
     <EditNodeConfigModal v-if="editingAgent" :agent="editingAgent" @close="editingAgent = null" />
-    <PeerConfigEditorModal v-if="peerEditingAgent" :agent="peerEditingAgent" @close="peerEditingAgent = null" />
+    <PeerConfigEditorModal v-if="peerEditingAgent" :agent="peerEditingAgent" :initial-mode="peerEditingMode" :initial-interface="peerEditingInterface" @close="closePeerEditor" />
     <AgentLogsModal v-if="logsAgent" :agent="logsAgent" @close="logsAgent = null" />
 
     <!-- 更多操作菜单：Teleport 到 body，避免被行容器裁剪 -->
@@ -426,7 +459,7 @@ async function confirmDelete(a: Agent) {
       >
         <template v-for="a in filtered" :key="a.id">
           <template v-if="menuFor === a.id">
-            <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="peerEditingAgent = a; closeMenu()">编辑 Peer</button>
+            <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="openPeerEditor(a, 'manual'); closeMenu()">编辑 Peer</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.collectNow(a.id); closeMenu()">立即采集状态</button>
             <button
               v-if="app.canOperate"
@@ -442,7 +475,12 @@ async function confirmDelete(a: Agent) {
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.interfaces[0]?.publicKey || a.publicKey, 'pk-' + a.id)">{{ copiedKey === 'pk-' + a.id ? '已复制 ✓' : '复制 Public Key' }}</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="logsAgent = a; closeMenu()">查看日志</button>
             <div class="my-1 border-t border-ink-700"></div>
-            <button v-if="app.isAdmin" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-red-400 hover:bg-ink-700" @click="confirmDelete(a); closeMenu()">删除 Agent</button>
+            <button
+              v-if="app.isAdmin"
+              class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-red-400 hover:bg-ink-700 disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
+              :disabled="deletingAgentIds.has(a.id)"
+              @click="confirmDelete(a); closeMenu()"
+            >{{ deletingAgentIds.has(a.id) ? '删除中…' : '删除 Agent' }}</button>
           </template>
         </template>
       </div>

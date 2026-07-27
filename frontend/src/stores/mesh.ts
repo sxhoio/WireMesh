@@ -8,6 +8,7 @@ import { useAppStore } from './app'
 
 let pollingTimer: number | undefined
 const trafficSamples = new Map<string, { time: number; receiveBytes: number; transmitBytes: number }>()
+const deletingNodeIDs = new Set<string>()
 const immediateCollectTimeoutMs = 10_000
 const immediateCollectPollMs = 400
 const immediateDeliveryTimeoutMs = 15_000
@@ -157,7 +158,8 @@ function observedTopology(agents: Agent[], handshakeThreshold: number): { links:
   return { links: [...links.values()], tempPeers }
 }
 function telemetryFromNodes(nodes: ApiNode[], offlineSeconds: number, handshakeSeconds: number) {
-  const agents = nodes.map((node) => toAgent(node, offlineSeconds))
+  const visibleNodes = deletingNodeIDs.size ? nodes.filter((node) => !deletingNodeIDs.has(node.id)) : nodes
+  const agents = visibleNodes.map((node) => toAgent(node, offlineSeconds))
   const observed = observedTopology(agents, handshakeSeconds)
   return { agents, links: observed.links, tempPeers: observed.tempPeers }
 }
@@ -757,8 +759,44 @@ export const useMeshStore = defineStore('mesh', {
     },
     async removeAgent(id: string, _user?: string) {
       this.error = ''
-      try { await api.deleteNode(id); await this.refresh(); this.notice = 'Agent 已删除'; return true }
-      catch (reason) { this.error = reason instanceof Error ? reason.message : '删除 Agent 失败'; return false }
+      deletingNodeIDs.add(id)
+      const agent = this.agents.find((value) => value.id === id)
+      const snapshot = {
+        agents: [...this.agents],
+        links: [...this.links],
+        tempPeers: [...this.tempPeers],
+      }
+      if (agent) {
+        const interfaceIDs = new Set(agent.interfaces.map((iface) => iface.id))
+        const belongsToAgent = (ifaceID: string) => interfaceIDs.has(ifaceID) || ifaceID.startsWith(id + ':')
+        this.agents = this.agents.filter((value) => value.id !== id)
+        this.links = this.links.filter((link) => !belongsToAgent(link.a) && !belongsToAgent(link.b))
+        this.tempPeers = this.tempPeers.filter((peer) => !belongsToAgent(peer.sourceIfaceId))
+        trafficSamples.delete(id)
+        this.lastUpdated = Date.now()
+      }
+      try {
+        await api.deleteNode(id)
+        await this.refreshNodeTelemetry(true)
+        deletingNodeIDs.delete(id)
+        this.notice = 'Agent 已删除'
+        return true
+      } catch (reason) {
+        if (reason instanceof ApiError && reason.status === 404) {
+          await this.refreshNodeTelemetry(true)
+          deletingNodeIDs.delete(id)
+          this.notice = 'Agent 已删除'
+          return true
+        }
+        deletingNodeIDs.delete(id)
+        if (agent) {
+          this.agents = snapshot.agents
+          this.links = snapshot.links
+          this.tempPeers = snapshot.tempPeers
+        }
+        this.error = reason instanceof Error ? reason.message : '删除 Agent 失败'
+        return false
+      }
     },
     discardPending(_user?: string) { this.pendingChanges = [] },
     adoptTempPeer(_id: string, _target: { projectId: string; networkId: string; agentId: string }, _user?: string) { this.unsupported('纳入临时 Peer') },
