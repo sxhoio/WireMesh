@@ -16,6 +16,7 @@ export interface ApiNodeLogPage { items: ApiNodeLog[]; current_error?: string; l
 export interface ApiAgentUpdateInfo { available: boolean; version?: string; os?: string; arch?: string; size?: number; sha256?: string; download_url?: string; min_agent_version?: string; current_compatible?: boolean; error?: string }
 export interface ApiAgentUpdateSkippedNode { node_id: string; name: string; agent_version?: string; reason: string }
 export interface ApiAgentUpdateDispatchResult { created: number; node_ids?: string[]; skipped_node_ids?: string[]; skipped?: ApiAgentUpdateSkippedNode[] }
+export type ApiTrafficRange = '5m' | '10m' | '30m' | '1h' | '2h' | '6h' | '12h' | '24h' | '7d' | '30d'
 export interface ApiTrafficPoint { recorded_at: string; receive_bytes: number; transmit_bytes: number; rx_mbps: number; tx_mbps: number }
 export interface ApiDelivery { id: string; tenant_id: string; node_id: string; version: number; state: string; message: string; updated_at: string }
 export interface ApiConfigPublishResult {
@@ -137,7 +138,7 @@ export const api = {
   checkNodeConnectivity: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/connectivity-check', { method: 'POST' }),
   nodeLogs: (id: string, limit = 50, offset = 0, errorsOnly = false) => request<ApiNodeLogPage>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs?limit=' + limit + '&offset=' + offset + (errorsOnly ? '&level=error' : '')),
   clearNodeLogs: (id: string) => request<void>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs', { method: 'DELETE' }),
-  traffic: (id: string, interfaceName: string, range: '24h' | '7d' | '30d') => requestArray<ApiTrafficPoint>('/api/v1/nodes/' + encodeURIComponent(id) + '/traffic?interface=' + encodeURIComponent(interfaceName) + '&range=' + range),
+  traffic: (id: string, interfaceName: string, range: ApiTrafficRange) => requestArray<ApiTrafficPoint>('/api/v1/nodes/' + encodeURIComponent(id) + '/traffic?interface=' + encodeURIComponent(interfaceName) + '&range=' + range),
   deliveries: () => requestArray<ApiDelivery>('/api/v1/deliveries'),
   audit: (limit = 50, offset = 0) => request<ApiAuditPage>('/api/v1/audit?limit=' + limit + '&offset=' + offset),
   clearAudit: () => request<void>('/api/v1/audit', { method: 'DELETE' }),

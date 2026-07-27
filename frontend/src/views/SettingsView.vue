@@ -383,7 +383,7 @@ function channelConfigSummary(c: NotifyChannel) {
       <!-- 流量保留 -->
       <section v-else-if="tab === 'retention'" class="panel p-4 sm:p-6 2xl:p-7">
         <h2 class="text-sm font-semibold text-white">流量保留</h2>
-        <p class="mt-0.5 text-xs text-slate-500">分层保留策略：原始数据用于实时与 24h 曲线，小时聚合用于 7 天，日聚合用于月度</p>
+        <p class="mt-0.5 text-xs text-slate-500">分层保留策略：原始数据用于 5 分钟到 24 小时曲线，小时聚合用于 7 天，日聚合用于 30 天</p>
         <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3 2xl:gap-6">
           <div><label class="label">原始数据（天）</label><input v-model.number="form.retention.rawDays" type="number" min="1" class="input font-mono" /></div>
           <div><label class="label">小时聚合（天）</label><input v-model.number="form.retention.hourlyDays" type="number" min="1" class="input font-mono" /></div>

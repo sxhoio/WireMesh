@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { api, type ApiTrafficPoint } from '../api'
+import { api, type ApiTrafficPoint, type ApiTrafficRange } from '../api'
 import { fmtMbps } from '../utils/format'
 
-const props = defineProps<{ nodeId: string; interfaceName: string; range: '24h' | '7d' | '30d' }>()
+const props = defineProps<{ nodeId: string; interfaceName: string; range: ApiTrafficRange }>()
 const points = ref<ApiTrafficPoint[]>([])
 const loading = ref(false)
 const error = ref('')

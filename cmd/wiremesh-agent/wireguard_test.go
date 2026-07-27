@@ -201,6 +201,43 @@ func TestApplyWireGuardConfigurationRollsBack(t *testing.T) {
 	}
 }
 
+func TestApplyPeerConfigFilesReplacesPeersAndRestartsInterface(t *testing.T) {
+	directory := t.TempDir()
+	filename := filepath.Join(directory, "wg0.conf")
+	previous := "[Interface]\nPrivateKey = private\nAddress = 10.59.0.1/32\n\n[Peer]\nPublicKey = " + testWireGuardKey(20) + "\nAllowedIPs = 10.59.0.20/32\n"
+	if err := os.WriteFile(filename, []byte(previous), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &testRunner{run: func(name string, args ...string) ([]byte, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "wg show wg0", "wg-quick down " + filename, "wg-quick up " + filename:
+			return nil, nil
+		default:
+			return nil, errors.New("unexpected command")
+		}
+	}}
+	nextPeer := "[Peer]\nPublicKey = " + testWireGuardKey(21) + "\nAllowedIPs = 10.59.0.21/32\nPersistentKeepalive = 25\n"
+	result, err := (wireGuardManager{runner: runner, configDir: directory}).ApplyPeerConfigFiles(context.Background(), []peerConfigFile{{Interface: "wg0", Content: nextPeer}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "applied=1") {
+		t.Fatalf("unexpected apply result: %s", result)
+	}
+	content, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	if !strings.Contains(text, "[Interface]") || !strings.Contains(text, "10.59.0.21/32") || strings.Contains(text, "10.59.0.20/32") {
+		t.Fatalf("peer sections were not replaced correctly: %s", text)
+	}
+	expectedCalls := []string{"wg show wg0", "wg-quick down " + filename, "wg-quick up " + filename}
+	if strings.Join(runner.calls, "|") != strings.Join(expectedCalls, "|") {
+		t.Fatalf("WireGuard interface was not restarted as expected: %#v", runner.calls)
+	}
+}
+
 func TestValidateNodeConfigRejectsWrongNode(t *testing.T) {
 	config := nodeConfig{NodeID: "another-node", NetworkID: "network-1", Address: "10.0.0.1/32", PrivateKey: testWireGuardKey(1), ListenPort: 51820}
 	if err := validateNodeConfig(config, "this-node"); err == nil {

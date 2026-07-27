@@ -17,14 +17,25 @@ func (a *App) nodeTraffic(w http.ResponseWriter, r *http.Request, c claims) {
 		writeError(w, http.StatusBadRequest, "interface is required")
 		return
 	}
-	durations := map[string]time.Duration{"24h": 24 * time.Hour, "7d": 7 * 24 * time.Hour, "30d": 30 * 24 * time.Hour}
+	durations := map[string]time.Duration{
+		"5m":  5 * time.Minute,
+		"10m": 10 * time.Minute,
+		"30m": 30 * time.Minute,
+		"1h":  time.Hour,
+		"2h":  2 * time.Hour,
+		"6h":  6 * time.Hour,
+		"12h": 12 * time.Hour,
+		"24h": 24 * time.Hour,
+		"7d":  7 * 24 * time.Hour,
+		"30d": 30 * 24 * time.Hour,
+	}
 	rangeName := r.URL.Query().Get("range")
 	if rangeName == "" {
 		rangeName = "24h"
 	}
 	duration, ok := durations[rangeName]
 	if !ok {
-		writeError(w, http.StatusBadRequest, "range must be 24h, 7d or 30d")
+		writeError(w, http.StatusBadRequest, "range must be one of 5m, 10m, 30m, 1h, 2h, 6h, 12h, 24h, 7d or 30d")
 		return
 	}
 	samples := a.store.ListTrafficSamples(c.TenantID, node.ID, iface, time.Now().Add(-duration))

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
+import type { ApiTrafficRange } from '../api'
 import AddAgentDialog from '../components/AddAgentDialog.vue'
 import EditNodeConfigModal from '../components/EditNodeConfigModal.vue'
 import AgentLogsModal from '../components/AgentLogsModal.vue'
@@ -21,7 +22,19 @@ const statusFilter = ref<'all' | 'online' | 'offline' | 'disabled'>('all')
 const networkFilter = ref('all')
 const sortBy = ref<'name' | 'lastSeen' | 'rx'>('name')
 const expanded = ref<Set<string>>(new Set())
-const trafficRange = reactive<Record<string, '24h' | '7d' | '30d'>>({})
+const trafficRange = reactive<Record<string, ApiTrafficRange>>({})
+const trafficRangeOptions: { value: ApiTrafficRange; label: string }[] = [
+  { value: '5m', label: '5 分钟' },
+  { value: '10m', label: '10 分钟' },
+  { value: '30m', label: '30 分钟' },
+  { value: '1h', label: '1 小时' },
+  { value: '2h', label: '2 小时' },
+  { value: '6h', label: '6 小时' },
+  { value: '12h', label: '12 小时' },
+  { value: '24h', label: '24 小时' },
+  { value: '7d', label: '7 天' },
+  { value: '30d', label: '30 天' },
+]
 
 const menuFor = ref<string | null>(null)
 const menuPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -370,17 +383,17 @@ async function confirmDelete(a: Agent) {
 
               <!-- 流量曲线 -->
               <div class="mt-3 border-t border-ink-700 pt-3">
-                <div class="mb-1 flex items-center justify-between">
+                <div class="mb-1 flex flex-wrap items-center justify-between gap-2">
                   <p class="text-[11px] font-medium text-slate-500">流量曲线</p>
-                  <div class="flex gap-1">
+                  <div class="flex flex-wrap justify-end gap-1">
                     <button
-                      v-for="r in ['24h', '7d', '30d'] as const"
-                      :key="r"
+                      v-for="option in trafficRangeOptions"
+                      :key="option.value"
                       class="rounded-md px-2 py-0.5 text-[10px] font-medium transition"
-                      :class="(trafficRange[a.id] ?? '24h') === r ? 'bg-emerald-500/15 text-emerald-300' : 'text-slate-500 hover:text-slate-300'"
-                      @click="trafficRange[a.id] = r"
+                      :class="(trafficRange[a.id] ?? '24h') === option.value ? 'bg-emerald-500/15 text-emerald-300' : 'text-slate-500 hover:text-slate-300'"
+                      @click="trafficRange[a.id] = option.value"
                     >
-                      {{ r === '24h' ? '24 小时' : r === '7d' ? '7 天' : '月度' }}
+                      {{ option.label }}
                     </button>
                   </div>
                 </div>

@@ -1,6 +1,7 @@
 package control
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -558,6 +559,132 @@ func TestAgentUpdateRejectsAgentsWithoutUpdaterSupport(t *testing.T) {
 	}
 	if result.Created != 1 || len(result.NodeIDs) != 1 || result.NodeIDs[0] != newNode.ID || len(result.Skipped) != 1 || result.Skipped[0].NodeID != oldNode.ID {
 		t.Fatalf("bulk update summary did not report skipped unsupported node: %#v", result)
+	}
+}
+
+func TestPeerConfigSaveQueuesImmediateApplyAndRecordsResult(t *testing.T) {
+	app := testApp(t)
+	admin, token := initializeTestAdmin(t, app, "peer-config@example.com", "strong-password")
+	project := Project{ID: "project-peer-config", TenantID: admin.TenantID, Name: "Peer Config", CreatedAt: time.Now()}
+	network := Network{ID: "network-peer-config", TenantID: admin.TenantID, ProjectID: project.ID, Name: "Peer Config", CIDR: "10.59.0.0/24", Topology: TopologyFullMesh, CreatedAt: time.Now()}
+	app.store.CreateProject(project)
+	app.store.CreateNetwork(network)
+	node, err := app.createNode(admin.TenantID, network, "peer-node", "", "", "linux/amd64", defaultAgentUpdateMinVersion, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.LastSeen = time.Now()
+	if err := app.store.UpdateNode(node); err != nil {
+		t.Fatal(err)
+	}
+	peerKey := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	payload := `{"interface":"wg0","content":"[Peer]\nPublicKey = ` + peerKey + `\nAllowedIPs = 10.59.0.2/32\n"}`
+
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/nodes/"+node.ID+"/peer-config", strings.NewReader(payload))
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("peer config save should queue delivery immediately: %d %s", response.Code, response.Body.String())
+	}
+	var saved NodePeerConfigUpdateResult
+	if err := json.NewDecoder(response.Body).Decode(&saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Command.Type != "apply_peer_config" || saved.Command.State != "pending" || saved.Offline {
+		t.Fatalf("unexpected peer config update result: %#v", saved)
+	}
+	commands := app.store.ListCommands(admin.TenantID, node.ID)
+	if len(commands) != 1 || commands[0].Type != "apply_peer_config" || commands[0].State != "pending" {
+		t.Fatalf("apply_peer_config command was not queued: %#v", commands)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/agent/v1/commands", nil)
+	request.Header.Set("X-Agent-ID", node.ID)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("agent command claim failed: %d %s", response.Code, response.Body.String())
+	}
+	var claimed []AgentCommand
+	if err := json.NewDecoder(response.Body).Decode(&claimed); err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 1 || claimed[0].ID != saved.Command.ID || claimed[0].State != "running" {
+		t.Fatalf("queued command was not immediately claimable by Agent: %#v", claimed)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/agent/v1/peer-config", nil)
+	request.Header.Set("X-Agent-ID", node.ID)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "10.59.0.2/32") {
+		t.Fatalf("agent could not fetch pending peer config: %d %s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/agent/v1/commands/"+saved.Command.ID+"/result", strings.NewReader(`{"state":"completed","result":"peer_config_files=1 applied=1 unchanged=0"}`))
+	request.Header.Set("X-Agent-ID", node.ID)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("agent command result failed: %d %s", response.Code, response.Body.String())
+	}
+	updated, err := app.store.GetNode(admin.TenantID, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.DesiredPeerConfig) != 0 || len(updated.PeerConfigFiles) != 1 || !strings.Contains(updated.PeerConfigFiles[0].Content, "10.59.0.2/32") {
+		t.Fatalf("completed peer config command did not promote desired config: %#v", updated)
+	}
+}
+
+func TestNodeTrafficSupportsMinuteAndHourRanges(t *testing.T) {
+	app := testApp(t)
+	admin, token := initializeTestAdmin(t, app, "traffic-range@example.com", "strong-password")
+	project := Project{ID: "project-traffic-range", TenantID: admin.TenantID, Name: "Traffic Range", CreatedAt: time.Now()}
+	network := Network{ID: "network-traffic-range", TenantID: admin.TenantID, ProjectID: project.ID, Name: "Traffic Range", CIDR: "10.60.0.0/24", Topology: TopologyFullMesh, CreatedAt: time.Now()}
+	app.store.CreateProject(project)
+	app.store.CreateNetwork(network)
+	node, err := app.createNode(admin.TenantID, network, "traffic-node", "", "", "linux/amd64", defaultAgentUpdateMinVersion, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := app.store.AddTrafficSamples([]TrafficSample{
+		{ID: "traffic-old", TenantID: admin.TenantID, NodeID: node.ID, InterfaceName: "wg0", ReceiveBytes: 100, TransmitBytes: 100, RecordedAt: now.Add(-20 * time.Minute)},
+		{ID: "traffic-recent-1", TenantID: admin.TenantID, NodeID: node.ID, InterfaceName: "wg0", ReceiveBytes: 1_000, TransmitBytes: 2_000, RecordedAt: now.Add(-4 * time.Minute)},
+		{ID: "traffic-recent-2", TenantID: admin.TenantID, NodeID: node.ID, InterfaceName: "wg0", ReceiveBytes: 2_000, TransmitBytes: 4_000, RecordedAt: now.Add(-3 * time.Minute)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/nodes/"+node.ID+"/traffic?interface=wg0&range=5m", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("5m traffic range failed: %d %s", response.Code, response.Body.String())
+	}
+	var points []TrafficPoint
+	if err := json.NewDecoder(response.Body).Decode(&points); err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 2 || points[0].ReceiveBytes != 1_000 || points[1].RXMbps <= 0 {
+		t.Fatalf("unexpected 5m traffic points: %#v", points)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/nodes/"+node.ID+"/traffic?interface=wg0&range=2h", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("2h traffic range failed: %d %s", response.Code, response.Body.String())
+	}
+	points = nil
+	if err := json.NewDecoder(response.Body).Decode(&points); err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 3 {
+		t.Fatalf("2h range should include all samples: %#v", points)
 	}
 }
 

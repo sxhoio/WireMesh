@@ -8,7 +8,7 @@ const props = defineProps<{ agent: Agent }>()
 const emit = defineEmits<{ close: [] }>()
 const mesh = useMeshStore()
 
-const loading = ref(false)
+const loading = ref(true)
 const saving = ref(false)
 const error = ref('')
 const hasPending = ref(false)
@@ -95,7 +95,7 @@ onMounted(load)
 
 <template>
   <div class="fixed inset-0 z-[80] flex items-center justify-center bg-black/65 p-4" @click.self="emit('close')">
-    <div class="panel flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden">
+    <div class="panel flex h-[82vh] max-h-[88vh] min-h-[34rem] w-full max-w-4xl flex-col overflow-hidden">
       <div class="flex flex-wrap items-start justify-between gap-3 border-b border-ink-700 px-6 py-5">
         <div>
           <h3 class="text-base font-semibold text-white">{{ agent.name }} · 编辑 Peer</h3>
@@ -107,10 +107,29 @@ onMounted(load)
       <div class="min-h-0 flex-1 overflow-auto p-5">
         <p v-if="error" class="mb-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300">{{ error }}</p>
         <p v-if="hasPending" class="mb-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-300 ring-1 ring-amber-500/30">当前存在待下发 Peer 配置，编辑器优先显示待下发内容。</p>
-        <p v-if="loading" class="py-12 text-center text-sm text-slate-500">加载中…</p>
+        <div class="grid h-full min-h-[26rem] gap-3 md:grid-cols-[12rem_1fr]">
+          <template v-if="loading">
+            <div class="space-y-2">
+              <label class="label">接口</label>
+              <div class="space-y-2">
+                <div v-for="index in 4" :key="index" class="h-9 animate-pulse rounded-lg bg-ink-800/80 ring-1 ring-ink-700"></div>
+              </div>
+            </div>
+            <div class="min-w-0">
+              <div class="mb-2 flex items-center justify-between gap-2">
+                <div class="h-4 w-72 max-w-full animate-pulse rounded bg-ink-800"></div>
+                <div class="h-8 w-20 animate-pulse rounded-xl bg-ink-800"></div>
+              </div>
+              <div class="flex h-[52vh] min-h-[18rem] items-center justify-center border-y border-ink-700 bg-[#05070a]">
+                <div class="text-center">
+                  <div class="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-cyan-400/20 border-t-cyan-300"></div>
+                  <p class="mt-3 text-sm text-slate-500">正在加载 Peer 配置…</p>
+                </div>
+              </div>
+            </div>
+          </template>
 
-        <template v-else>
-          <div class="grid gap-3 md:grid-cols-[12rem_1fr]">
+          <template v-else>
             <div class="space-y-2">
               <label class="label">接口</label>
               <button
@@ -139,13 +158,13 @@ onMounted(load)
               ></textarea>
               <p class="mt-2 text-[11px] leading-relaxed text-slate-500">为避免覆盖接口私钥，这里只允许保存 [Peer] 段落；[Interface]、PrivateKey 等接口配置请继续使用“编辑接口设置”。</p>
             </div>
-          </div>
-        </template>
+          </template>
+        </div>
       </div>
 
       <div class="flex items-center justify-end gap-2 border-t border-ink-700 px-6 py-4">
         <button class="btn-secondary" @click="emit('close')">取消</button>
-        <button v-if="!loading" class="btn-primary" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存并下发' }}</button>
+        <button class="btn-primary" :disabled="loading || saving" @click="save">{{ saving ? '保存中…' : '保存并下发' }}</button>
       </div>
     </div>
   </div>
