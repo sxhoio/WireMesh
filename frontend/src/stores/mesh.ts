@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ApiError, api, type ApiAudit, type ApiConfigPublishResult, type ApiDelivery, type ApiNetwork, type ApiNode } from '../api'
+import { ApiError, api, type ApiAgentUpdateInfo, type ApiAudit, type ApiConfigPublishResult, type ApiDelivery, type ApiNetwork, type ApiNode } from '../api'
 import type {
   Agent, AuditEntry, ConfigRevision, FeedEvent, GeoIPInfo, Network, NotifyChannel, NotifyLog,
   PendingChange, PeerLink, Project, TempPeer, UserAccount, WGInterface, PeerState,
@@ -199,6 +199,7 @@ function commandLabel(value?: string) {
     collect_all: '批量立即采集',
     apply_config: '应用 WireGuard 配置',
     apply_peer_config: '应用 Peer 配置',
+    update_agent: '更新 Agent',
     connectivity_check: '连通性检测',
   }
   return value ? (labels[value] || value) : ''
@@ -229,6 +230,9 @@ function auditActionLabel(row: ApiAudit) {
     'agent.command.collect': '下发立即采集',
     'agent.command.connectivity_check': '下发连通性检测',
     'agent.command.collect_all': '批量下发立即采集',
+    'agent.command.update_agent': '下发 Agent 更新',
+    'agent.command.update_all': '批量下发 Agent 更新',
+    'agent.update.manifest': 'Agent 检查更新',
     'agent.command.completed': meta.type ? 'Agent 指令完成：' + commandLabel(meta.type) : 'Agent 指令完成',
     'agent.command.failed': meta.type ? 'Agent 指令失败：' + commandLabel(meta.type) : 'Agent 指令失败',
     'agent.peer_config.save': '保存并下发 Peer 配置',
@@ -354,6 +358,7 @@ export const useMeshStore = defineStore('mesh', {
     auditLoading: false,
     users: [] as UserAccount[],
     geoip: { dbPath: '', version: '', updatedAt: 0, entryCount: 0 } as GeoIPInfo,
+    agentUpdate: { available: false, version: '', error: '' } as ApiAgentUpdateInfo,
     notifyChannels: [] as NotifyChannel[],
     notifyLogs: [] as NotifyLog[],
     revisions: [] as ConfigRevision[],
@@ -449,12 +454,13 @@ export const useMeshStore = defineStore('mesh', {
           this.selectedNetworkId = 'all'
         }
 
-        const [deliveriesResult, geoipResult, channelsResult, logsResult, usersResult, auditsResult] = await Promise.allSettled([
+        const [deliveriesResult, geoipResult, channelsResult, logsResult, usersResult, auditsResult, updateResult] = await Promise.allSettled([
           api.deliveries(), api.geoIPStatus(), api.notificationChannels(), api.notificationLogs(),
           app.isAdmin ? api.users() : Promise.resolve(app.user ? [app.user] : []),
           app.isAdmin ? api.audit() : Promise.resolve({ items: [], limit: 50, offset: 0, has_more: false }),
+          api.agentUpdateInfo(),
         ] as const)
-        const optionalResults = [deliveriesResult, geoipResult, channelsResult, logsResult, usersResult, auditsResult]
+        const optionalResults = [deliveriesResult, geoipResult, channelsResult, logsResult, usersResult, auditsResult, updateResult]
         failures.push(...optionalResults.filter((result) => result.status === 'rejected').map((result) => result.reason))
 
         const deliveries = deliveriesResult.status === 'fulfilled' ? deliveriesResult.value : []
@@ -475,6 +481,7 @@ export const useMeshStore = defineStore('mesh', {
         }
         if (deliveriesResult.status === 'fulfilled' || auditsResult.status === 'fulfilled') this.feed = feedEntries(audits, deliveries)
         if (deliveriesResult.status === 'fulfilled') this.revisions = revisionsFrom(deliveries, this.agents, app.username)
+        if (updateResult.status === 'fulfilled') this.agentUpdate = updateResult.value
         if (geoipResult.status === 'fulfilled') {
           const geoip = geoipResult.value
           this.geoip = { dbPath: geoip.dbPath || '', version: geoip.version || '', updatedAt: timestamp(geoip.updatedAt), entryCount: geoip.entryCount || 0 }
@@ -704,6 +711,24 @@ export const useMeshStore = defineStore('mesh', {
               : '已收到 ' + received.received + '/' + received.expected + ' 个在线节点的最新状态，其余节点仍在等待回传'
         return true
       } catch (reason) { this.error = reason instanceof Error ? reason.message : '强制上报下发失败'; return false }
+    },
+    async updateAgentBinary(id: string) {
+      this.error = ''
+      try {
+        await api.updateAgent(id)
+        this.notice = 'Agent 更新命令已下发，可在 Agent 日志中查看下载、替换和重启进度'
+        return true
+      } catch (reason) { this.error = reason instanceof Error ? reason.message : '下发 Agent 更新失败'; return false }
+    },
+    async updateAgentBinaries(ids: string[]) {
+      this.error = ''
+      try {
+        const result = await api.updateAgents(ids)
+        this.notice = result.created === 0
+          ? '没有可更新的 Agent'
+          : '已向 ' + result.created + ' 个 Agent 下发更新命令，可在 Agent 日志中查看进度'
+        return true
+      } catch (reason) { this.error = reason instanceof Error ? reason.message : '批量下发 Agent 更新失败'; return false }
     },
     async checkConnectivity(id: string) {
       this.error = ''

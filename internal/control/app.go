@@ -30,6 +30,7 @@ type Config struct {
 	Database        *DatabaseManager
 	DatabaseDriver  string
 	AgentBinaryPath string
+	AgentVersion    string
 }
 type App struct {
 	store           Store
@@ -45,6 +46,7 @@ type App struct {
 	commandMu       sync.Mutex
 	commandWakeups  map[string]chan struct{}
 	agentBinaryPath string
+	agentVersion    string
 }
 
 func NewApp(cfg Config) (*App, error) {
@@ -64,6 +66,7 @@ func NewApp(cfg Config) (*App, error) {
 		geoReaders:      map[string]*geoReaderState{},
 		commandWakeups:  map[string]chan struct{}{},
 		agentBinaryPath: cfg.AgentBinaryPath,
+		agentVersion:    strings.TrimSpace(cfg.AgentVersion),
 	}
 	app.geoLookup = app.lookupGeoIPLocation
 	app.auth = newAuthenticator(store, cfg.MasterKey+"-auth")
@@ -96,6 +99,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/peer-config", a.withUser(RoleOperator, a.updateNodePeerConfig))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/collect", a.withUser(RoleOperator, a.createNodeCommand("collect")))
 	mux.HandleFunc("POST /api/v1/nodes/collect", a.withUser(RoleOperator, a.collectNodes))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/update-agent", a.withUser(RoleOperator, a.createNodeCommand("update_agent")))
+	mux.HandleFunc("POST /api/v1/nodes/update-agent", a.withUser(RoleOperator, a.updateAgents))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/connectivity-check", a.withUser(RoleOperator, a.createNodeCommand("connectivity_check")))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/logs", a.withUser(RoleViewer, a.nodeLogs))
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}/logs", a.withUser(RoleOperator, a.clearNodeLogs))
@@ -119,17 +124,20 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /api/v1/settings/notification-logs", a.withUser(RoleViewer, a.notificationLogs))
 	mux.HandleFunc("GET /api/v1/users", a.withUser(RoleAdmin, a.users))
 	mux.HandleFunc("POST /api/v1/users", a.withUser(RoleAdmin, a.users))
+	mux.HandleFunc("GET /api/v1/agent/update", a.withUser(RoleViewer, a.agentUpdateInfo))
 	mux.HandleFunc("POST /api/v1/agent/enrollment-tokens", a.withUser(RoleAdmin, a.createEnrollment))
 	mux.HandleFunc("GET /agent/install.sh", a.agentInstallScript)
 	mux.HandleFunc("GET /agent/uninstall.sh", a.agentUninstallScript)
 	mux.HandleFunc("GET /agent/download", a.agentDownload)
 	mux.HandleFunc("POST /agent/v1/enroll", a.enroll)
+	mux.HandleFunc("GET /agent/v1/update", a.agentUpdate)
 	mux.HandleFunc("GET /agent/v1/config", a.agentConfig)
 	mux.HandleFunc("GET /agent/v1/peer-config", a.agentPeerConfig)
 	mux.HandleFunc("GET /agent/v1/location", a.agentLocation)
 	mux.HandleFunc("POST /agent/v1/status", a.agentStatus)
 	mux.HandleFunc("POST /agent/v1/heartbeat", a.agentHeartbeat)
 	mux.HandleFunc("GET /agent/v1/commands", a.agentCommands)
+	mux.HandleFunc("POST /agent/v1/commands/{id}/progress", a.agentCommandProgress)
 	mux.HandleFunc("POST /agent/v1/commands/{id}/result", a.agentCommandResult)
 	return cors(mux)
 }

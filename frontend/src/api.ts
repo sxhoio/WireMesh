@@ -13,6 +13,7 @@ export interface ApiPeerConfigResponse { node_id: string; files: ApiPeerConfigFi
 export interface ApiPeerConfigUpdateResult { node_id: string; files: ApiPeerConfigFile[]; command: ApiAgentCommand; offline: boolean; message: string }
 export interface ApiNodeLog { id: string; level: string; source: string; message: string; created_at: string }
 export interface ApiNodeLogPage { items: ApiNodeLog[]; current_error?: string; limit: number; offset: number; has_more: boolean }
+export interface ApiAgentUpdateInfo { available: boolean; version?: string; os?: string; arch?: string; size?: number; sha256?: string; download_url?: string; min_agent_version?: string; current_compatible?: boolean; error?: string }
 export interface ApiTrafficPoint { recorded_at: string; receive_bytes: number; transmit_bytes: number; rx_mbps: number; tx_mbps: number }
 export interface ApiDelivery { id: string; tenant_id: string; node_id: string; version: number; state: string; message: string; updated_at: string }
 export interface ApiConfigPublishResult {
@@ -129,6 +130,8 @@ export const api = {
   updateNodePeerConfig: (id: string, payload: { interface: string; content: string }) => request<ApiPeerConfigUpdateResult>('/api/v1/nodes/' + encodeURIComponent(id) + '/peer-config', { method: 'PUT', body: JSON.stringify(payload) }),
   collectNode: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/collect', { method: 'POST' }),
   collectAllNodes: (nodeIds?: string[]) => request<{ created: number; node_ids?: string[] }>('/api/v1/nodes/collect', { method: 'POST', body: JSON.stringify({ node_ids: nodeIds || [] }) }),
+  updateAgent: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/update-agent', { method: 'POST' }),
+  updateAgents: (nodeIds?: string[]) => request<{ created: number; node_ids?: string[] }>('/api/v1/nodes/update-agent', { method: 'POST', body: JSON.stringify({ node_ids: nodeIds || [] }) }),
   checkNodeConnectivity: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/connectivity-check', { method: 'POST' }),
   nodeLogs: (id: string, limit = 50, offset = 0, errorsOnly = false) => request<ApiNodeLogPage>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs?limit=' + limit + '&offset=' + offset + (errorsOnly ? '&level=error' : '')),
   clearNodeLogs: (id: string) => request<void>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs', { method: 'DELETE' }),
@@ -139,6 +142,7 @@ export const api = {
   publish: (networkId: string) => request<ApiConfigPublishResult>('/api/v1/networks/' + encodeURIComponent(networkId) + '/publish', { method: 'POST' }),
   addPeer: (networkId: string, sourceNodeId: string, targetNodeId: string) => request('/api/v1/networks/' + encodeURIComponent(networkId) + '/peers', { method: 'POST', body: JSON.stringify({ source_node_id: sourceNodeId, target_node_id: targetNodeId }) }),
   createEnrollment: (projectId: string, networkId: string, ttlMinutes = 30) => request<EnrollmentResult>('/api/v1/agent/enrollment-tokens', { method: 'POST', body: JSON.stringify({ project_id: projectId, network_id: networkId, ttl_minutes: ttlMinutes }) }),
+  agentUpdateInfo: () => request<ApiAgentUpdateInfo>('/api/v1/agent/update'),
   settings: () => request<ApiSystemSettings>('/api/v1/settings'),
   updateSettings: (payload: ApiSystemSettings) => request<ApiSystemSettings>('/api/v1/settings', { method: 'PUT', body: JSON.stringify(payload) }),
   geoIPStatus: () => request<ApiGeoIPStatus>('/api/v1/settings/geoip'),

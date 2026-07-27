@@ -43,6 +43,8 @@ const editingAgent = ref<Agent | null>(null)
 const peerEditingAgent = ref<Agent | null>(null)
 const logsAgent = ref<Agent | null>(null)
 const refreshing = ref(false)
+const updating = ref(false)
+const selectedAgentIds = ref<Set<string>>(new Set())
 
 async function refreshAll() {
   if (refreshing.value) return
@@ -71,6 +73,74 @@ const filtered = computed(() => {
   })
   return list
 })
+
+const selectedCount = computed(() => filtered.value.filter((agent) => selectedAgentIds.value.has(agent.id)).length)
+const allFilteredSelected = computed(() => filtered.value.length > 0 && selectedCount.value === filtered.value.length)
+
+function setAgentSelected(id: string, checked: boolean) {
+  if (checked) selectedAgentIds.value.add(id)
+  else selectedAgentIds.value.delete(id)
+  selectedAgentIds.value = new Set(selectedAgentIds.value)
+}
+
+function toggleSelectAll(checked: boolean) {
+  if (checked) filtered.value.forEach((agent) => selectedAgentIds.value.add(agent.id))
+  else filtered.value.forEach((agent) => selectedAgentIds.value.delete(agent.id))
+  selectedAgentIds.value = new Set(selectedAgentIds.value)
+}
+
+function checkboxChecked(event: Event) {
+  return (event.target as HTMLInputElement).checked
+}
+
+function parseVersion(value: string) {
+  const parts = value.trim().replace(/^v/i, '').split('.')
+  if (parts.length < 2) return null
+  const parsed = parts.slice(0, 3).map((part) => {
+    const match = part.match(/^\d+/)
+    return match ? Number(match[0]) : Number.NaN
+  })
+  if (parsed.some((part) => !Number.isFinite(part))) return null
+  while (parsed.length < 3) parsed.push(0)
+  return parsed
+}
+
+function compareVersion(a: string, b: string) {
+  const left = parseVersion(a)
+  const right = parseVersion(b)
+  if (!left || !right) return 0
+  for (let index = 0; index < 3; index++) {
+    if (left[index] > right[index]) return 1
+    if (left[index] < right[index]) return -1
+  }
+  return 0
+}
+
+function agentNeedsUpdate(agent: Agent) {
+  const latest = mesh.agentUpdate.version || ''
+  return Boolean(mesh.agentUpdate.available && latest && agent.version && compareVersion(agent.version, latest) < 0)
+}
+
+async function updateAgent(agent: Agent) {
+  if (updating.value) return
+  updating.value = true
+  try {
+    await mesh.updateAgentBinary(agent.id)
+  } finally {
+    updating.value = false
+  }
+}
+
+async function updateSelectedAgents() {
+  if (updating.value || !selectedAgentIds.value.size) return
+  updating.value = true
+  try {
+    const ids = [...selectedAgentIds.value]
+    if (await mesh.updateAgentBinaries(ids)) selectedAgentIds.value = new Set()
+  } finally {
+    updating.value = false
+  }
+}
 
 function toggleExpand(id: string) {
   if (expanded.value.has(id)) expanded.value.delete(id)
@@ -141,6 +211,9 @@ async function confirmDelete(a: Agent) {
         <option value="rx">按流量</option>
       </select>
       <div class="ml-auto flex items-center gap-2">
+        <button v-if="app.canOperate && selectedCount" class="btn-secondary flex items-center gap-1.5 text-cyan-300" :disabled="updating" title="向已选节点下发 Agent 自更新命令" @click="updateSelectedAgents">
+          {{ updating ? '更新中…' : `更新已选 (${selectedCount})` }}
+        </button>
         <button v-if="app.canOperate" class="btn-secondary flex items-center gap-1.5" :disabled="refreshing" title="立即请求在线节点采集并上报最新状态" @click="refreshAll">
           <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" :class="{ 'animate-spin': refreshing }" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
           {{ refreshing ? '刷新中…' : '刷新' }}
@@ -157,7 +230,9 @@ async function confirmDelete(a: Agent) {
       <table class="w-full table-fixed border-collapse text-left">
         <thead>
           <tr class="text-[11px] font-medium text-slate-500">
-            <th class="w-10 px-2 py-3"></th>
+            <th class="w-14 px-2 py-3">
+              <input type="checkbox" class="h-3.5 w-3.5 rounded border-ink-600 bg-ink-900 text-cyan-400" :checked="allFilteredSelected" @change="toggleSelectAll(checkboxChecked($event))" />
+            </th>
             <th class="w-7 px-1 py-3"></th>
             <th class="w-36 px-2 py-3">节点</th>
             <th class="hidden w-24 px-2 py-3 md:table-cell">接口</th>
@@ -172,10 +247,13 @@ async function confirmDelete(a: Agent) {
         <tbody>
           <template v-for="a in filtered" :key="a.id">
             <tr class="border-t border-ink-700/70 transition hover:bg-ink-850/40">
-              <td class="px-2 py-3.5 text-center">
+              <td class="px-2 py-3.5">
+                <div class="flex items-center gap-1.5">
+                  <input type="checkbox" class="h-3.5 w-3.5 rounded border-ink-600 bg-ink-900 text-cyan-400" :checked="selectedAgentIds.has(a.id)" @click.stop @change="setAgentSelected(a.id, checkboxChecked($event))" />
                 <button class="text-slate-500 transition hover:text-slate-300" @click="toggleExpand(a.id)">
                   <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4 transition-transform" :class="{ 'rotate-90': expanded.has(a.id) }" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" /></svg>
                 </button>
+                </div>
               </td>
               <td class="px-1 py-3.5">
                 <span class="block h-2.5 w-2.5 rounded-full" :class="!a.enabled ? 'bg-slate-600' : a.status === 'online' ? 'bg-emerald-400 shadow-glow' : 'bg-slate-500'"></span>
@@ -204,7 +282,10 @@ async function confirmDelete(a: Agent) {
                 <span v-if="peerErrorCount(a)" class="ml-1 text-red-400">({{ peerErrorCount(a) }} 异常)</span>
               </td>
               <td class="hidden px-2 py-3.5 xl:table-cell">
-                <p class="truncate text-xs leading-relaxed text-slate-500" :title="`${a.version} · ${a.osInfo}`">{{ a.version }} · {{ a.osInfo }}</p>
+                <p class="flex min-w-0 items-center gap-1 truncate text-xs leading-relaxed text-slate-500" :title="`${a.version} · ${a.osInfo}`">
+                  <span class="truncate">{{ a.version || '未知版本' }} · {{ a.osInfo }}</span>
+                  <span v-if="agentNeedsUpdate(a)" class="chip shrink-0 bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/30">可更新</span>
+                </p>
                 <p class="truncate text-xs text-slate-500">最后上报 {{ ago(a.lastSeen) }}<span v-if="!a.enabled" class="ml-1.5 text-amber-400">已停用</span></p>
               </td>
               <td class="px-2 py-3.5">
@@ -313,6 +394,7 @@ async function confirmDelete(a: Agent) {
           <template v-if="menuFor === a.id">
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="peerEditingAgent = a; closeMenu()">编辑 Peer</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.collectNow(a.id); closeMenu()">立即采集状态</button>
+            <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="updateAgent(a); closeMenu()">{{ agentNeedsUpdate(a) ? '更新 Agent（可更新）' : '更新 Agent' }}</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.checkConnectivity(a.id); closeMenu()">连通性检测</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="editingAgent = a; closeMenu()">编辑接口设置</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.interfaces.map((i) => i.tunnelIP).filter(Boolean).join(', ') || a.address, 'ip-' + a.id)">{{ copiedKey === 'ip-' + a.id ? '已复制 ✓' : '复制隧道 IP' }}</button>

@@ -22,10 +22,11 @@ import (
 )
 
 const (
-	agentVersion                  = "0.3.5"
 	agentCommandWait              = 25 * time.Second
 	commandPollFallbackRetryDelay = 2 * time.Second
 )
+
+var agentVersion = "0.3.6"
 
 type enrollmentRequest struct {
 	Token        string            `json:"token"`
@@ -78,6 +79,12 @@ type heartbeatRequest struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "update-helper" {
+		if err := runUpdateHelper(os.Args[2:]); err != nil {
+			log.Fatalf("agent update helper: %v", err)
+		}
+		return
+	}
 	server := flag.String("server", "http://localhost:8080", "WireMesh control plane URL")
 	enrollToken := flag.String("enroll-token", "", "one-time enrollment token")
 	tokenFile := flag.String("token-file", "", "file containing a one-time enrollment token")
@@ -322,10 +329,16 @@ func main() {
 						_, _, _ = sendHeartbeat()
 					}
 				}
+			case "update_agent":
+				result, commandErr = performAgentUpdate(ctx, client, state, statePath, *stateDir, *useMTLS, command.ID)
 			case "connectivity_check":
 				result, commandErr = connectivityCheck(ctx, *interfaces, manager.runner)
 			default:
 				commandErr = fmt.Errorf("unsupported command type %s", command.Type)
+			}
+			if errors.Is(commandErr, errAgentUpdateHandedOff) {
+				log.Printf("agent command %s (%s): update helper started", command.ID, command.Type)
+				continue
 			}
 			commandState := "completed"
 			if commandErr != nil {
@@ -518,6 +531,28 @@ func postAgentCommandResult(ctx context.Context, client *http.Client, state agen
 		return err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, state.Server+"/agent/v1/commands/"+id+"/result", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	setDevelopmentIdentity(request, state)
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return responseError(response)
+	}
+	return nil
+}
+
+func postAgentCommandProgress(ctx context.Context, client *http.Client, state agentState, id, progress string) error {
+	body, err := json.Marshal(map[string]string{"progress": progress})
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, state.Server+"/agent/v1/commands/"+id+"/progress", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

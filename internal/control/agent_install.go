@@ -1,12 +1,30 @@
 package control
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"runtime"
 	"strings"
 )
+
+const defaultAgentUpdateMinVersion = "0.3.5"
+
+type AgentUpdateManifest struct {
+	Available         bool   `json:"available"`
+	Version           string `json:"version,omitempty"`
+	OS                string `json:"os,omitempty"`
+	Arch              string `json:"arch,omitempty"`
+	Size              int64  `json:"size,omitempty"`
+	SHA256            string `json:"sha256,omitempty"`
+	DownloadURL       string `json:"download_url,omitempty"`
+	MinAgentVersion   string `json:"min_agent_version,omitempty"`
+	CurrentCompatible bool   `json:"current_compatible"`
+	Error             string `json:"error,omitempty"`
+}
 
 const agentInstallerScript = `#!/usr/bin/env bash
 set -euo pipefail
@@ -244,23 +262,36 @@ func shellSingleQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
+func (a *App) agentUpdateInfo(w http.ResponseWriter, r *http.Request, _ claims) {
+	requestedOS, requestedArch := requestedAgentPlatform(r, "linux", "amd64")
+	manifest, err := a.agentUpdateManifest(r, requestedOS, requestedArch, r.URL.Query().Get("current_version"))
+	if err != nil {
+		writeJSON(w, http.StatusOK, AgentUpdateManifest{Available: false, OS: requestedOS, Arch: requestedArch, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, manifest)
+}
+
+func (a *App) agentUpdate(w http.ResponseWriter, r *http.Request) {
+	node, ok := a.agentNode(w, r)
+	if !ok {
+		return
+	}
+	requestedOS, requestedArch := requestedAgentPlatform(r, runtime.GOOS, runtime.GOARCH)
+	manifest, err := a.agentUpdateManifest(r, requestedOS, requestedArch, r.URL.Query().Get("current_version"))
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	a.auditEvent(node.TenantID, node.ID, "agent.update.manifest", "node", node.ID, map[string]string{"version": manifest.Version, "os": requestedOS, "arch": requestedArch})
+	writeJSON(w, http.StatusOK, manifest)
+}
+
 func (a *App) agentDownload(w http.ResponseWriter, r *http.Request) {
-	configuredPath := strings.TrimSpace(a.agentBinaryPath)
-	if configuredPath == "" {
-		writeError(w, http.StatusServiceUnavailable, "agent binary is not configured on this control plane")
-		return
-	}
 	requestedOS, requestedArch := r.URL.Query().Get("os"), r.URL.Query().Get("arch")
-	if requestedOS != "linux" || (requestedArch != "amd64" && requestedArch != "arm64") {
-		writeError(w, http.StatusNotFound, "agent binary is not available for the requested platform")
-		return
-	}
-	binaryPath := configuredPath
-	if strings.Contains(binaryPath, "{os}") || strings.Contains(binaryPath, "{arch}") {
-		binaryPath = strings.ReplaceAll(binaryPath, "{os}", requestedOS)
-		binaryPath = strings.ReplaceAll(binaryPath, "{arch}", requestedArch)
-	} else if requestedOS != runtime.GOOS || requestedArch != runtime.GOARCH {
-		writeError(w, http.StatusNotFound, "agent binary is not available for the requested platform")
+	binaryPath, err := a.agentBinaryFor(requestedOS, requestedArch)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	info, err := os.Stat(binaryPath)
@@ -268,8 +299,145 @@ func (a *App) agentDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "agent binary is unavailable")
 		return
 	}
+	sha, err := fileSHA256(binaryPath)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "agent binary is unavailable")
+		return
+	}
+	if requestedSHA := strings.TrimSpace(r.URL.Query().Get("sha256")); requestedSHA != "" && !strings.EqualFold(requestedSHA, sha) {
+		writeError(w, http.StatusConflict, "agent binary checksum changed; refresh update manifest")
+		return
+	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="wiremesh-agent-`+requestedOS+"-"+requestedArch+`"`)
+	w.Header().Set("X-WireMesh-Agent-Version", a.currentAgentVersion())
+	w.Header().Set("X-WireMesh-Agent-SHA256", sha)
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	http.ServeFile(w, r, binaryPath)
+}
+
+func requestedAgentPlatform(r *http.Request, defaultOS, defaultArch string) (string, string) {
+	requestedOS := strings.TrimSpace(r.URL.Query().Get("os"))
+	requestedArch := strings.TrimSpace(r.URL.Query().Get("arch"))
+	if requestedOS == "" {
+		requestedOS = defaultOS
+	}
+	if requestedArch == "" {
+		requestedArch = defaultArch
+	}
+	return requestedOS, requestedArch
+}
+
+func (a *App) agentUpdateManifest(r *http.Request, requestedOS, requestedArch, currentVersion string) (AgentUpdateManifest, error) {
+	binaryPath, err := a.agentBinaryFor(requestedOS, requestedArch)
+	if err != nil {
+		return AgentUpdateManifest{}, err
+	}
+	info, err := os.Stat(binaryPath)
+	if err != nil || info.IsDir() {
+		return AgentUpdateManifest{}, fmt.Errorf("agent binary is unavailable")
+	}
+	sha, err := fileSHA256(binaryPath)
+	if err != nil {
+		return AgentUpdateManifest{}, fmt.Errorf("hash agent binary: %w", err)
+	}
+	version := a.currentAgentVersion()
+	minVersion := defaultAgentUpdateMinVersion
+	compatible := currentVersion == "" || compareAgentVersions(currentVersion, minVersion) >= 0 || !looksSemanticVersion(minVersion)
+	return AgentUpdateManifest{
+		Available: true, Version: version, OS: requestedOS, Arch: requestedArch, Size: info.Size(), SHA256: sha,
+		DownloadURL: agentDownloadURL(r, requestedOS, requestedArch, sha), MinAgentVersion: minVersion,
+		CurrentCompatible: compatible,
+	}, nil
+}
+
+func (a *App) agentBinaryFor(requestedOS, requestedArch string) (string, error) {
+	configuredPath := strings.TrimSpace(a.agentBinaryPath)
+	if configuredPath == "" {
+		return "", fmt.Errorf("agent binary is not configured on this control plane")
+	}
+	if requestedOS != "linux" || (requestedArch != "amd64" && requestedArch != "arm64") {
+		return "", fmt.Errorf("agent binary is not available for the requested platform")
+	}
+	binaryPath := configuredPath
+	if strings.Contains(binaryPath, "{os}") || strings.Contains(binaryPath, "{arch}") {
+		binaryPath = strings.ReplaceAll(binaryPath, "{os}", requestedOS)
+		binaryPath = strings.ReplaceAll(binaryPath, "{arch}", requestedArch)
+	} else if requestedOS != runtime.GOOS || requestedArch != runtime.GOARCH {
+		return "", fmt.Errorf("agent binary is not available for the requested platform")
+	}
+	return binaryPath, nil
+}
+
+func (a *App) currentAgentVersion() string {
+	if version := strings.TrimSpace(a.agentVersion); version != "" {
+		return version
+	}
+	return "latest"
+}
+
+func agentDownloadURL(r *http.Request, requestedOS, requestedArch, sha string) string {
+	return agentInstallerServerURL(r) + "/agent/download?os=" + requestedOS + "&arch=" + requestedArch + "&sha256=" + sha
+}
+
+func fileSHA256(filename string) (string, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func compareAgentVersions(a, b string) int {
+	left, okLeft := parseAgentVersion(a)
+	right, okRight := parseAgentVersion(b)
+	if !okLeft || !okRight {
+		return 0
+	}
+	for i := 0; i < len(left) && i < len(right); i++ {
+		if left[i] > right[i] {
+			return 1
+		}
+		if left[i] < right[i] {
+			return -1
+		}
+	}
+	return 0
+}
+
+func looksSemanticVersion(value string) bool {
+	_, ok := parseAgentVersion(value)
+	return ok
+}
+
+func parseAgentVersion(value string) ([3]int, bool) {
+	var parsed [3]int
+	value = strings.TrimPrefix(strings.TrimSpace(value), "v")
+	parts := strings.Split(value, ".")
+	if len(parts) < 2 {
+		return parsed, false
+	}
+	for i := 0; i < len(parsed) && i < len(parts); i++ {
+		part := parts[i]
+		for index, char := range part {
+			if char < '0' || char > '9' {
+				part = part[:index]
+				break
+			}
+		}
+		if part == "" {
+			return parsed, false
+		}
+		var n int
+		for _, char := range part {
+			n = n*10 + int(char-'0')
+		}
+		parsed[i] = n
+	}
+	return parsed, true
 }

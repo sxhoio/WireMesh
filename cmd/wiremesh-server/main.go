@@ -75,6 +75,7 @@ func main() {
 		Database:        database,
 		DatabaseDriver:  databaseDriver,
 		AgentBinaryPath: strings.TrimSpace(os.Getenv("WIREMESH_AGENT_BINARY")),
+		AgentVersion:    strings.TrimSpace(os.Getenv("WIREMESH_AGENT_VERSION")),
 	})
 	if err != nil {
 		log.Fatal(err)

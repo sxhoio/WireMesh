@@ -359,6 +359,48 @@ func (a *App) collectNodes(w http.ResponseWriter, r *http.Request, c claims) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"created": created, "node_ids": nodeIDs})
 }
 
+func (a *App) updateAgents(w http.ResponseWriter, r *http.Request, c claims) {
+	var in struct {
+		NodeIDs []string `json:"node_ids"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	targets := make([]Node, 0, len(in.NodeIDs))
+	if len(in.NodeIDs) == 0 {
+		for _, node := range a.store.ListNodes(c.TenantID, "") {
+			if node.Enabled {
+				targets = append(targets, node)
+			}
+		}
+	} else {
+		for _, id := range in.NodeIDs {
+			node, err := a.store.GetNode(c.TenantID, id)
+			if err != nil {
+				continue
+			}
+			targets = append(targets, node)
+		}
+	}
+	if len(targets) == 0 {
+		writeJSON(w, http.StatusAccepted, map[string]any{"created": 0, "node_ids": []string{}})
+		return
+	}
+	nodeIDs := make([]string, 0, len(targets))
+	commands := make([]AgentCommand, 0, len(targets))
+	for _, node := range targets {
+		commands = append(commands, AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: "update_agent", State: "pending", CreatedAt: time.Now()})
+		nodeIDs = append(nodeIDs, node.ID)
+	}
+	if err := a.createAgentCommandsParallel(commands); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create agent update command")
+		return
+	}
+	created := len(commands)
+	a.auditEvent(c.TenantID, c.Subject, "agent.command.update_all", "tenant", c.TenantID, map[string]string{"count": fmt.Sprint(created)})
+	writeJSON(w, http.StatusAccepted, map[string]any{"created": created, "node_ids": nodeIDs})
+}
+
 func (a *App) nodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
 	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 	if err != nil {
@@ -511,6 +553,46 @@ func parseCommandWait(value string) (time.Duration, error) {
 		waitFor = maxCommandWait
 	}
 	return waitFor, nil
+}
+
+func (a *App) agentCommandProgress(w http.ResponseWriter, r *http.Request) {
+	node, ok := a.agentNode(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Progress string `json:"progress"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	var command *AgentCommand
+	for _, current := range a.store.ListCommands(node.TenantID, node.ID) {
+		if current.ID == r.PathValue("id") {
+			value := current
+			command = &value
+			break
+		}
+	}
+	if command == nil {
+		writeError(w, http.StatusNotFound, "command not found")
+		return
+	}
+	if command.State != "pending" && command.State != "running" {
+		writeError(w, http.StatusConflict, "command is already completed")
+		return
+	}
+	now := time.Now()
+	command.State = "running"
+	command.Result = strings.TrimSpace(in.Progress)
+	if command.StartedAt == nil {
+		command.StartedAt = &now
+	}
+	if err := a.store.UpdateCommand(*command); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update command progress")
+		return
+	}
+	writeJSON(w, http.StatusOK, command)
 }
 
 func (a *App) agentCommandResult(w http.ResponseWriter, r *http.Request) {
