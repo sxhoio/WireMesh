@@ -154,10 +154,10 @@ async function clearAuditLogs() {
 
 function auditActionClass(action: string) {
   const normalized = action.toLowerCase()
-  if (normalized.includes('failed') || normalized.includes('fail') || normalized.includes('error') || normalized.includes('delete') || normalized.includes('clear') || normalized.includes('清空') || normalized.includes('删除')) {
+  if (normalized.includes('failed') || normalized.includes('fail') || normalized.includes('error') || normalized.includes('delete') || normalized.includes('clear') || normalized.includes('清空') || normalized.includes('删除') || normalized.includes('失败') || normalized.includes('回滚')) {
     return 'text-red-300'
   }
-  if (normalized.includes('publish') || normalized.includes('config') || normalized.includes('save') || normalized.includes('update') || normalized.includes('发布') || normalized.includes('配置') || normalized.includes('保存') || normalized.includes('更新')) {
+  if (normalized.includes('publish') || normalized.includes('config') || normalized.includes('save') || normalized.includes('update') || normalized.includes('发布') || normalized.includes('配置') || normalized.includes('保存') || normalized.includes('更新') || normalized.includes('成功') || normalized.includes('重载')) {
     return 'text-emerald-300'
   }
   if (normalized.includes('login') || normalized.includes('setup') || normalized.includes('create') || normalized.includes('登录') || normalized.includes('初始化') || normalized.includes('创建')) {
@@ -693,19 +693,19 @@ function channelConfigSummary(c: NotifyChannel) {
         </div>
         <div class="mt-4">
           <p v-if="!mesh.audit.length" class="py-8 text-center text-xs text-slate-500">后端未返回审计记录</p>
-          <div v-else class="border-y border-ink-700 bg-[#05070a] font-mono text-[11px] leading-5 text-slate-400">
-            <div class="sticky top-0 z-10 flex min-w-[54rem] border-b border-ink-800 bg-[#05070a] px-3 py-1 text-[10px] uppercase tracking-wide text-slate-600">
-              <span class="w-40 shrink-0">time</span>
-              <span class="w-28 shrink-0">actor</span>
-              <span class="w-48 shrink-0">action</span>
-              <span class="min-w-0 flex-1">detail</span>
+          <div v-else class="max-h-[56vh] overflow-auto border-y border-ink-700 bg-[#05070a] font-mono text-[11px] leading-5 text-slate-400">
+            <div class="sticky top-0 z-10 grid min-w-[68rem] grid-cols-[10rem_13rem_15rem_minmax(30rem,1fr)] border-b border-ink-800 bg-[#05070a] px-3 py-1 text-[10px] uppercase tracking-wide text-slate-600">
+              <span>时间</span>
+              <span>操作者</span>
+              <span>操作</span>
+              <span>详情</span>
             </div>
-            <div class="max-h-[56vh] overflow-auto">
-              <div v-for="e in mesh.audit" :key="e.id" class="flex min-w-[54rem] items-start border-b border-white/[0.025] px-3 py-0.5 last:border-b-0 hover:bg-white/[0.035]">
-                <span class="w-40 shrink-0 select-none text-slate-600">{{ fmtDateTime(e.time) }}</span>
-                <span class="w-28 shrink-0 truncate text-cyan-300">{{ e.user || 'system' }}</span>
-                <span class="w-48 shrink-0 truncate" :class="auditActionClass(e.action)">{{ e.action }}</span>
-                <span class="min-w-0 flex-1 truncate text-slate-300">{{ e.detail }}</span>
+            <div>
+              <div v-for="e in mesh.audit" :key="e.id" class="grid min-w-[68rem] grid-cols-[10rem_13rem_15rem_minmax(30rem,1fr)] items-start border-b border-white/[0.025] px-3 py-0.5 last:border-b-0 hover:bg-white/[0.035]">
+                <span class="select-none text-slate-600">{{ fmtDateTime(e.time) }}</span>
+                <span class="truncate text-cyan-300" :title="e.user">{{ e.user || '系统' }}</span>
+                <span class="truncate" :class="auditActionClass(e.action)" :title="e.action">{{ e.action }}</span>
+                <span class="min-w-0 truncate text-slate-300" :title="e.detail">{{ e.detail }}</span>
               </div>
               <button v-if="mesh.auditHasMore" class="block w-full border-t border-ink-800 px-3 py-2 text-center text-xs text-cyan-300 hover:bg-cyan-500/10 disabled:text-slate-600" :disabled="mesh.auditLoading" @click="mesh.loadAuditPage(false)">
                 {{ mesh.auditLoading ? '加载中…' : '加载更多' }}

@@ -179,8 +179,146 @@ function revisionsFrom(deliveries: ApiDelivery[], agents: Agent[], operator: str
     targets: rows.map((row) => ({ agentName: agents.find((agent) => agent.id === row.node_id)?.name || row.node_id, status: deliveryStatus(row.state) })),
   }))
 }
-function auditEntries(rows: ApiAudit[]): AuditEntry[] {
-  return rows.map((row) => ({ id: row.id, time: timestamp(row.created_at), user: row.actor_id, action: row.action, detail: row.resource_type + ' · ' + row.resource_id }))
+type AuditLookup = {
+  agents?: Agent[]
+  users?: UserAccount[]
+  projects?: Project[]
+  networks?: Network[]
+  notifyChannels?: NotifyChannel[]
+}
+
+function compactID(value: string) {
+  if (!value) return ''
+  if (value.length <= 18) return value
+  return value.slice(0, 10) + '…' + value.slice(-4)
+}
+
+function commandLabel(value?: string) {
+  const labels: Record<string, string> = {
+    collect: '立即采集状态',
+    collect_all: '批量立即采集',
+    apply_config: '应用 WireGuard 配置',
+    apply_peer_config: '应用 Peer 配置',
+    connectivity_check: '连通性检测',
+  }
+  return value ? (labels[value] || value) : ''
+}
+
+function auditActionLabel(row: ApiAudit) {
+  const meta = row.metadata || {}
+  const action = row.action
+  const labels: Record<string, string> = {
+    'auth.login': '用户登录',
+    'project.create': '创建项目',
+    'network.create': '创建网络',
+    'node.create': '创建节点',
+    'node.update': '更新节点设置',
+    'node.delete': '删除节点',
+    'peer.create': '创建 Peer 关系',
+    'config.publish': '发布网络配置',
+    'config.publish.noop': '发布网络配置（无变化）',
+    'config.publish.auto': '保存后自动下发配置',
+    'config.publish.auto.noop': '保存后自动下发（无变化）',
+    'agent.enroll': 'Agent 接入',
+    'agent.enrollment_token.create': '创建 Agent 接入令牌',
+    'agent.config.read': 'Agent 拉取配置',
+    'agent.config.applied': 'Agent 应用配置成功',
+    'agent.config.failed': 'Agent 应用配置失败',
+    'agent.config.rolled_back': 'Agent 配置回滚',
+    'agent.config.observed': '采集到接口配置',
+    'agent.command.collect': '下发立即采集',
+    'agent.command.connectivity_check': '下发连通性检测',
+    'agent.command.collect_all': '批量下发立即采集',
+    'agent.command.completed': meta.type ? 'Agent 指令完成：' + commandLabel(meta.type) : 'Agent 指令完成',
+    'agent.command.failed': meta.type ? 'Agent 指令失败：' + commandLabel(meta.type) : 'Agent 指令失败',
+    'agent.peer_config.save': '保存并下发 Peer 配置',
+    'agent.peer_config.read': 'Agent 拉取 Peer 配置',
+    'settings.update': '更新系统设置',
+    'geoip.update': '更新 GeoIP 数据库',
+    'geoip.reload': '重载 GeoIP 数据库',
+    'user.create': '创建用户',
+    'notification.create': '创建通知渠道',
+    'notification.update': '更新通知渠道',
+    'notification.delete': '删除通知渠道',
+    'notification.test': '测试通知渠道',
+  }
+  return labels[action] || action
+}
+
+function auditResourceLabel(row: ApiAudit, lookup: AuditLookup) {
+  const id = row.resource_id
+  switch (row.resource_type) {
+    case 'node': {
+      const agent = lookup.agents?.find((item) => item.id === id)
+      return '节点：' + (agent?.name || compactID(id))
+    }
+    case 'network': {
+      const network = lookup.networks?.find((item) => item.id === id)
+      return '网络：' + (network?.name || compactID(id))
+    }
+    case 'project': {
+      const project = lookup.projects?.find((item) => item.id === id)
+      return '项目：' + (project?.name || compactID(id))
+    }
+    case 'user': {
+      const user = lookup.users?.find((item) => item.id === id)
+      return '用户：' + (user ? `${user.name} <${user.email}>` : compactID(id))
+    }
+    case 'notification_channel': {
+      const channel = lookup.notifyChannels?.find((item) => item.id === id)
+      return '通知渠道：' + (channel?.name || compactID(id))
+    }
+    case 'settings':
+      return '系统设置'
+    case 'tenant':
+      return '当前租户'
+    default:
+      return (row.resource_type || '资源') + '：' + compactID(id)
+  }
+}
+
+function auditActorLabel(actorID: string, lookup: AuditLookup) {
+  const user = lookup.users?.find((item) => item.id === actorID)
+  if (user) return user.name || user.email
+  const agent = lookup.agents?.find((item) => item.id === actorID)
+  if (agent) return 'Agent：' + agent.name
+  if (!actorID) return '系统'
+  if (actorID.startsWith('node_')) return 'Agent：' + compactID(actorID)
+  if (actorID.startsWith('user_')) return '用户：' + compactID(actorID)
+  return compactID(actorID)
+}
+
+function auditMetadataText(row: ApiAudit) {
+  const meta = row.metadata || {}
+  const parts: string[] = []
+  if (meta.version) parts.push('版本 v' + meta.version)
+  if (meta.count) parts.push('数量 ' + meta.count)
+  if (meta.changed_nodes) parts.push('变更节点 ' + meta.changed_nodes)
+  if (meta.offline_nodes) parts.push('离线节点 ' + meta.offline_nodes)
+  if (meta.address) parts.push('隧道地址 ' + meta.address)
+  if (meta.interface) parts.push('接口 ' + meta.interface)
+  if (meta.listen_port) parts.push('监听端口 ' + meta.listen_port)
+  if (meta.mtu) parts.push('MTU ' + meta.mtu)
+  if (meta.enabled) parts.push(meta.enabled === 'true' ? '已启用' : '已停用')
+  if (meta.role) parts.push('角色 ' + meta.role)
+  if (meta.type && !row.action.startsWith('agent.command.')) parts.push('类型 ' + meta.type)
+  if (meta.status) parts.push('状态 ' + meta.status)
+  if (meta.files) parts.push('文件数 ' + meta.files)
+  if (meta.offline === 'true') parts.push('客户端离线，等待上线下发')
+  return parts.join(' · ')
+}
+
+function auditEntries(rows: ApiAudit[], lookup: AuditLookup = {}): AuditEntry[] {
+  return rows.map((row) => {
+    const metadata = auditMetadataText(row)
+    return {
+      id: row.id,
+      time: timestamp(row.created_at),
+      user: auditActorLabel(row.actor_id, lookup),
+      action: auditActionLabel(row),
+      detail: auditResourceLabel(row, lookup) + (metadata ? ' · ' + metadata : ''),
+    }
+  })
 }
 function feedEntries(audit: ApiAudit[], deliveries: ApiDelivery[]): FeedEvent[] {
   if (audit.length) return audit.slice(0, 80).map((row) => ({ id: row.id, time: timestamp(row.created_at), kind: row.action.includes('publish') ? 'publish' : row.action.includes('login') ? 'system' : 'report', message: row.action + ' · ' + row.resource_type + ' · ' + row.resource_id }))
@@ -320,21 +458,27 @@ export const useMeshStore = defineStore('mesh', {
         failures.push(...optionalResults.filter((result) => result.status === 'rejected').map((result) => result.reason))
 
         const deliveries = deliveriesResult.status === 'fulfilled' ? deliveriesResult.value : []
+        const users = usersResult.status === 'fulfilled'
+          ? usersResult.value.map((user) => ({ id: user.id, name: user.name, email: user.email, role: user.role, active: true, lastLogin: timestamp(user.last_login_at) }))
+          : this.users
+        const notifyChannels = channelsResult.status === 'fulfilled'
+          ? channelsResult.value.map((channel) => ({ id: channel.id, name: channel.name, type: channel.type, config: channel.config, template: channel.template, subjectTemplate: channel.subjectTemplate, enabled: channel.enabled, agents: channel.agents, createdAt: timestamp(channel.createdAt) }))
+          : this.notifyChannels
         const auditPage = auditsResult.status === 'fulfilled' ? auditsResult.value : { items: [], limit: 50, offset: 0, has_more: false }
         const audits = auditPage.items
+        if (usersResult.status === 'fulfilled') this.users = users
+        if (channelsResult.status === 'fulfilled') this.notifyChannels = notifyChannels
         if (auditsResult.status === 'fulfilled') {
-          this.audit = auditEntries(audits)
+          this.audit = auditEntries(audits, { agents: this.agents, users, networks: this.networks, projects: this.projects, notifyChannels })
           this.auditOffset = audits.length
           this.auditHasMore = auditPage.has_more
         }
         if (deliveriesResult.status === 'fulfilled' || auditsResult.status === 'fulfilled') this.feed = feedEntries(audits, deliveries)
         if (deliveriesResult.status === 'fulfilled') this.revisions = revisionsFrom(deliveries, this.agents, app.username)
-        if (usersResult.status === 'fulfilled') this.users = usersResult.value.map((user) => ({ id: user.id, name: user.name, email: user.email, role: user.role, active: true, lastLogin: timestamp(user.last_login_at) }))
         if (geoipResult.status === 'fulfilled') {
           const geoip = geoipResult.value
           this.geoip = { dbPath: geoip.dbPath || '', version: geoip.version || '', updatedAt: timestamp(geoip.updatedAt), entryCount: geoip.entryCount || 0 }
         }
-        if (channelsResult.status === 'fulfilled') this.notifyChannels = channelsResult.value.map((channel) => ({ id: channel.id, name: channel.name, type: channel.type, config: channel.config, template: channel.template, subjectTemplate: channel.subjectTemplate, enabled: channel.enabled, agents: channel.agents, createdAt: timestamp(channel.createdAt) }))
         if (logsResult.status === 'fulfilled') this.notifyLogs = logsResult.value.map((log) => ({ id: log.id, time: timestamp(log.createdAt), channelName: log.channelName, channelType: log.channelType, agentName: log.agentName, message: log.message, status: log.status }))
         this.pendingChanges = []
         if (this.selectedProjectId !== 'all' && !this.projects.some((project) => project.id === this.selectedProjectId)) this.selectedProjectId = 'all'
@@ -425,7 +569,7 @@ export const useMeshStore = defineStore('mesh', {
       this.auditLoading = true
       try {
         const page = await api.audit(50, offset)
-        const entries = auditEntries(page.items)
+        const entries = auditEntries(page.items, { agents: this.agents, users: this.users, networks: this.networks, projects: this.projects, notifyChannels: this.notifyChannels })
         this.audit = reset ? entries : [...this.audit, ...entries]
         this.auditOffset = offset + entries.length
         this.auditHasMore = page.has_more

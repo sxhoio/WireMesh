@@ -98,23 +98,23 @@ onMounted(load)
         <p v-if="currentError" class="mb-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-300 ring-1 ring-amber-500/30">当前 WireGuard 采集异常：{{ currentError }}</p>
         <p v-if="loading && !logs.length" class="py-10 text-center text-sm text-slate-500">加载中…</p>
         <p v-else-if="!logs.length" class="py-10 text-center text-sm text-slate-500">暂无 Agent 日志</p>
-        <div v-else class="border-y border-ink-700 bg-[#05070a] font-mono text-[11px] leading-5 text-slate-400">
-          <div class="sticky top-0 z-10 flex min-w-[48rem] border-b border-ink-800 bg-[#05070a] px-3 py-1 text-[10px] uppercase tracking-wide text-slate-600">
-            <span class="w-40 shrink-0">time</span>
-            <span class="w-16 shrink-0">level</span>
-            <span class="w-24 shrink-0">source</span>
-            <span class="min-w-0 flex-1">message</span>
+        <div v-else class="max-h-[52vh] overflow-auto border-y border-ink-700 bg-[#05070a] font-mono text-[11px] leading-5 text-slate-400">
+          <div class="sticky top-0 z-10 grid min-w-[72rem] grid-cols-[10rem_4rem_6rem_minmax(42rem,1fr)] border-b border-ink-800 bg-[#05070a] px-3 py-1 text-[10px] uppercase tracking-wide text-slate-600">
+            <span>time</span>
+            <span>level</span>
+            <span>source</span>
+            <span>message</span>
           </div>
-          <div class="max-h-[52vh] overflow-auto">
+          <div>
             <div
               v-for="log in terminalLogs"
               :key="log.id"
-              class="flex min-w-[48rem] items-start border-b border-white/[0.025] px-3 py-0.5 last:border-b-0 hover:bg-white/[0.035]"
+              class="grid min-w-[72rem] grid-cols-[10rem_4rem_6rem_minmax(42rem,1fr)] items-start border-b border-white/[0.025] px-3 py-0.5 last:border-b-0 hover:bg-white/[0.035]"
             >
-              <span class="w-40 shrink-0 select-none text-slate-600">{{ log.time }}</span>
-              <span class="w-16 shrink-0 select-none whitespace-pre" :class="log.levelClass">{{ log.level }}</span>
-              <span class="w-24 shrink-0 select-none truncate text-slate-500">{{ log.source }}</span>
-              <span class="min-w-0 flex-1 whitespace-pre-wrap break-all text-slate-300">{{ log.message }}</span>
+              <span class="select-none text-slate-600">{{ log.time }}</span>
+              <span class="select-none whitespace-pre" :class="log.levelClass">{{ log.level }}</span>
+              <span class="select-none truncate text-slate-500">{{ log.source }}</span>
+              <span class="min-w-0 whitespace-pre-wrap break-words text-slate-300">{{ log.message }}</span>
             </div>
             <button v-if="hasMore" class="block w-full border-t border-ink-800 px-3 py-2 text-center text-xs text-cyan-300 hover:bg-cyan-500/10 disabled:text-slate-600" :disabled="loading" @click="load(false)">{{ loading ? '加载中…' : '加载更多' }}</button>
           </div>
