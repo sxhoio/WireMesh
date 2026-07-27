@@ -9,6 +9,7 @@ import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
 import type { Agent, WGInterface } from '../types'
 import { stateMeta } from '../types'
+import { requestConfirm } from '../utils/confirm'
 import { ago, fmtHandshake, fmtMbps, shortKey } from '../utils/format'
 
 const app = useAppStore()
@@ -195,7 +196,13 @@ async function copyText(text: string, key: string) {
 }
 
 async function confirmDelete(a: Agent) {
-  if (!window.confirm(`确定删除节点“${a.name}”吗？相关 Peer、命令和配置下发记录将一并清理。`)) return
+  const confirmed = await requestConfirm({
+    title: '删除节点',
+    message: `确定删除节点“${a.name}”吗？\n相关 Peer、命令和配置下发记录将一并清理，此操作无法恢复。`,
+    confirmText: '删除节点',
+    variant: 'danger',
+  })
+  if (!confirmed) return
   await mesh.removeAgent(a.id, app.username)
 }
 

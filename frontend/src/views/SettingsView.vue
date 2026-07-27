@@ -5,6 +5,7 @@ import CustomPeerModal from '../components/CustomPeerModal.vue'
 import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
 import type { NotificationConfig, NotifyChannel, NotifyChannelType } from '../types'
+import { requestConfirm } from '../utils/confirm'
 import { ago, fmtDateTime } from '../utils/format'
 
 const app = useAppStore()
@@ -148,7 +149,13 @@ async function refreshAudit() {
 }
 
 async function clearAuditLogs() {
-  if (!window.confirm('确定清空全部审计日志吗？此操作无法恢复。')) return
+  const confirmed = await requestConfirm({
+    title: '清空审计日志',
+    message: '确定清空全部审计日志吗？\n此操作无法恢复。',
+    confirmText: '清空日志',
+    variant: 'danger',
+  })
+  if (!confirmed) return
   await mesh.clearAudit()
 }
 

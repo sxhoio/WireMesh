@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
 
@@ -197,6 +198,7 @@ function logout() {
       </button>
     </TransitionGroup>
 
+    <ConfirmDialog />
   </div>
 </template>
 

@@ -4,6 +4,7 @@ import { api, type ApiNodeLog } from '../api'
 import type { Agent } from '../types'
 import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
+import { requestConfirm } from '../utils/confirm'
 
 const props = defineProps<{ agent: Agent }>()
 const emit = defineEmits<{ close: [] }>()
@@ -61,7 +62,14 @@ async function load(reset = true) {
 }
 
 async function clearLogs() {
-  if (clearing.value || !window.confirm(`确定清空“${props.agent.name}”的 Agent 日志吗？`)) return
+  if (clearing.value) return
+  const confirmed = await requestConfirm({
+    title: '清空 Agent 日志',
+    message: `确定清空“${props.agent.name}”的 Agent 日志吗？\n清空后无法恢复。`,
+    confirmText: '清空日志',
+    variant: 'danger',
+  })
+  if (!confirmed) return
   clearing.value = true
   try {
     if (await mesh.clearAgentLogs(props.agent.id)) {
