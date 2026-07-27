@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ApiError, api, type ApiAudit, type ApiDelivery, type ApiNetwork, type ApiNode } from '../api'
+import { ApiError, api, type ApiAudit, type ApiConfigPublishResult, type ApiDelivery, type ApiNetwork, type ApiNode } from '../api'
 import type {
   Agent, AuditEntry, ConfigRevision, FeedEvent, GeoIPInfo, Network, NotifyChannel, NotifyLog,
   PendingChange, PeerLink, Project, TempPeer, UserAccount, WGInterface, PeerState,
@@ -8,6 +8,14 @@ import { useAppStore } from './app'
 
 let pollingTimer: number | undefined
 const trafficSamples = new Map<string, { time: number; receiveBytes: number; transmitBytes: number }>()
+const immediateCollectTimeoutMs = 10_000
+const immediateCollectPollMs = 400
+const immediateDeliveryTimeoutMs = 15_000
+const immediateDeliveryPollMs = 500
+
+function sleep(milliseconds: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds))
+}
 
 function timestamp(value?: string | null) {
   if (!value || value.startsWith('0001-')) return 0
@@ -148,6 +156,11 @@ function observedTopology(agents: Agent[], handshakeThreshold: number): { links:
   })))
   return { links: [...links.values()], tempPeers }
 }
+function telemetryFromNodes(nodes: ApiNode[], offlineSeconds: number, handshakeSeconds: number) {
+  const agents = nodes.map((node) => toAgent(node, offlineSeconds))
+  const observed = observedTopology(agents, handshakeSeconds)
+  return { agents, links: observed.links, tempPeers: observed.tempPeers }
+}
 
 function deliveryStatus(state: string): 'success' | 'pending' | 'failed' {
   if (state === 'applied') return 'success'
@@ -172,6 +185,21 @@ function auditEntries(rows: ApiAudit[]): AuditEntry[] {
 function feedEntries(audit: ApiAudit[], deliveries: ApiDelivery[]): FeedEvent[] {
   if (audit.length) return audit.slice(0, 80).map((row) => ({ id: row.id, time: timestamp(row.created_at), kind: row.action.includes('publish') ? 'publish' : row.action.includes('login') ? 'system' : 'report', message: row.action + ' · ' + row.resource_type + ' · ' + row.resource_id }))
   return deliveries.slice(0, 80).map((row) => ({ id: row.id, time: timestamp(row.updated_at), kind: row.state === 'failed' ? 'alert' : 'report', message: '配置 v' + row.version + ' · ' + row.node_id + ' · ' + row.state }))
+}
+
+function deliveryTargets(result?: ApiConfigPublishResult) {
+  return result?.queued_node_ids || []
+}
+function deliverySummaryMessage(prefix: string, result: ApiConfigPublishResult | undefined, status: { applied: number; failed: number; pending: number; expected: number }) {
+  if (!result) return prefix
+  const offline = result.offline_node_ids?.length || 0
+  if (result.unchanged && status.expected === 0) return prefix + '，WireGuard 配置未变化，无需下发'
+  if (status.failed > 0) return prefix + '，但 ' + status.failed + ' 个节点应用失败，请在下发记录或 Agent 日志中查看原因'
+  if (status.pending > 0) {
+    const offlineText = offline > 0 ? '，其中 ' + offline + ' 个节点当前离线' : ''
+    return prefix + '，配置 v' + result.version + ' 已排队下发；' + status.applied + '/' + status.expected + ' 个节点已确认' + offlineText
+  }
+  return prefix + '，配置 v' + result.version + ' 已下发并被 ' + status.applied + ' 个节点确认'
 }
 
 export const useMeshStore = defineStore('mesh', {
@@ -260,10 +288,14 @@ export const useMeshStore = defineStore('mesh', {
         const [nodesResult, projectsResult] = await Promise.allSettled([api.nodes(), api.projects()] as const)
         if (nodesResult.status === 'rejected') throw nodesResult.reason
 
-        this.agents = nodesResult.value.map((node) => toAgent(node, app.settings.statusRules.agentOfflineSec))
-        const observed = observedTopology(this.agents, app.settings.statusRules.handshakeSec)
-        this.links = observed.links
-        this.tempPeers = observed.tempPeers
+        const telemetry = telemetryFromNodes(
+          nodesResult.value,
+          app.settings.statusRules.agentOfflineSec,
+          app.settings.statusRules.handshakeSec,
+        )
+        this.agents = telemetry.agents
+        this.links = telemetry.links
+        this.tempPeers = telemetry.tempPeers
 
         if (projectsResult.status === 'fulfilled') {
           const projects = projectsResult.value
@@ -320,6 +352,65 @@ export const useMeshStore = defineStore('mesh', {
         this.error = reason instanceof Error ? reason.message : '同步失败'
       } finally { this.loading = false }
     },
+    async refreshNodeTelemetry(silent = false) {
+      const app = useAppStore()
+      if (!app.authed) return false
+      try {
+        const nodes = await api.nodes()
+        const telemetry = telemetryFromNodes(
+          nodes,
+          app.settings.statusRules.agentOfflineSec,
+          app.settings.statusRules.handshakeSec,
+        )
+        this.agents = telemetry.agents
+        this.links = telemetry.links
+        this.tempPeers = telemetry.tempPeers
+        this.lastUpdated = Date.now()
+        return true
+      } catch (reason) {
+        if (reason instanceof ApiError && reason.status === 401) app.logout()
+        else if (!silent) this.error = reason instanceof Error ? reason.message : '刷新节点状态失败'
+        return false
+      }
+    },
+    async waitForCollectedTelemetry(nodeIDs: string[], previousLastSeen: Map<string, number>) {
+      const onlineIDs = nodeIDs.filter((id) => {
+        const agent = this.agentById(id)
+        return agent?.enabled && agent.status === 'online'
+      })
+      if (!onlineIDs.length) {
+        await this.refreshNodeTelemetry(true)
+        return { received: 0, expected: 0 }
+      }
+
+      const receivedCount = () => onlineIDs.filter((id) => (this.agentById(id)?.lastSeen || 0) > (previousLastSeen.get(id) || 0)).length
+      const deadline = Date.now() + immediateCollectTimeoutMs
+      let received = 0
+      do {
+        await sleep(immediateCollectPollMs)
+        await this.refreshNodeTelemetry(true)
+        received = receivedCount()
+        if (received === onlineIDs.length) break
+      } while (Date.now() < deadline)
+      return { received, expected: onlineIDs.length }
+    },
+    async waitForDeliveryResult(result?: ApiConfigPublishResult) {
+      const targets = deliveryTargets(result)
+      if (!result || !targets.length) return { applied: 0, failed: 0, pending: 0, expected: 0 }
+      if ((result.offline_node_ids?.length || 0) >= targets.length) return { applied: 0, failed: 0, pending: targets.length, expected: targets.length }
+      const deadline = Date.now() + immediateDeliveryTimeoutMs
+      let summary = { applied: 0, failed: 0, pending: targets.length, expected: targets.length }
+      do {
+        await sleep(immediateDeliveryPollMs)
+        const deliveries = await api.deliveries()
+        const rows = deliveries.filter((delivery) => delivery.version === result.version && targets.includes(delivery.node_id))
+        const applied = rows.filter((delivery) => delivery.state === 'applied').length
+        const failed = rows.filter((delivery) => delivery.state === 'failed' || delivery.state === 'rolled_back').length
+        summary = { applied, failed, pending: Math.max(0, targets.length - applied - failed), expected: targets.length }
+        if (summary.pending === 0) break
+      } while (Date.now() < deadline)
+      return summary
+    },
     startPolling() {
       void this.refresh()
       if (pollingTimer) return
@@ -364,7 +455,8 @@ export const useMeshStore = defineStore('mesh', {
       if (this.selectedNetworkId === 'all') { this.error = '请先选择一个网络'; return }
       try {
         const result = await api.publish(this.selectedNetworkId)
-        this.notice = '配置版本 v' + result.version + ' 已发布'
+        const status = await this.waitForDeliveryResult(result)
+        this.notice = deliverySummaryMessage('配置已发布', result, status)
         await this.refresh()
       } catch (reason) { this.error = reason instanceof Error ? reason.message : '发布失败' }
     },
@@ -392,48 +484,80 @@ export const useMeshStore = defineStore('mesh', {
       }
     },
     async setCustomPairs(networkId: string, pairs: [string, string][], _user?: string) {
+      this.error = ''
       try {
         for (const [sourceNode, targetNode] of pairs) {
           if (sourceNode !== targetNode) await api.addPeer(networkId, sourceNode, targetNode)
         }
-        this.notice = '自定义 Peer 已提交到后端'
+      } catch (reason) { this.error = reason instanceof Error ? reason.message : '保存 Peer 失败'; return false }
+      try {
+        const result = await api.publish(networkId)
+        const status = await this.waitForDeliveryResult(result)
+        this.notice = deliverySummaryMessage('自定义 Peer 已保存', result, status)
         await this.refresh()
-      } catch (reason) { this.error = reason instanceof Error ? reason.message : '保存 Peer 失败' }
+        return true
+      } catch (reason) {
+        this.notice = '自定义 Peer 已保存，但自动下发失败：' + (reason instanceof Error ? reason.message : '未知错误')
+        await this.refresh()
+        return true
+      }
     },
     async updateNodeConfig(id: string, patch: { name?: string; address?: string; endpoint?: string; listen_port?: number; mtu?: number; enabled?: boolean; interface_selector?: string; labels?: Record<string, string>; location_name?: string; location_source?: string; latitude?: number; longitude?: number }) {
       this.error = ''
-      try { await api.updateNode(id, patch); await this.refresh(); this.notice = '节点配置已保存，发布网络配置后将下发到 Agent'; return true }
-      catch (reason) { this.error = reason instanceof Error ? reason.message : '保存节点配置失败'; return false }
+      try {
+        const saved = await api.updateNode(id, patch)
+        const status = await this.waitForDeliveryResult(saved.delivery)
+        await this.refresh()
+        this.notice = saved.delivery_error
+          ? '节点配置已保存，但自动下发失败：' + saved.delivery_error
+          : deliverySummaryMessage('节点配置已保存', saved.delivery, status)
+        return true
+      } catch (reason) { this.error = reason instanceof Error ? reason.message : '保存节点配置失败'; return false }
     },
-    // Save the node and immediately publish its network so the change is pushed
-    // to the Agent on the next probe cycle, without a separate manual publish.
     async updateNodeAndPublish(id: string, patch: { name?: string; address?: string; endpoint?: string; listen_port?: number; mtu?: number; enabled?: boolean; interface_selector?: string; labels?: Record<string, string>; location_name?: string; location_source?: string; latitude?: number; longitude?: number }) {
       this.error = ''
       try {
-        await api.updateNode(id, patch)
+        const saved = await api.updateNode(id, patch)
+        const status = await this.waitForDeliveryResult(saved.delivery)
+        await this.refresh()
+        this.notice = saved.delivery_error
+          ? '节点配置已保存，但自动下发失败：' + saved.delivery_error
+          : deliverySummaryMessage('节点配置已保存', saved.delivery, status)
+        return true
       } catch (reason) { this.error = reason instanceof Error ? reason.message : '保存节点配置失败'; return false }
-      const networkId = this.agentById(id)?.networkId
-      if (!networkId) { await this.refresh(); this.notice = '节点配置已保存'; return true }
-      try {
-        const result = await api.publish(networkId)
-        this.notice = '节点配置已保存并发布（v' + result.version + '），Agent 将在下一个探测周期自动更新'
-      } catch (reason) {
-        this.notice = '节点配置已保存，但自动发布失败：' + (reason instanceof Error ? reason.message : '未知错误')
-      }
-      await this.refresh()
-      return true
     },
     async collectNow(id: string) {
       this.error = ''
-      try { await api.collectNode(id); this.notice = '立即采集命令已下发，Agent 将在下一个探测周期执行'; return true }
+      const previousLastSeen = new Map([[id, this.agentById(id)?.lastSeen || 0]])
+      try {
+        await api.collectNode(id)
+        const result = await this.waitForCollectedTelemetry([id], previousLastSeen)
+        this.notice = result.expected === 0
+          ? '即时采集请求已发送；节点当前离线，恢复连接后会立即执行'
+          : result.received === result.expected
+            ? '已收到节点最新状态，界面已更新'
+            : '即时采集请求已发送，但节点暂未在 10 秒内返回最新状态'
+        return true
+      }
       catch (reason) { this.error = reason instanceof Error ? reason.message : '下发采集命令失败'; return false }
     },
     async collectAll() {
       this.error = ''
+      const knownLastSeen = new Map(this.agents.filter((agent) => agent.enabled).map((agent) => [agent.id, agent.lastSeen]))
       try {
         const result = await api.collectAllNodes()
-        this.notice = '已向 ' + result.created + ' 个节点下发强制上报命令，Agent 将在下一个探测周期上传最新状态'
-        await this.refresh()
+        const targetIDs = result.node_ids?.length
+          ? result.node_ids
+          : this.agents.filter((agent) => agent.enabled).map((agent) => agent.id)
+        const previousLastSeen = new Map(targetIDs.map((id) => [id, knownLastSeen.get(id) || 0]))
+        const received = await this.waitForCollectedTelemetry(targetIDs, previousLastSeen)
+        this.notice = result.created === 0
+          ? '没有可即时采集的已启用节点'
+          : received.expected === 0
+            ? '已向 ' + result.created + ' 个节点发送即时采集请求；当前没有在线节点'
+            : received.received === received.expected
+              ? '已收到 ' + received.received + ' 个在线节点的最新状态，界面已更新'
+              : '已收到 ' + received.received + '/' + received.expected + ' 个在线节点的最新状态，其余节点仍在等待回传'
         return true
       } catch (reason) { this.error = reason instanceof Error ? reason.message : '强制上报下发失败'; return false }
     },

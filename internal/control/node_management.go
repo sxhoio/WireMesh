@@ -12,6 +12,7 @@ import (
 const (
 	defaultNodeListenPort = 51820
 	defaultNodeMTU        = 1420
+	maxCommandWait        = 25 * time.Second
 )
 
 func normalizeNodeDefaults(node Node) Node {
@@ -214,7 +215,30 @@ func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "node.update", "node", node.ID, map[string]string{"address": node.Address, "enabled": fmt.Sprint(node.Enabled), "location_source": node.LocationSource})
-	writeJSON(w, http.StatusOK, node)
+	var delivery *ConfigPublishResult
+	deliveryError := ""
+	if network, err := a.store.GetNetwork(c.TenantID, node.NetworkID); err == nil {
+		if result, err := a.publishNetwork(c.TenantID, network); err != nil {
+			deliveryError = err.Error()
+		} else {
+			delivery = &result
+			action := "config.publish.auto"
+			if result.Unchanged {
+				action = "config.publish.auto.noop"
+			}
+			a.auditEvent(c.TenantID, c.Subject, action, "network", network.ID, map[string]string{
+				"node_id": node.ID, "version": fmt.Sprint(result.Version),
+				"changed_nodes": fmt.Sprint(len(result.ChangedNodeIDs)), "offline_nodes": fmt.Sprint(len(result.OfflineNodeIDs)),
+			})
+		}
+	} else {
+		deliveryError = "node network not found"
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Node
+		Delivery      *ConfigPublishResult `json:"delivery,omitempty"`
+		DeliveryError string               `json:"delivery_error,omitempty"`
+	}{Node: node, Delivery: delivery, DeliveryError: deliveryError})
 }
 
 func (a *App) validateNodeAddress(node Node, value string) error {
@@ -273,7 +297,7 @@ func (a *App) createNodeCommand(commandType string) func(http.ResponseWriter, *h
 			return
 		}
 		command := AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: commandType, State: "pending", CreatedAt: time.Now()}
-		if err := a.store.CreateCommand(command); err != nil {
+		if err := a.createAgentCommand(command); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to create agent command")
 			return
 		}
@@ -282,9 +306,9 @@ func (a *App) createNodeCommand(commandType string) func(http.ResponseWriter, *h
 	}
 }
 
-// collectNodes fans a collect command out to many nodes at once so the console
-// can force every online agent to report fresh state on its next probe cycle.
-// An empty node_ids list targets all enabled nodes in the tenant.
+// collectNodes fans a collect command out to many nodes at once. Connected
+// Agents are woken through their command long-poll and report fresh data
+// without waiting for the periodic configuration probe.
 func (a *App) collectNodes(w http.ResponseWriter, r *http.Request, c claims) {
 	var in struct {
 		NodeIDs []string `json:"node_ids"`
@@ -309,20 +333,22 @@ func (a *App) collectNodes(w http.ResponseWriter, r *http.Request, c claims) {
 		}
 	}
 	if len(targets) == 0 {
-		writeJSON(w, http.StatusAccepted, map[string]any{"created": 0})
+		writeJSON(w, http.StatusAccepted, map[string]any{"created": 0, "node_ids": []string{}})
 		return
 	}
 	created := 0
+	nodeIDs := make([]string, 0, len(targets))
 	for _, node := range targets {
 		command := AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: "collect", State: "pending", CreatedAt: time.Now()}
-		if err := a.store.CreateCommand(command); err != nil {
+		if err := a.createAgentCommand(command); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to create agent command")
 			return
 		}
 		created++
+		nodeIDs = append(nodeIDs, node.ID)
 	}
 	a.auditEvent(c.TenantID, c.Subject, "agent.command.collect_all", "tenant", c.TenantID, map[string]string{"count": fmt.Sprint(created)})
-	writeJSON(w, http.StatusAccepted, map[string]any{"created": created})
+	writeJSON(w, http.StatusAccepted, map[string]any{"created": created, "node_ids": nodeIDs})
 }
 
 func (a *App) nodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
@@ -378,7 +404,69 @@ func (a *App) agentCommands(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, a.store.ClaimCommands(node.ID))
+	waitFor, err := parseCommandWait(r.URL.Query().Get("wait"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	commands := a.store.ClaimCommands(node.ID)
+	if len(commands) == 0 && waitFor > 0 {
+		timer := time.NewTimer(waitFor)
+		select {
+		case <-r.Context().Done():
+			timer.Stop()
+			return
+		case <-a.commandWakeup(node.ID):
+			timer.Stop()
+		case <-timer.C:
+		}
+		commands = a.store.ClaimCommands(node.ID)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-WireMesh-Command-Long-Poll", "true")
+	writeJSON(w, http.StatusOK, commands)
+}
+
+func (a *App) createAgentCommand(command AgentCommand) error {
+	if err := a.store.CreateCommand(command); err != nil {
+		return err
+	}
+	a.wakeAgentCommand(command.NodeID)
+	return nil
+}
+
+func (a *App) commandWakeup(nodeID string) chan struct{} {
+	a.commandMu.Lock()
+	defer a.commandMu.Unlock()
+	if wakeup := a.commandWakeups[nodeID]; wakeup != nil {
+		return wakeup
+	}
+	wakeup := make(chan struct{}, 1)
+	a.commandWakeups[nodeID] = wakeup
+	return wakeup
+}
+
+func (a *App) wakeAgentCommand(nodeID string) {
+	select {
+	case a.commandWakeup(nodeID) <- struct{}{}:
+	default:
+	}
+}
+
+func parseCommandWait(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	waitFor, err := time.ParseDuration(value)
+	if err != nil || waitFor < 0 {
+		return 0, fmt.Errorf("wait must be a non-negative duration")
+	}
+	if waitFor > maxCommandWait {
+		waitFor = maxCommandWait
+	}
+	return waitFor, nil
 }
 
 func (a *App) agentCommandResult(w http.ResponseWriter, r *http.Request) {

@@ -268,9 +268,11 @@ func TestTenantIsolationAndRevision(t *testing.T) {
 		t.Fatalf("publish status %d: %s", response.Code, response.Body.String())
 	}
 	var revision ConfigRevision
-	_ = json.NewDecoder(response.Body).Decode(&revision)
-	if revision.Version != 1 || revision.Configs[node.ID].Address == "" {
-		t.Fatalf("unexpected revision %#v", revision)
+	var published ConfigPublishResult
+	_ = json.NewDecoder(response.Body).Decode(&published)
+	revision, err = app.store.LatestRevision(admin.TenantID, network.ID)
+	if err != nil || published.Version != 1 || revision.Version != 1 || revision.Configs[node.ID].Address == "" {
+		t.Fatalf("unexpected revision %#v / %#v / %v", published, revision, err)
 	}
 	if _, err := app.store.GetNetwork("another_tenant", "n"); err == nil {
 		t.Fatal("network leaked across tenant")
@@ -287,7 +289,7 @@ func TestTenantIsolationAndRevision(t *testing.T) {
 	}
 }
 
-func TestNodeConfigurationCanBeEditedAndPublished(t *testing.T) {
+func TestNodeConfigurationIsSavedAndDeliveredImmediately(t *testing.T) {
 	app := testApp(t)
 	admin, token := initializeTestAdmin(t, app, "node-config@example.com", "strong-password")
 	project := Project{ID: "project-config", TenantID: admin.TenantID, Name: "Config", CreatedAt: time.Now()}
@@ -353,20 +355,59 @@ func TestNodeConfigurationCanBeEditedAndPublished(t *testing.T) {
 		t.Fatalf("duplicate address should conflict: %d %s", response.Code, response.Body.String())
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/api/v1/networks/"+network.ID+"/publish", nil)
-	request.Header.Set("Authorization", "Bearer "+token)
-	response = httptest.NewRecorder()
-	app.Router().ServeHTTP(response, request)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("publish failed: %d %s", response.Code, response.Body.String())
-	}
-	var revision ConfigRevision
-	if err := json.NewDecoder(response.Body).Decode(&revision); err != nil {
+	revision, err := app.store.LatestRevision(admin.TenantID, network.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
 	config := revision.Configs[node.ID]
-	if config.Address != updated.Address || config.ListenPort != updated.ListenPort || config.MTU != updated.MTU {
-		t.Fatalf("published config did not use node settings: %#v", config)
+	if revision.Version != 1 || config.Address != updated.Address || config.ListenPort != updated.ListenPort || config.MTU != updated.MTU {
+		t.Fatalf("saved config was not immediately published: %#v", revision)
+	}
+	deliveries := app.store.ListDeliveries(admin.TenantID, "")
+	if len(deliveries) != 2 {
+		t.Fatalf("initial auto-publish should queue both enabled nodes, got %#v", deliveries)
+	}
+	if commands := app.store.ListCommands(admin.TenantID, node.ID); len(commands) == 0 || commands[0].Type != "apply_config" {
+		t.Fatalf("updated node was not woken for immediate apply: %#v", commands)
+	}
+
+	now := time.Now()
+	if err := app.store.UpdateDelivery(ConfigDelivery{ID: newID("delivery"), TenantID: admin.TenantID, NodeID: node.ID, Version: revision.Version, State: "applied", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.UpdateDelivery(ConfigDelivery{ID: newID("delivery"), TenantID: admin.TenantID, NodeID: other.ID, Version: revision.Version, State: "applied", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodPatch, "/api/v1/nodes/"+node.ID, strings.NewReader(`{"listen_port":51822}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("second patch failed: %d %s", response.Code, response.Body.String())
+	}
+	var second struct {
+		Node
+		Delivery ConfigPublishResult `json:"delivery"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&second); err != nil {
+		t.Fatal(err)
+	}
+	if second.Delivery.Version != 2 || len(second.Delivery.QueuedNodeIDs) != 1 || second.Delivery.QueuedNodeIDs[0] != node.ID {
+		t.Fatalf("only the changed node should be queued for delivery: %#v", second.Delivery)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/agent/v1/config", nil)
+	request.Header.Set("X-Agent-ID", other.ID)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("unchanged node should not receive the new revision: %d %s", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/agent/v1/config", nil)
+	request.Header.Set("X-Agent-ID", node.ID)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"version":2`) {
+		t.Fatalf("changed node should receive the new revision: %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -453,5 +494,73 @@ func TestAgentCommandsLogsAndDelete(t *testing.T) {
 	}
 	if _, err := app.store.GetNode(admin.TenantID, node.ID); err == nil {
 		t.Fatal("node still exists after delete")
+	}
+}
+
+func TestAgentCommandLongPollWakesWhenCommandIsCreated(t *testing.T) {
+	app := testApp(t)
+	admin, _ := initializeTestAdmin(t, app, "command-wakeup@example.com", "strong-password")
+	project := Project{ID: "project-command-wakeup", TenantID: admin.TenantID, Name: "Commands", CreatedAt: time.Now()}
+	network := Network{ID: "network-command-wakeup", TenantID: admin.TenantID, ProjectID: project.ID, Name: "Commands", CIDR: "10.57.0.0/24", Topology: TopologyFullMesh, CreatedAt: time.Now()}
+	if err := app.store.CreateProject(project); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.CreateNetwork(network); err != nil {
+		t.Fatal(err)
+	}
+	node, err := app.createNode(admin.TenantID, network, "node", "", "", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(app.Router())
+	defer server.Close()
+	type result struct {
+		status   int
+		commands []AgentCommand
+		err      error
+	}
+	responses := make(chan result, 1)
+	go func() {
+		request, err := http.NewRequest(http.MethodGet, server.URL+"/agent/v1/commands?wait=5s", nil)
+		if err != nil {
+			responses <- result{err: err}
+			return
+		}
+		request.Header.Set("X-Agent-ID", node.ID)
+		response, err := server.Client().Do(request)
+		if err != nil {
+			responses <- result{err: err}
+			return
+		}
+		defer response.Body.Close()
+		var commands []AgentCommand
+		err = json.NewDecoder(response.Body).Decode(&commands)
+		responses <- result{status: response.StatusCode, commands: commands, err: err}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	started := time.Now()
+	command := AgentCommand{ID: "cmd-command-wakeup", TenantID: admin.TenantID, NodeID: node.ID, Type: "collect", State: "pending", CreatedAt: time.Now()}
+	if err := app.createAgentCommand(command); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case response := <-responses:
+		if response.err != nil {
+			t.Fatal(response.err)
+		}
+		if response.status != http.StatusOK {
+			t.Fatalf("long poll returned %d", response.status)
+		}
+		if len(response.commands) != 1 || response.commands[0].ID != command.ID || response.commands[0].State != "running" {
+			t.Fatalf("unexpected long-poll response: %#v", response.commands)
+		}
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("command wake-up took too long: %s", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("long poll was not woken by the newly created command")
 	}
 }

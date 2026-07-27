@@ -47,8 +47,11 @@ const refreshing = ref(false)
 async function refreshAll() {
   if (refreshing.value) return
   refreshing.value = true
-  await mesh.collectAll()
-  setTimeout(() => (refreshing.value = false), 1200)
+  try {
+    await mesh.collectAll()
+  } finally {
+    refreshing.value = false
+  }
 }
 
 const filtered = computed(() => {
@@ -143,7 +146,7 @@ function openCustomPeer(a: Agent) {
         <option value="rx">按流量</option>
       </select>
       <div class="ml-auto flex items-center gap-2">
-        <button v-if="app.canOperate" class="btn-secondary flex items-center gap-1.5" :disabled="refreshing" title="强制所有在线节点立即上传最新状态" @click="refreshAll">
+        <button v-if="app.canOperate" class="btn-secondary flex items-center gap-1.5" :disabled="refreshing" title="立即请求在线节点采集并上报最新状态" @click="refreshAll">
           <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" :class="{ 'animate-spin': refreshing }" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
           {{ refreshing ? '刷新中…' : '刷新' }}
         </button>

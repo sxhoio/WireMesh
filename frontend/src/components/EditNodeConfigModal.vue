@@ -64,7 +64,7 @@ async function save() {
   <div class="fixed inset-0 z-[80] flex items-center justify-center bg-black/65 p-4" @click.self="emit('close')">
     <form class="panel flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden" @submit.prevent="save">
       <div class="flex shrink-0 items-start justify-between border-b border-ink-700 px-6 py-5">
-        <div><h3 class="text-base font-semibold text-white">编辑节点配置</h3><p class="mt-1 text-xs text-slate-500">保存后立即发布到所在网络，Agent 下一个探测周期自动更新；地理位置默认由客户端与服务器 GeoIP 自动维护。</p></div>
+        <div><h3 class="text-base font-semibold text-white">编辑节点配置</h3><p class="mt-1 text-xs text-slate-500">保存后会立即生成配置版本并唤醒相关 Agent 应用；地理位置默认由客户端与服务器 GeoIP 自动维护。</p></div>
         <button type="button" class="text-slate-500 hover:text-white" @click="emit('close')">✕</button>
       </div>
       <div class="grid min-h-0 flex-1 gap-4 overflow-y-auto p-6 sm:grid-cols-2">
@@ -93,7 +93,7 @@ async function save() {
           </div>
         </section>
 
-        <label class="flex items-center justify-between rounded-xl border border-ink-700 bg-ink-900/60 px-4 py-3 sm:col-span-2"><span><span class="block text-sm text-slate-300">启用节点</span><span class="text-xs text-slate-600">停用后不再参与后续网络配置发布</span></span><input v-model="form.enabled" type="checkbox" class="h-4 w-4 accent-emerald-500" /></label>
+        <label class="flex items-center justify-between rounded-xl border border-ink-700 bg-ink-900/60 px-4 py-3 sm:col-span-2"><span><span class="block text-sm text-slate-300">启用节点</span><span class="text-xs text-slate-600">停用后不再参与后续网络配置下发</span></span><input v-model="form.enabled" type="checkbox" class="h-4 w-4 accent-emerald-500" /></label>
         <p v-if="validationError" class="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300 ring-1 ring-red-500/30 sm:col-span-2">{{ validationError }}</p>
       </div>
       <div class="flex shrink-0 justify-end gap-3 border-t border-ink-700 px-6 py-4"><button type="button" class="btn-secondary" @click="emit('close')">取消</button><button class="btn-primary" :disabled="saving">{{ saving ? '保存中…' : '保存配置' }}</button></div>

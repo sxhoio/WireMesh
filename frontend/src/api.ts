@@ -12,6 +12,16 @@ export interface ApiNodeLog { id: string; level: string; source: string; message
 export interface ApiNodeLogPage { items: ApiNodeLog[]; current_error?: string; limit: number; offset: number; has_more: boolean }
 export interface ApiTrafficPoint { recorded_at: string; receive_bytes: number; transmit_bytes: number; rx_mbps: number; tx_mbps: number }
 export interface ApiDelivery { id: string; tenant_id: string; node_id: string; version: number; state: string; message: string; updated_at: string }
+export interface ApiConfigPublishResult {
+  revision_id?: string
+  network_id: string
+  version: number
+  changed_node_ids: string[]
+  queued_node_ids: string[]
+  offline_node_ids: string[]
+  unchanged: boolean
+}
+export type ApiNodeUpdateResult = ApiNode & { delivery?: ApiConfigPublishResult; delivery_error?: string }
 export interface ApiAudit { id: string; tenant_id: string; actor_id: string; action: string; resource_type: string; resource_id: string; metadata?: Record<string, string>; created_at: string }
 export interface ApiAuditPage { items: ApiAudit[]; limit: number; offset: number; has_more: boolean }
 export interface EnrollmentResult { token: string; expires_at: string; network_id: string }
@@ -110,10 +120,10 @@ export const api = {
   createNetwork: (payload: { project_id: string; name: string; cidr: string; dns: string; topology: ApiNetwork['topology'] }) => request<ApiNetwork>('/api/v1/networks', { method: 'POST', body: JSON.stringify(payload) }),
   nodes: () => requestArray<ApiNode>('/api/v1/nodes'),
   node: (id: string) => request<ApiNode>('/api/v1/nodes/' + encodeURIComponent(id)),
-  updateNode: (id: string, payload: Partial<Pick<ApiNode, 'name' | 'address' | 'endpoint' | 'listen_port' | 'mtu' | 'enabled' | 'interface_selector' | 'labels' | 'location_name' | 'location_source' | 'latitude' | 'longitude'>>) => request<ApiNode>('/api/v1/nodes/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify(payload) }),
+  updateNode: (id: string, payload: Partial<Pick<ApiNode, 'name' | 'address' | 'endpoint' | 'listen_port' | 'mtu' | 'enabled' | 'interface_selector' | 'labels' | 'location_name' | 'location_source' | 'latitude' | 'longitude'>>) => request<ApiNodeUpdateResult>('/api/v1/nodes/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteNode: (id: string) => request<void>('/api/v1/nodes/' + encodeURIComponent(id), { method: 'DELETE' }),
   collectNode: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/collect', { method: 'POST' }),
-  collectAllNodes: (nodeIds?: string[]) => request<{ created: number }>('/api/v1/nodes/collect', { method: 'POST', body: JSON.stringify({ node_ids: nodeIds || [] }) }),
+  collectAllNodes: (nodeIds?: string[]) => request<{ created: number; node_ids?: string[] }>('/api/v1/nodes/collect', { method: 'POST', body: JSON.stringify({ node_ids: nodeIds || [] }) }),
   checkNodeConnectivity: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/connectivity-check', { method: 'POST' }),
   nodeLogs: (id: string, limit = 50, offset = 0, errorsOnly = false) => request<ApiNodeLogPage>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs?limit=' + limit + '&offset=' + offset + (errorsOnly ? '&level=error' : '')),
   clearNodeLogs: (id: string) => request<void>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs', { method: 'DELETE' }),
@@ -121,7 +131,7 @@ export const api = {
   deliveries: () => requestArray<ApiDelivery>('/api/v1/deliveries'),
   audit: (limit = 50, offset = 0) => request<ApiAuditPage>('/api/v1/audit?limit=' + limit + '&offset=' + offset),
   clearAudit: () => request<void>('/api/v1/audit', { method: 'DELETE' }),
-  publish: (networkId: string) => request<{ version: number }>('/api/v1/networks/' + encodeURIComponent(networkId) + '/publish', { method: 'POST' }),
+  publish: (networkId: string) => request<ApiConfigPublishResult>('/api/v1/networks/' + encodeURIComponent(networkId) + '/publish', { method: 'POST' }),
   addPeer: (networkId: string, sourceNodeId: string, targetNodeId: string) => request('/api/v1/networks/' + encodeURIComponent(networkId) + '/peers', { method: 'POST', body: JSON.stringify({ source_node_id: sourceNodeId, target_node_id: targetNodeId }) }),
   createEnrollment: (projectId: string, networkId: string, ttlMinutes = 30) => request<EnrollmentResult>('/api/v1/agent/enrollment-tokens', { method: 'POST', body: JSON.stringify({ project_id: projectId, network_id: networkId, ttl_minutes: ttlMinutes }) }),
   settings: () => request<ApiSystemSettings>('/api/v1/settings'),

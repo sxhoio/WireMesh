@@ -195,6 +195,18 @@ type ConfigDelivery struct {
 	Message   string    `json:"message"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// ConfigPublishResult is safe to return from the API. The immutable revision
+// itself contains private WireGuard material and must remain server-side.
+type ConfigPublishResult struct {
+	RevisionID     string   `json:"revision_id,omitempty"`
+	NetworkID      string   `json:"network_id"`
+	Version        uint64   `json:"version"`
+	ChangedNodeIDs []string `json:"changed_node_ids"`
+	QueuedNodeIDs  []string `json:"queued_node_ids"`
+	OfflineNodeIDs []string `json:"offline_node_ids"`
+	Unchanged      bool     `json:"unchanged"`
+}
 type AuditEvent struct {
 	ID           string            `json:"id"`
 	TenantID     string            `json:"tenant_id"`

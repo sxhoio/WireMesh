@@ -124,7 +124,7 @@ async function save() {
         <p class="text-xs text-slate-500">已选 <span class="font-semibold text-emerald-300">{{ selected.size }}</span> 个节点</p>
         <div class="flex gap-2.5">
           <button class="btn-ghost" @click="emit('close')">取消</button>
-          <button class="btn-primary" @click="save">保存为待发布变更</button>
+          <button class="btn-primary" @click="save">保存并下发配置</button>
         </div>
       </div>
     </div>

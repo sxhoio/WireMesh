@@ -42,6 +42,8 @@ type App struct {
 	geoMu           sync.RWMutex
 	geoReaders      map[string]*geoReaderState
 	geoLookup       func(string, string) (geoIPLocation, error)
+	commandMu       sync.Mutex
+	commandWakeups  map[string]chan struct{}
 	agentBinaryPath string
 }
 
@@ -54,7 +56,15 @@ func NewApp(cfg Config) (*App, error) {
 	if store == nil {
 		store = NewMemoryStore()
 	}
-	app := &App{store: store, database: cfg.Database, databaseDriver: cfg.DatabaseDriver, box: box, geoReaders: map[string]*geoReaderState{}, agentBinaryPath: cfg.AgentBinaryPath}
+	app := &App{
+		store:           store,
+		database:        cfg.Database,
+		databaseDriver:  cfg.DatabaseDriver,
+		box:             box,
+		geoReaders:      map[string]*geoReaderState{},
+		commandWakeups:  map[string]chan struct{}{},
+		agentBinaryPath: cfg.AgentBinaryPath,
+	}
 	app.geoLookup = app.lookupGeoIPLocation
 	app.auth = newAuthenticator(store, cfg.MasterKey+"-auth")
 	if err := app.newCertificateAuthority(); err != nil {
@@ -374,7 +384,29 @@ func (a *App) publish(w http.ResponseWriter, r *http.Request, c claims) {
 		writeError(w, 404, "network not found")
 		return
 	}
-	allNodes := a.store.ListNodes(c.TenantID, network.ID)
+	result, err := a.publishNetwork(c.TenantID, network)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	action := "config.publish"
+	if result.Unchanged {
+		action = "config.publish.noop"
+	}
+	a.auditEvent(c.TenantID, c.Subject, action, "network", network.ID, map[string]string{
+		"version":       fmt.Sprint(result.Version),
+		"changed_nodes": fmt.Sprint(len(result.ChangedNodeIDs)),
+		"offline_nodes": fmt.Sprint(len(result.OfflineNodeIDs)),
+	})
+	status := http.StatusCreated
+	if result.Unchanged {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, result)
+}
+
+func (a *App) publishNetwork(tenantID string, network Network) (ConfigPublishResult, error) {
+	allNodes := a.store.ListNodes(tenantID, network.ID)
 	nodes := make([]Node, 0, len(allNodes))
 	for _, node := range allNodes {
 		if node.Enabled {
@@ -382,28 +414,102 @@ func (a *App) publish(w http.ResponseWriter, r *http.Request, c claims) {
 		}
 	}
 	if len(nodes) == 0 {
-		writeError(w, 409, "network has no enabled nodes")
-		return
+		return ConfigPublishResult{}, fmt.Errorf("network has no enabled nodes")
 	}
-	configs, err := CompileTopology(network, nodes, a.store.ListPeers(c.TenantID, network.ID), a.box)
+	configs, err := CompileTopology(network, nodes, a.store.ListPeers(tenantID, network.ID), a.box)
 	if err != nil {
-		writeError(w, 400, err.Error())
-		return
+		return ConfigPublishResult{}, err
 	}
-	previous, _ := a.store.LatestRevision(c.TenantID, network.ID)
-	revision := ConfigRevision{ID: newID("rev"), TenantID: c.TenantID, ProjectID: network.ProjectID, NetworkID: network.ID, Version: previous.Version + 1, Configs: configs, CreatedAt: time.Now()}
-	if err := a.store.CreateRevision(revision); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to publish configuration")
-		return
+	previous, previousErr := a.store.LatestRevision(tenantID, network.ID)
+	if previousErr != nil && !errors.Is(previousErr, errNotFound) {
+		return ConfigPublishResult{}, fmt.Errorf("read latest configuration revision: %w", previousErr)
 	}
+	deliveryTargets := make(map[string]bool, len(nodes))
+	changedNodeIDs := make([]string, 0, len(nodes))
+	queuedNodeIDs := make([]string, 0, len(nodes))
 	for _, node := range nodes {
-		if err := a.store.CreateDelivery(ConfigDelivery{ID: newID("delivery"), TenantID: c.TenantID, NodeID: node.ID, Version: revision.Version, State: "pending", UpdatedAt: time.Now()}); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to create configuration delivery")
-			return
+		if errors.Is(previousErr, errNotFound) || !reflect.DeepEqual(previous.Configs[node.ID], configs[node.ID]) {
+			deliveryTargets[node.ID] = true
+			changedNodeIDs = append(changedNodeIDs, node.ID)
+			queuedNodeIDs = append(queuedNodeIDs, node.ID)
+		} else if !a.nodeHasAppliedConfigVersion(tenantID, node.ID, previous.Version) {
+			deliveryTargets[node.ID] = true
+			queuedNodeIDs = append(queuedNodeIDs, node.ID)
 		}
 	}
-	a.auditEvent(c.TenantID, c.Subject, "config.publish", "network", network.ID, map[string]string{"version": fmt.Sprint(revision.Version)})
-	writeJSON(w, 201, revision)
+
+	revision := previous
+	if len(changedNodeIDs) > 0 {
+		revision = ConfigRevision{ID: newID("rev"), TenantID: tenantID, ProjectID: network.ProjectID, NetworkID: network.ID, Version: previous.Version + 1, Configs: configs, CreatedAt: time.Now()}
+		if errors.Is(previousErr, errNotFound) {
+			revision.Version = 1
+		}
+		if err := a.store.CreateRevision(revision); err != nil {
+			return ConfigPublishResult{}, fmt.Errorf("create configuration revision: %w", err)
+		}
+	}
+	if len(changedNodeIDs) == 0 && len(queuedNodeIDs) == 0 {
+		return ConfigPublishResult{
+			RevisionID: previous.ID, NetworkID: network.ID, Version: previous.Version,
+			ChangedNodeIDs: []string{}, QueuedNodeIDs: []string{}, OfflineNodeIDs: []string{}, Unchanged: true,
+		}, nil
+	}
+	settings, settingsErr := a.tenantSettings(tenantID)
+	if settingsErr != nil {
+		return ConfigPublishResult{}, fmt.Errorf("read delivery settings: %w", settingsErr)
+	}
+	offlineAfter := time.Duration(settings.StatusRules.AgentOfflineSec) * time.Second
+	result := ConfigPublishResult{
+		RevisionID: revision.ID, NetworkID: network.ID, Version: revision.Version,
+		ChangedNodeIDs: changedNodeIDs, QueuedNodeIDs: make([]string, 0, len(queuedNodeIDs)), OfflineNodeIDs: []string{},
+		Unchanged: len(changedNodeIDs) == 0,
+	}
+	for _, node := range nodes {
+		if !deliveryTargets[node.ID] {
+			continue
+		}
+		if !a.nodeHasConfigDelivery(tenantID, node.ID, revision.Version) {
+			if err := a.store.CreateDelivery(ConfigDelivery{ID: newID("delivery"), TenantID: tenantID, NodeID: node.ID, Version: revision.Version, State: "pending", UpdatedAt: time.Now()}); err != nil {
+				return ConfigPublishResult{}, fmt.Errorf("create configuration delivery: %w", err)
+			}
+		}
+		if err := a.createAgentCommand(AgentCommand{ID: newID("cmd"), TenantID: tenantID, NodeID: node.ID, Type: "apply_config", State: "pending", CreatedAt: time.Now()}); err != nil {
+			return ConfigPublishResult{}, fmt.Errorf("queue configuration delivery: %w", err)
+		}
+		result.QueuedNodeIDs = append(result.QueuedNodeIDs, node.ID)
+		if node.LastSeen.IsZero() || time.Since(node.LastSeen) > offlineAfter {
+			result.OfflineNodeIDs = append(result.OfflineNodeIDs, node.ID)
+		}
+	}
+	return result, nil
+}
+
+func (a *App) nodeHasAppliedConfigVersion(tenantID, nodeID string, version uint64) bool {
+	for _, delivery := range a.store.ListDeliveries(tenantID, nodeID) {
+		if delivery.Version == version && delivery.State == "applied" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) nodeHasConfigDelivery(tenantID, nodeID string, version uint64) bool {
+	for _, delivery := range a.store.ListDeliveries(tenantID, nodeID) {
+		if delivery.Version == version {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) nodeHasOpenConfigDelivery(tenantID, nodeID string, version uint64) bool {
+	for _, delivery := range a.store.ListDeliveries(tenantID, nodeID) {
+		if delivery.Version != version {
+			continue
+		}
+		return delivery.State == "pending" || delivery.State == "failed" || delivery.State == "rolled_back"
+	}
+	return false
 }
 func (a *App) deliveries(w http.ResponseWriter, r *http.Request, c claims) {
 	writeJSON(w, 200, a.store.ListDeliveries(c.TenantID, r.URL.Query().Get("node_id")))
@@ -545,6 +651,10 @@ func (a *App) agentConfig(w http.ResponseWriter, r *http.Request) {
 	config, ok := revision.Configs[node.ID]
 	if !ok {
 		writeError(w, 404, "node not included in published configuration")
+		return
+	}
+	if !a.nodeHasOpenConfigDelivery(node.TenantID, node.ID, revision.Version) {
+		writeError(w, 404, "no pending configuration for this node")
 		return
 	}
 	a.auditEvent(node.TenantID, node.ID, "agent.config.read", "node", node.ID, map[string]string{"version": fmt.Sprint(revision.Version)})

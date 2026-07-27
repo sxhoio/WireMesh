@@ -21,7 +21,11 @@ import (
 	"time"
 )
 
-const agentVersion = "0.3.2"
+const (
+	agentVersion                  = "0.3.4"
+	agentCommandWait              = 25 * time.Second
+	commandPollFallbackRetryDelay = 2 * time.Second
+)
 
 type enrollmentRequest struct {
 	Token        string            `json:"token"`
@@ -213,7 +217,7 @@ func main() {
 		}
 		baseHeartbeat.Location = &location
 	}
-	sendHeartbeat := func() {
+	sendHeartbeat := func() (int, string, error) {
 		refreshLocation()
 		heartbeat := baseHeartbeat
 		heartbeat.WireGuard, heartbeat.CollectionError = collectWireGuard(ctx, *interfaces, manager.runner)
@@ -227,35 +231,36 @@ func main() {
 		}
 		if err := postHeartbeat(ctx, client, state, heartbeat); err != nil {
 			log.Printf("heartbeat failed: %v", err)
-			return
+			return len(heartbeat.WireGuard), heartbeat.CollectionError, err
 		}
 		if !heartbeatAccepted {
 			log.Printf("heartbeat accepted by server: node=%s wireguard_interfaces=%d", state.NodeID, len(heartbeat.WireGuard))
 			heartbeatAccepted = true
 		}
+		return len(heartbeat.WireGuard), heartbeat.CollectionError, nil
 	}
 	configurationChecked := false
-	reconcileConfiguration := func() {
+	reconcileConfiguration := func() (string, error) {
 		payload, found, err := pollConfig(ctx, client, state)
 		if err != nil {
 			log.Printf("configuration check failed: %v", err)
-			return
+			return "", err
 		}
 		if !found {
 			if !configurationChecked {
 				log.Printf("no published WireGuard configuration is available for node %s", state.NodeID)
 				configurationChecked = true
 			}
-			return
+			return "no pending configuration", nil
 		}
 		configurationChecked = true
 		if payload.Version == 0 || payload.Version <= state.AttemptedVersion {
-			return
+			return fmt.Sprintf("configuration version %d already attempted", payload.Version), nil
 		}
 		status, message := manager.Apply(ctx, payload.Config, state.NodeID)
 		if err := postConfigStatus(ctx, client, state, payload.Version, status, message); err != nil {
 			log.Printf("report configuration version %d result: %v", payload.Version, err)
-			return
+			return "", err
 		}
 		state.AttemptedVersion = payload.Version
 		if status == "applied" {
@@ -265,28 +270,35 @@ func main() {
 			log.Printf("persist configuration state: %v", err)
 		}
 		log.Printf("configuration version %d: %s", payload.Version, status)
+		result := fmt.Sprintf("version=%d state=%s", payload.Version, status)
+		if message != "" {
+			result += " message=" + message
+		}
+		if status != "applied" {
+			if message == "" {
+				message = status
+			}
+			return result, errors.New(message)
+		}
+		return result, nil
 	}
 
 	sendHeartbeat()
 	reconcileConfiguration()
 
-	processCommands := func() {
-		commands, err := pollAgentCommands(ctx, client, state)
-		if err != nil {
-			log.Printf("agent command check failed: %v", err)
-			return
-		}
+	processCommands := func(commands []agentCommand) {
 		for _, command := range commands {
 			result, commandErr := "", error(nil)
 			switch command.Type {
 			case "collect":
-				heartbeat := baseHeartbeat
-				heartbeat.WireGuard, heartbeat.CollectionError = collectWireGuard(ctx, *interfaces, manager.runner)
-				commandErr = postHeartbeat(ctx, client, state, heartbeat)
-				result = fmt.Sprintf("wireguard_interfaces=%d", len(heartbeat.WireGuard))
-				if heartbeat.CollectionError != "" {
-					result += " warning=" + heartbeat.CollectionError
+				interfaceCount, collectionError, heartbeatErr := sendHeartbeat()
+				commandErr = heartbeatErr
+				result = fmt.Sprintf("wireguard_interfaces=%d", interfaceCount)
+				if collectionError != "" {
+					result += " warning=" + collectionError
 				}
+			case "apply_config":
+				result, commandErr = reconcileConfiguration()
 			case "connectivity_check":
 				result, commandErr = connectivityCheck(ctx, *interfaces, manager.runner)
 			default:
@@ -308,12 +320,43 @@ func main() {
 		}
 	}
 
-	processCommands()
-
 	reportTicker := time.NewTicker(*reportInterval)
 	probeTicker := time.NewTicker(*probeInterval)
 	defer reportTicker.Stop()
 	defer probeTicker.Stop()
+	commandBatches := make(chan []agentCommand)
+	go func() {
+		for {
+			commands, longPollSupported, err := pollAgentCommands(ctx, client, state)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Printf("agent command long poll failed: %v", err)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(commandPollFallbackRetryDelay):
+				}
+				continue
+			}
+			if len(commands) == 0 {
+				if !longPollSupported {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(commandPollFallbackRetryDelay):
+					}
+				}
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case commandBatches <- commands:
+			}
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -323,7 +366,8 @@ func main() {
 			sendHeartbeat()
 		case <-probeTicker.C:
 			reconcileConfiguration()
-			processCommands()
+		case commands := <-commandBatches:
+			processCommands(commands)
 		}
 	}
 }
@@ -418,31 +462,31 @@ func authenticatedClient(state agentState, useMTLS bool) (*http.Client, error) {
 		tlsConfig.Certificates = []tls.Certificate{certificate}
 	}
 	transport.TLSClientConfig = tlsConfig
-	return &http.Client{Timeout: 20 * time.Second, Transport: transport}, nil
+	return &http.Client{Timeout: 35 * time.Second, Transport: transport}, nil
 }
 
-func pollAgentCommands(ctx context.Context, client *http.Client, state agentState) ([]agentCommand, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, state.Server+"/agent/v1/commands", nil)
+func pollAgentCommands(ctx context.Context, client *http.Client, state agentState) ([]agentCommand, bool, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, state.Server+"/agent/v1/commands?wait="+agentCommandWait.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	setDevelopmentIdentity(request, state)
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, responseError(response)
+		return nil, false, responseError(response)
 	}
 	var commands []agentCommand
 	if err := json.NewDecoder(response.Body).Decode(&commands); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if commands == nil {
 		commands = []agentCommand{}
 	}
-	return commands, nil
+	return commands, response.Header.Get("X-WireMesh-Command-Long-Poll") == "true", nil
 }
 
 func postAgentCommandResult(ctx context.Context, client *http.Client, state agentState, id, commandState, result string) error {

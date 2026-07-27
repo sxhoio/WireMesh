@@ -58,7 +58,6 @@ const networkOptions = computed(() =>
   mesh.selectedProjectId === 'all' ? mesh.networks : mesh.networks.filter((n) => n.projectId === mesh.selectedProjectId),
 )
 
-const showPublishConfirm = ref(false)
 const sidebarOpen = ref(false)
 
 function logout() {
@@ -66,10 +65,6 @@ function logout() {
   router.push({ name: 'login' })
 }
 
-async function doPublish() {
-  await mesh.publish(app.username)
-  showPublishConfirm.value = false
-}
 </script>
 
 <template>
@@ -173,21 +168,6 @@ async function doPublish() {
 
           <router-view />
 
-        <!-- 待发布配置条 -->
-        <transition name="slide-up">
-          <div v-if="app.canOperate && mesh.selectedNetworkId !== 'all'" class="sticky bottom-0 z-20 mt-4">
-            <div class="panel flex items-center gap-4 !border-amber-500/40 !bg-ink-900/95 px-5 py-3.5 shadow-2xl">
-              <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-amber-400 ring-1 ring-amber-500/40">
-                <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
-              </span>
-              <div class="min-w-0 flex-1">
-                <p class="text-sm font-medium text-amber-200">发布当前网络配置</p>
-                <p class="truncate text-xs text-slate-500">{{ mesh.networkById(mesh.selectedNetworkId)?.name || mesh.selectedNetworkId }}</p>
-              </div>
-              <button class="btn-primary shrink-0 !py-2 text-xs" @click="showPublishConfirm = true">发布配置</button>
-            </div>
-          </div>
-        </transition>
       </main>
     </div>
 
@@ -217,17 +197,6 @@ async function doPublish() {
       </button>
     </TransitionGroup>
 
-    <!-- 发布确认 -->
-    <div v-if="showPublishConfirm" class="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/70 p-4 backdrop-blur-sm" @click.self="showPublishConfirm = false">
-      <div class="panel w-full max-w-md p-6">
-        <h3 class="text-base font-semibold text-white">发布配置</h3>
-        <p class="mt-2 text-sm text-slate-400">将为网络 <span class="font-medium text-white">{{ mesh.networkById(mesh.selectedNetworkId)?.name || mesh.selectedNetworkId }}</span> 生成新的不可变配置版本，并由后端下发到相关 Agent。</p>
-        <div class="mt-5 flex justify-end gap-2.5">
-          <button class="btn-ghost" @click="showPublishConfirm = false">取消</button>
-          <button class="btn-primary" @click="doPublish">确认发布</button>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 

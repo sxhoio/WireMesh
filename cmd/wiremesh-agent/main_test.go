@@ -73,3 +73,32 @@ func TestAuthenticatedClientAllowsPreEnrollmentHTTPSProbe(t *testing.T) {
 		t.Fatal("expected a configured TLS transport")
 	}
 }
+
+func TestPollAgentCommandsUsesLongPoll(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/agent/v1/commands" {
+			t.Fatalf("unexpected command request: %s %s", r.Method, r.URL.Path)
+		}
+		if value := r.URL.Query().Get("wait"); value != agentCommandWait.String() {
+			t.Fatalf("wait = %q, want %q", value, agentCommandWait)
+		}
+		if value := r.Header.Get("X-Agent-ID"); value != "node-test" {
+			t.Fatalf("X-Agent-ID = %q", value)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-WireMesh-Command-Long-Poll", "true")
+		_, _ = w.Write([]byte(`[{"id":"cmd-test","type":"collect","state":"running"}]`))
+	}))
+	defer server.Close()
+
+	commands, longPollSupported, err := pollAgentCommands(t.Context(), server.Client(), agentState{NodeID: "node-test", Server: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !longPollSupported {
+		t.Fatal("server long-poll capability header was not recognized")
+	}
+	if len(commands) != 1 || commands[0].ID != "cmd-test" || commands[0].Type != "collect" {
+		t.Fatalf("unexpected commands: %#v", commands)
+	}
+}
