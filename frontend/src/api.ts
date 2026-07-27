@@ -14,6 +14,8 @@ export interface ApiPeerConfigUpdateResult { node_id: string; files: ApiPeerConf
 export interface ApiNodeLog { id: string; level: string; source: string; message: string; created_at: string }
 export interface ApiNodeLogPage { items: ApiNodeLog[]; current_error?: string; limit: number; offset: number; has_more: boolean }
 export interface ApiAgentUpdateInfo { available: boolean; version?: string; os?: string; arch?: string; size?: number; sha256?: string; download_url?: string; min_agent_version?: string; current_compatible?: boolean; error?: string }
+export interface ApiAgentUpdateSkippedNode { node_id: string; name: string; agent_version?: string; reason: string }
+export interface ApiAgentUpdateDispatchResult { created: number; node_ids?: string[]; skipped_node_ids?: string[]; skipped?: ApiAgentUpdateSkippedNode[] }
 export interface ApiTrafficPoint { recorded_at: string; receive_bytes: number; transmit_bytes: number; rx_mbps: number; tx_mbps: number }
 export interface ApiDelivery { id: string; tenant_id: string; node_id: string; version: number; state: string; message: string; updated_at: string }
 export interface ApiConfigPublishResult {
@@ -131,7 +133,7 @@ export const api = {
   collectNode: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/collect', { method: 'POST' }),
   collectAllNodes: (nodeIds?: string[]) => request<{ created: number; node_ids?: string[] }>('/api/v1/nodes/collect', { method: 'POST', body: JSON.stringify({ node_ids: nodeIds || [] }) }),
   updateAgent: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/update-agent', { method: 'POST' }),
-  updateAgents: (nodeIds?: string[]) => request<{ created: number; node_ids?: string[] }>('/api/v1/nodes/update-agent', { method: 'POST', body: JSON.stringify({ node_ids: nodeIds || [] }) }),
+  updateAgents: (nodeIds?: string[]) => request<ApiAgentUpdateDispatchResult>('/api/v1/nodes/update-agent', { method: 'POST', body: JSON.stringify({ node_ids: nodeIds || [] }) }),
   checkNodeConnectivity: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/connectivity-check', { method: 'POST' }),
   nodeLogs: (id: string, limit = 50, offset = 0, errorsOnly = false) => request<ApiNodeLogPage>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs?limit=' + limit + '&offset=' + offset + (errorsOnly ? '&level=error' : '')),
   clearNodeLogs: (id: string) => request<void>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs', { method: 'DELETE' }),

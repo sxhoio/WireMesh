@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -494,6 +496,68 @@ func TestAgentCommandsLogsAndDelete(t *testing.T) {
 	}
 	if _, err := app.store.GetNode(admin.TenantID, node.ID); err == nil {
 		t.Fatal("node still exists after delete")
+	}
+}
+
+func TestAgentUpdateRejectsAgentsWithoutUpdaterSupport(t *testing.T) {
+	binaryTemplate := filepath.Join(t.TempDir(), "wiremesh-agent-{os}-{arch}")
+	binaryPath := strings.ReplaceAll(strings.ReplaceAll(binaryTemplate, "{os}", "linux"), "{arch}", "amd64")
+	if err := os.WriteFile(binaryPath, []byte("test-agent-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	app, err := NewApp(Config{MasterKey: "test-key", AgentBinaryPath: binaryTemplate, AgentVersion: "0.3.7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, token := initializeTestAdmin(t, app, "node-update@example.com", "strong-password")
+	project := Project{ID: "project-update", TenantID: admin.TenantID, Name: "Update", CreatedAt: time.Now()}
+	network := Network{ID: "network-update", TenantID: admin.TenantID, ProjectID: project.ID, Name: "Update", CIDR: "10.58.0.0/24", Topology: TopologyFullMesh, CreatedAt: time.Now()}
+	app.store.CreateProject(project)
+	app.store.CreateNetwork(network)
+	oldNode, err := app.createNode(admin.TenantID, network, "old-agent", "", "", "linux/amd64", "0.3.5", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newNode, err := app.createNode(admin.TenantID, network, "new-agent", "", "", "linux/amd64", defaultAgentUpdateMinVersion, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/nodes/"+oldNode.ID+"/update-agent", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("old Agent update should be rejected before command dispatch: %d %s", response.Code, response.Body.String())
+	}
+	if commands := app.store.ListCommands(admin.TenantID, oldNode.ID); len(commands) != 0 {
+		t.Fatalf("unsupported old Agent must not receive update_agent command: %#v", commands)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/nodes/"+newNode.ID+"/update-agent", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("supported Agent update should be accepted: %d %s", response.Code, response.Body.String())
+	}
+	if commands := app.store.ListCommands(admin.TenantID, newNode.ID); len(commands) != 1 || commands[0].Type != "update_agent" {
+		t.Fatalf("supported Agent did not receive update command: %#v", commands)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/nodes/update-agent", strings.NewReader(`{"node_ids":["`+oldNode.ID+`","`+newNode.ID+`"]}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("bulk update should return dispatch summary: %d %s", response.Code, response.Body.String())
+	}
+	var result AgentUpdateDispatchResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Created != 1 || len(result.NodeIDs) != 1 || result.NodeIDs[0] != newNode.ID || len(result.Skipped) != 1 || result.Skipped[0].NodeID != oldNode.ID {
+		t.Fatalf("bulk update summary did not report skipped unsupported node: %#v", result)
 	}
 }
 

@@ -116,13 +116,27 @@ function compareVersion(a: string, b: string) {
   return 0
 }
 
+function agentRemoteUpdateBlockedReason(agent: Agent) {
+  if (!mesh.agentUpdate.available) return mesh.agentUpdate.error || '服务端未配置 Agent 更新包'
+  const minVersion = mesh.agentUpdate.min_agent_version || '0.3.6'
+  if (!agent.version || !parseVersion(agent.version)) return '当前 Agent 版本未知，无法确认是否支持远程更新；请先在节点机器上重新执行接入脚本手动升级一次'
+  if (parseVersion(minVersion) && compareVersion(agent.version, minVersion) < 0) return `当前 Agent ${agent.version} 不支持远程更新，请先手动升级到 ${minVersion} 或更高版本`
+  if (agent.osInfo && !agent.osInfo.toLowerCase().startsWith('linux')) return 'Agent 远程自更新目前仅支持 Linux + systemd'
+  return ''
+}
+
 function agentNeedsUpdate(agent: Agent) {
   const latest = mesh.agentUpdate.version || ''
-  return Boolean(mesh.agentUpdate.available && latest && agent.version && compareVersion(agent.version, latest) < 0)
+  return Boolean(!agentRemoteUpdateBlockedReason(agent) && latest && agent.version && compareVersion(agent.version, latest) < 0)
 }
 
 async function updateAgent(agent: Agent) {
   if (updating.value) return
+  const blockedReason = agentRemoteUpdateBlockedReason(agent)
+  if (blockedReason) {
+    mesh.error = blockedReason
+    return
+  }
   updating.value = true
   try {
     await mesh.updateAgentBinary(agent.id)
@@ -394,7 +408,13 @@ async function confirmDelete(a: Agent) {
           <template v-if="menuFor === a.id">
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="peerEditingAgent = a; closeMenu()">编辑 Peer</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.collectNow(a.id); closeMenu()">立即采集状态</button>
-            <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="updateAgent(a); closeMenu()">{{ agentNeedsUpdate(a) ? '更新 Agent（可更新）' : '更新 Agent' }}</button>
+            <button
+              v-if="app.canOperate"
+              class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700 disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
+              :disabled="Boolean(agentRemoteUpdateBlockedReason(a)) || updating"
+              :title="agentRemoteUpdateBlockedReason(a) || '下发 Agent 自更新命令'"
+              @click="updateAgent(a); closeMenu()"
+            >{{ agentRemoteUpdateBlockedReason(a) ? '更新 Agent（需手动升级）' : agentNeedsUpdate(a) ? '更新 Agent（可更新）' : '更新 Agent' }}</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.checkConnectivity(a.id); closeMenu()">连通性检测</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="editingAgent = a; closeMenu()">编辑接口设置</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.interfaces.map((i) => i.tunnelIP).filter(Boolean).join(', ') || a.address, 'ip-' + a.id)">{{ copiedKey === 'ip-' + a.id ? '已复制 ✓' : '复制隧道 IP' }}</button>

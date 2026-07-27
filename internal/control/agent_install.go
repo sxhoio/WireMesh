@@ -11,7 +11,10 @@ import (
 	"strings"
 )
 
-const defaultAgentUpdateMinVersion = "0.3.5"
+// defaultAgentUpdateMinVersion is the first Agent version that understands the
+// update_agent command. Older Agents can report telemetry, but they cannot
+// bootstrap their own updater because they will reject the command as unknown.
+const defaultAgentUpdateMinVersion = "0.3.6"
 
 type AgentUpdateManifest struct {
 	Available         bool   `json:"available"`

@@ -314,6 +314,75 @@ func (a *App) createNodeCommand(commandType string) func(http.ResponseWriter, *h
 	}
 }
 
+type AgentUpdateSkippedNode struct {
+	NodeID       string `json:"node_id"`
+	Name         string `json:"name"`
+	AgentVersion string `json:"agent_version,omitempty"`
+	Reason       string `json:"reason"`
+}
+
+type AgentUpdateDispatchResult struct {
+	Created        int                      `json:"created"`
+	NodeIDs        []string                 `json:"node_ids"`
+	SkippedNodeIDs []string                 `json:"skipped_node_ids"`
+	Skipped        []AgentUpdateSkippedNode `json:"skipped"`
+}
+
+func (a *App) updateAgent(w http.ResponseWriter, r *http.Request, c claims) {
+	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "node not found")
+		return
+	}
+	if reason := a.agentRemoteUpdateBlockedReason(r, node); reason != "" {
+		writeError(w, http.StatusConflict, reason)
+		return
+	}
+	command := AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: "update_agent", State: "pending", CreatedAt: time.Now()}
+	if err := a.createAgentCommand(command); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create agent update command")
+		return
+	}
+	a.auditEvent(c.TenantID, c.Subject, "agent.command.update_agent", "node", node.ID, map[string]string{"command_id": command.ID})
+	writeJSON(w, http.StatusAccepted, command)
+}
+
+func (a *App) agentRemoteUpdateBlockedReason(r *http.Request, node Node) string {
+	if strings.TrimSpace(node.AgentVersion) == "" {
+		return fmt.Sprintf("节点 %s 当前 Agent 版本未知，无法确认是否支持远程更新；请先在节点机器上重新执行接入脚本手动升级一次，升级到 %s 或更高版本后即可在管理端更新", node.Name, defaultAgentUpdateMinVersion)
+	}
+	if !looksSemanticVersion(node.AgentVersion) {
+		return fmt.Sprintf("节点 %s 当前 Agent 版本 %q 无法识别，暂不能远程更新；请先在节点机器上重新执行接入脚本手动升级一次", node.Name, node.AgentVersion)
+	}
+	if compareAgentVersions(node.AgentVersion, defaultAgentUpdateMinVersion) < 0 {
+		return fmt.Sprintf("节点 %s 当前 Agent 版本 %s 不支持远程更新命令 update_agent；请先在节点机器上重新执行接入脚本手动升级一次，升级到 %s 或更高版本后即可在管理端更新", node.Name, node.AgentVersion, defaultAgentUpdateMinVersion)
+	}
+	if osName := strings.ToLower(strings.TrimSpace(node.OS)); osName != "" && !strings.HasPrefix(osName, "linux") {
+		return fmt.Sprintf("节点 %s 当前系统为 %s，Agent 远程自更新目前仅支持 Linux + systemd；请手动更新该节点", node.Name, node.OS)
+	}
+	osName, arch := nodeAgentUpdatePlatform(node)
+	if _, err := a.agentUpdateManifest(r, osName, arch, node.AgentVersion); err != nil {
+		return fmt.Sprintf("服务端 Agent 更新包不可用：%s", err.Error())
+	}
+	return ""
+}
+
+func nodeAgentUpdatePlatform(node Node) (string, string) {
+	osName, arch := "linux", "amd64"
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(node.OS)), "/")
+	if len(parts) > 0 && parts[0] != "" {
+		osName = parts[0]
+	}
+	if len(parts) > 1 && parts[1] != "" {
+		arch = parts[1]
+	}
+	return osName, arch
+}
+
+func skippedAgentUpdateNode(node Node, reason string) AgentUpdateSkippedNode {
+	return AgentUpdateSkippedNode{NodeID: node.ID, Name: node.Name, AgentVersion: node.AgentVersion, Reason: reason}
+}
+
 // collectNodes fans a collect command out to many nodes at once. Connected
 // Agents are woken through their command long-poll and report fresh data
 // without waiting for the periodic configuration probe.
@@ -383,12 +452,19 @@ func (a *App) updateAgents(w http.ResponseWriter, r *http.Request, c claims) {
 		}
 	}
 	if len(targets) == 0 {
-		writeJSON(w, http.StatusAccepted, map[string]any{"created": 0, "node_ids": []string{}})
+		writeJSON(w, http.StatusAccepted, AgentUpdateDispatchResult{Created: 0, NodeIDs: []string{}, SkippedNodeIDs: []string{}, Skipped: []AgentUpdateSkippedNode{}})
 		return
 	}
 	nodeIDs := make([]string, 0, len(targets))
+	skippedNodeIDs := make([]string, 0)
+	skipped := make([]AgentUpdateSkippedNode, 0)
 	commands := make([]AgentCommand, 0, len(targets))
 	for _, node := range targets {
+		if reason := a.agentRemoteUpdateBlockedReason(r, node); reason != "" {
+			skippedNodeIDs = append(skippedNodeIDs, node.ID)
+			skipped = append(skipped, skippedAgentUpdateNode(node, reason))
+			continue
+		}
 		commands = append(commands, AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: "update_agent", State: "pending", CreatedAt: time.Now()})
 		nodeIDs = append(nodeIDs, node.ID)
 	}
@@ -397,8 +473,8 @@ func (a *App) updateAgents(w http.ResponseWriter, r *http.Request, c claims) {
 		return
 	}
 	created := len(commands)
-	a.auditEvent(c.TenantID, c.Subject, "agent.command.update_all", "tenant", c.TenantID, map[string]string{"count": fmt.Sprint(created)})
-	writeJSON(w, http.StatusAccepted, map[string]any{"created": created, "node_ids": nodeIDs})
+	a.auditEvent(c.TenantID, c.Subject, "agent.command.update_all", "tenant", c.TenantID, map[string]string{"count": fmt.Sprint(created), "skipped": fmt.Sprint(len(skipped))})
+	writeJSON(w, http.StatusAccepted, AgentUpdateDispatchResult{Created: created, NodeIDs: nodeIDs, SkippedNodeIDs: skippedNodeIDs, Skipped: skipped})
 }
 
 func (a *App) nodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
@@ -412,10 +488,7 @@ func (a *App) nodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
 	commands := a.store.ListCommandsPage(c.TenantID, node.ID, limit+1, offset, errorsOnly)
 	logs := make([]NodeLog, 0)
 	for _, command := range commands {
-		message := command.Type + " · " + command.State
-		if command.Result != "" {
-			message += " · " + command.Result
-		}
+		message := agentCommandLogMessage(command)
 		created := command.CreatedAt
 		if command.CompletedAt != nil {
 			created = *command.CompletedAt
@@ -434,6 +507,50 @@ func (a *App) nodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
 		logs = []NodeLog{}
 	}
 	writeJSON(w, http.StatusOK, NodeLogPage{Items: logs, CurrentError: node.CollectionError, Limit: limit, Offset: offset, HasMore: hasMore})
+}
+
+func agentCommandLogMessage(command AgentCommand) string {
+	message := agentCommandTypeLabel(command.Type) + " · " + agentCommandStateLabel(command.State)
+	result := strings.TrimSpace(command.Result)
+	if command.Type == "update_agent" && strings.Contains(result, "unsupported command type update_agent") {
+		result = "当前客户端版本不支持远程更新命令，请在节点机器上重新执行接入脚本手动升级一次"
+	}
+	if result != "" {
+		message += " · " + result
+	}
+	return message
+}
+
+func agentCommandTypeLabel(value string) string {
+	switch value {
+	case "collect":
+		return "立即采集状态"
+	case "apply_config":
+		return "应用 WireGuard 配置"
+	case "apply_peer_config":
+		return "应用 Peer 配置"
+	case "update_agent":
+		return "更新 Agent"
+	case "connectivity_check":
+		return "连通性检测"
+	default:
+		return value
+	}
+}
+
+func agentCommandStateLabel(value string) string {
+	switch value {
+	case "pending":
+		return "等待中"
+	case "running":
+		return "执行中"
+	case "completed":
+		return "成功"
+	case "failed":
+		return "失败"
+	default:
+		return value
+	}
 }
 
 func (a *App) clearNodeLogs(w http.ResponseWriter, r *http.Request, c claims) {

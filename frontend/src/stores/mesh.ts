@@ -724,9 +724,14 @@ export const useMeshStore = defineStore('mesh', {
       this.error = ''
       try {
         const result = await api.updateAgents(ids)
+        const skippedCount = result.skipped?.length || 0
+        if (result.created === 0 && skippedCount > 0) {
+          this.error = '没有下发更新命令：' + (result.skipped?.[0]?.reason || '所选 Agent 暂不支持远程更新')
+          return false
+        }
         this.notice = result.created === 0
           ? '没有可更新的 Agent'
-          : '已向 ' + result.created + ' 个 Agent 下发更新命令，可在 Agent 日志中查看进度'
+          : '已向 ' + result.created + ' 个 Agent 下发更新命令，可在 Agent 日志中查看进度' + (skippedCount ? '；已跳过 ' + skippedCount + ' 个暂不支持远程更新的旧 Agent' : '')
         return true
       } catch (reason) { this.error = reason instanceof Error ? reason.message : '批量下发 Agent 更新失败'; return false }
     },

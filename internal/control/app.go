@@ -99,7 +99,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/peer-config", a.withUser(RoleOperator, a.updateNodePeerConfig))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/collect", a.withUser(RoleOperator, a.createNodeCommand("collect")))
 	mux.HandleFunc("POST /api/v1/nodes/collect", a.withUser(RoleOperator, a.collectNodes))
-	mux.HandleFunc("POST /api/v1/nodes/{id}/update-agent", a.withUser(RoleOperator, a.createNodeCommand("update_agent")))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/update-agent", a.withUser(RoleOperator, a.updateAgent))
 	mux.HandleFunc("POST /api/v1/nodes/update-agent", a.withUser(RoleOperator, a.updateAgents))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/connectivity-check", a.withUser(RoleOperator, a.createNodeCommand("connectivity_check")))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/logs", a.withUser(RoleViewer, a.nodeLogs))
