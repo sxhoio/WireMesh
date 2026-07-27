@@ -24,9 +24,14 @@ const selectedInterface = ref('')
 const draft = ref('')
 const mode = ref<EditMode>(props.initialMode)
 
-const pickerOpen = ref(props.initialMode === 'form')
+const pickerOpen = ref(false)
 const pickerTab = ref<PeerSource>('managed')
 const peerSearch = ref('')
+const expandedPeerIndex = ref<number | null>(null)
+const editingPeerIndex = ref<number | null>(null)
+const editingOriginalPublicKey = ref('')
+const addingPeer = ref(props.initialMode === 'form')
+const copiedRemoteConfig = ref(false)
 
 const form = reactive({
   source: 'managed' as PeerSource,
@@ -62,6 +67,9 @@ const remoteAgent = computed(() => mesh.agents.find((agent) => agent.id === form
 const remoteInterfaces = computed(() => remoteAgent.value?.interfaces || [])
 const previewReady = computed(() => preview.localContent.trim() !== '')
 const localPublicKey = computed(() => currentLocalInterface.value?.publicKey || props.agent.publicKey || '')
+const peerRows = computed(() => splitPeerBlocks(draft.value).map((block, index) => ({ ...parsePeerBlock(block), index, raw: block })))
+const peerFormVisible = computed(() => addingPeer.value || editingPeerIndex.value !== null)
+const peerFormTitle = computed(() => editingPeerIndex.value !== null ? `配置 Peer ${editingPeerIndex.value + 1}` : '添加新 Peer')
 
 const interfaceOptions = computed(() => {
   const names = new Set<string>()
@@ -97,6 +105,7 @@ function clearPreview() {
   preview.localUpdatesExisting = false
   preview.remoteUpdatesExisting = false
   preview.remoteEnabled = false
+  copiedRemoteConfig.value = false
 }
 
 function fileLabel(file?: ApiPeerConfigFile) {
@@ -123,7 +132,7 @@ function clientValidatePeerConfig(content: string) {
 
 function switchMode(next: EditMode) {
   mode.value = next
-  if (next === 'form' && !form.remotePublicKey.trim()) pickerOpen.value = true
+  if (next === 'form' && !peerFormVisible.value && !peerRows.value.length) startNewPeerForm()
 }
 
 function primaryInterface(agent: Agent, preferredNetworkId = props.agent.networkId) {
@@ -188,6 +197,10 @@ function fillFromManagedAgent(agent: Agent, iface = primaryInterface(agent)) {
   form.remoteEndpointPort = endpoint.port
   if (!form.keepalive.trim()) form.keepalive = '25'
   applyLocalDefaults(false)
+  addingPeer.value = true
+  editingPeerIndex.value = null
+  editingOriginalPublicKey.value = ''
+  expandedPeerIndex.value = null
   pickerOpen.value = false
   mode.value = 'form'
   clearPreview()
@@ -217,6 +230,49 @@ function startManualPeer() {
   clearPreview()
 }
 
+function startNewPeerForm() {
+  startManualPeer()
+  addingPeer.value = true
+  editingPeerIndex.value = null
+  editingOriginalPublicKey.value = ''
+  expandedPeerIndex.value = null
+  pickerOpen.value = false
+}
+
+function loadPeerIntoForm(index: number) {
+  const peer = peerRows.value[index]
+  if (!peer) return
+  form.source = 'manual'
+  form.remoteNodeId = ''
+  form.remoteName = peer.label
+  form.remoteInterface = 'wg0'
+  form.remotePublicKey = peer.publicKey
+  form.remoteAllowedIPs = peer.allowedIPs
+  form.remoteEndpointHost = peer.endpointHost
+  form.remoteEndpointPort = peer.endpointPort
+  form.presharedKey = peer.presharedKey
+  form.keepalive = peer.keepalive || ''
+  applyLocalDefaults(false)
+  addingPeer.value = false
+  editingPeerIndex.value = index
+  editingOriginalPublicKey.value = peer.publicKey
+  expandedPeerIndex.value = index
+  pickerOpen.value = false
+  mode.value = 'form'
+  clearPreview()
+}
+
+function togglePeer(index: number) {
+  if (expandedPeerIndex.value === index) {
+    expandedPeerIndex.value = null
+    editingPeerIndex.value = null
+    editingOriginalPublicKey.value = ''
+    clearPreview()
+    return
+  }
+  loadPeerIntoForm(index)
+}
+
 function validWireGuardKey(value: string) {
   return /^[A-Za-z0-9+/]{43}=$/.test(value.trim())
 }
@@ -233,6 +289,17 @@ function generatePresharedKey() {
   form.presharedKey = randomWireGuardKey()
   error.value = ''
   clearPreview()
+}
+
+async function copyRemoteConfig() {
+  if (!preview.remoteContent.trim()) return
+  try {
+    await navigator.clipboard.writeText(preview.remoteContent)
+    copiedRemoteConfig.value = true
+    window.setTimeout(() => { copiedRemoteConfig.value = false }, 1400)
+  } catch {
+    error.value = '复制失败，请手动选中对端配置复制'
+  }
 }
 
 function validPort(value: string) {
@@ -293,13 +360,13 @@ function validateForm() {
     const keepalive = Number(form.keepalive)
     if (!Number.isInteger(keepalive) || keepalive < 0 || keepalive > 65535) return 'KeepAlive 必须在 0-65535 之间'
   }
+  if (!localPublicKey.value || !validWireGuardKey(localPublicKey.value)) return '本端接口没有可用公钥，请等待 Agent 上传 WireGuard 接口信息'
+  const localAllowedError = validateAllowedIPs('本端 AllowedIPs', form.localAllowedIPs)
+  if (localAllowedError) return localAllowedError
+  const localEndpointError = validateEndpoint('本端 Endpoint', form.localEndpointHost, form.localEndpointPort)
+  if (localEndpointError) return localEndpointError
   if (form.source === 'managed') {
     if (!form.remoteNodeId) return '请选择一个已存在的对端节点'
-    if (!localPublicKey.value || !validWireGuardKey(localPublicKey.value)) return '本端接口没有可用公钥，请等待 Agent 上传 WireGuard 接口信息'
-    const localAllowedError = validateAllowedIPs('本端 AllowedIPs', form.localAllowedIPs)
-    if (localAllowedError) return localAllowedError
-    const localEndpointError = validateEndpoint('本端 Endpoint', form.localEndpointHost, form.localEndpointPort)
-    if (localEndpointError) return localEndpointError
   }
   return ''
 }
@@ -339,6 +406,25 @@ function peerBlockPublicKey(block: string) {
   return ''
 }
 
+function peerBlockField(block: string, field: string) {
+  for (const line of block.split('\n')) {
+    const [key, value] = line.split('=', 2)
+    if (key && value !== undefined && key.trim().toLowerCase() === field.toLowerCase()) return value.trim()
+  }
+  return ''
+}
+
+function parsePeerBlock(block: string) {
+  const publicKey = peerBlockPublicKey(block)
+  const allowedIPs = peerBlockField(block, 'AllowedIPs')
+  const endpoint = peerBlockField(block, 'Endpoint')
+  const endpointParts = splitEndpoint(endpoint)
+  const presharedKey = peerBlockField(block, 'PresharedKey')
+  const keepalive = peerBlockField(block, 'PersistentKeepalive')
+  const label = endpoint || allowedIPs || shortKey(publicKey) || '未命名 Peer'
+  return { publicKey, allowedIPs, endpoint, endpointHost: endpointParts.host, endpointPort: endpointParts.port, presharedKey, keepalive, label }
+}
+
 function peerExists(content: string, publicKey: string) {
   return splitPeerBlocks(content).some((block) => peerBlockPublicKey(block) === publicKey.trim())
 }
@@ -358,12 +444,6 @@ function upsertPeerBlock(content: string, block: string, publicKey: string) {
   return next.join('\n\n')
 }
 
-async function loadPeerConfigContent(nodeID: string, iface: string) {
-  const result = await api.nodePeerConfig(nodeID)
-  const source = result.has_pending && result.pending_files?.length ? result.pending_files : result.files
-  return source.find((file) => file.interface === iface)?.content || ''
-}
-
 async function generatePreview() {
   error.value = ''
   clearPreview()
@@ -375,27 +455,18 @@ async function generatePreview() {
   const localIface = selectedInterface.value.trim()
   const remoteEndpoint = joinEndpoint(form.remoteEndpointHost, form.remoteEndpointPort)
   const localPeerBlock = buildPeerBlock(form.remotePublicKey, form.remoteAllowedIPs, remoteEndpoint, form.presharedKey, form.keepalive)
-  preview.localContent = upsertPeerBlock(draft.value, localPeerBlock, form.remotePublicKey)
+  const localMatchPublicKey = editingOriginalPublicKey.value || form.remotePublicKey
+  preview.localContent = upsertPeerBlock(draft.value, localPeerBlock, localMatchPublicKey)
   preview.localInterface = localIface
-  preview.localUpdatesExisting = peerExists(draft.value, form.remotePublicKey)
+  preview.localUpdatesExisting = peerExists(draft.value, localMatchPublicKey)
 
-  if (form.source === 'managed' && form.remoteNodeId) {
-    try {
-      const remoteIface = form.remoteInterface.trim() || remoteInterfaces.value[0]?.name || 'wg0'
-      const remoteDraft = await loadPeerConfigContent(form.remoteNodeId, remoteIface)
-      const localEndpoint = joinEndpoint(form.localEndpointHost, form.localEndpointPort)
-      const remotePeerBlock = buildPeerBlock(localPublicKey.value, form.localAllowedIPs, localEndpoint, form.presharedKey, form.keepalive)
-      preview.remoteContent = upsertPeerBlock(remoteDraft, remotePeerBlock, localPublicKey.value)
-      preview.remoteNodeId = form.remoteNodeId
-      preview.remoteInterface = remoteIface
-      preview.remoteName = remoteAgent.value?.name || form.remoteName || form.remoteNodeId
-      preview.remoteUpdatesExisting = peerExists(remoteDraft, localPublicKey.value)
-      preview.remoteEnabled = true
-    } catch (reason) {
-      error.value = reason instanceof Error ? '加载对端 Peer 配置失败：' + reason.message : '加载对端 Peer 配置失败'
-      return false
-    }
-  }
+  const localEndpoint = joinEndpoint(form.localEndpointHost, form.localEndpointPort)
+  preview.remoteContent = buildPeerBlock(localPublicKey.value, form.localAllowedIPs, localEndpoint, form.presharedKey, form.keepalive)
+  preview.remoteNodeId = form.remoteNodeId
+  preview.remoteInterface = form.remoteInterface.trim() || 'wg0'
+  preview.remoteName = form.remoteName || remoteAgent.value?.name || '对端'
+  preview.remoteUpdatesExisting = false
+  preview.remoteEnabled = true
   return true
 }
 
@@ -431,22 +502,8 @@ async function saveGenerated() {
   saving.value = true
   error.value = ''
   try {
-    const tasks = [
-      api.updateNodePeerConfig(props.agent.id, { interface: preview.localInterface, content: preview.localContent }),
-    ]
-    if (preview.remoteEnabled) {
-      tasks.push(api.updateNodePeerConfig(preview.remoteNodeId, { interface: preview.remoteInterface, content: preview.remoteContent }))
-    }
-    const results = await Promise.allSettled(tasks)
-    const failed = results.find((result) => result.status === 'rejected')
-    if (failed?.status === 'rejected') throw failed.reason
-    const messages = results
-      .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof api.updateNodePeerConfig>>> => result.status === 'fulfilled')
-      .map((result) => result.value.message)
-      .filter(Boolean)
-    mesh.notice = preview.remoteEnabled
-      ? `两端 Peer 配置已保存并下发${messages.some((message) => message.includes('上线后')) ? '；离线节点将在上线后应用' : ''}`
-      : (messages[0] || 'Peer 配置已保存并下发')
+    const result = await api.updateNodePeerConfig(props.agent.id, { interface: preview.localInterface, content: preview.localContent })
+    mesh.notice = (result.message || 'Peer 配置已保存并下发') + '；对端配置已生成，可复制后粘贴到对端'
     await mesh.refresh()
     emit('close')
   } catch (reason) {
@@ -501,7 +558,7 @@ onMounted(load)
           <button class="rounded-lg px-3 py-1.5 text-xs font-medium transition" :class="mode === 'manual' ? 'bg-cyan-500/15 text-cyan-300' : 'text-slate-500 hover:text-slate-300'" @click="switchMode('manual')">手动编辑</button>
           <button class="rounded-lg px-3 py-1.5 text-xs font-medium transition" :class="mode === 'form' ? 'bg-cyan-500/15 text-cyan-300' : 'text-slate-500 hover:text-slate-300'" @click="switchMode('form')">表单填写</button>
         </div>
-        <button v-if="mode === 'form'" class="btn-secondary !py-1.5 text-xs" @click="pickerOpen = true">+ 添加新 Peer</button>
+        <button v-if="mode === 'form'" class="btn-secondary !py-1.5 text-xs" @click="startNewPeerForm">+ 添加新 Peer</button>
       </div>
 
       <div class="min-h-0 flex-1 overflow-auto p-5">
@@ -566,6 +623,40 @@ onMounted(load)
             </div>
 
             <div v-else class="min-w-0 space-y-4" @input="clearPreview" @change="clearPreview">
+              <section class="rounded-2xl border border-ink-700 bg-ink-900/70 p-4">
+                <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h4 class="text-sm font-semibold text-white">已有 Peer</h4>
+                    <p class="mt-1 text-xs text-slate-500">点击 Peer 可以展开查看，并把该 Peer 载入下方配置窗口修改。</p>
+                  </div>
+                  <button class="btn-secondary !py-1.5 text-xs" @click="startNewPeerForm">添加新 Peer</button>
+                </div>
+                <div class="space-y-2">
+                  <div v-for="peer in peerRows" :key="peer.index" class="overflow-hidden rounded-xl border border-ink-700 bg-ink-950/70">
+                    <button class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition hover:bg-ink-800" @click="togglePeer(peer.index)">
+                      <span class="min-w-0">
+                        <span class="block text-sm font-medium text-slate-200">Peer {{ peer.index + 1 }}</span>
+                        <span class="block truncate font-mono text-[11px] text-slate-500">{{ peer.label }}</span>
+                      </span>
+                      <span class="flex shrink-0 items-center gap-2 text-[11px] text-slate-500">
+                        {{ expandedPeerIndex === peer.index ? '收起' : '展开配置' }}
+                        <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4 transition-transform" :class="{ 'rotate-90': expandedPeerIndex === peer.index }" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" /></svg>
+                      </span>
+                    </button>
+                    <div v-if="expandedPeerIndex === peer.index" class="border-t border-ink-700 px-3 py-3">
+                      <div class="grid gap-2 text-[11px] sm:grid-cols-2">
+                        <p class="truncate text-slate-500">PublicKey <span class="ml-1 font-mono text-slate-300" :title="peer.publicKey">{{ shortKey(peer.publicKey) }}</span></p>
+                        <p class="truncate text-slate-500">AllowedIPs <span class="ml-1 font-mono text-slate-300">{{ peer.allowedIPs || '未填写' }}</span></p>
+                        <p class="truncate text-slate-500">Endpoint <span class="ml-1 font-mono text-slate-300">{{ peer.endpoint || '未填写' }}</span></p>
+                        <p class="truncate text-slate-500">KeepAlive <span class="ml-1 font-mono text-slate-300">{{ peer.keepalive || '未填写' }}</span></p>
+                      </div>
+                      <p class="mt-2 text-[11px] text-cyan-300">已载入下方“{{ peerFormTitle }}”窗口，可直接修改后生成预览并保存。</p>
+                    </div>
+                  </div>
+                  <p v-if="!peerRows.length" class="rounded-xl border border-dashed border-ink-700 px-3 py-6 text-center text-xs text-slate-500">当前接口还没有 Peer，点击“添加新 Peer”开始配置。</p>
+                </div>
+              </section>
+
               <div v-if="pickerOpen" class="rounded-2xl border border-ink-700 bg-ink-900/80 p-4 shadow-2xl">
                 <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -598,15 +689,18 @@ onMounted(load)
                 </template>
                 <template v-else>
                   <p class="mb-3 text-xs text-slate-500">适用于不在 WireMesh 管理范围内的对端，只会保存并下发本端配置。</p>
-                  <button class="btn-primary" @click="startManualPeer">进入手动表单</button>
+                  <button class="btn-primary" @click="startNewPeerForm">进入手动表单</button>
                 </template>
               </div>
 
-              <div class="grid gap-4 xl:grid-cols-2">
+              <div v-if="peerFormVisible" class="grid gap-4 xl:grid-cols-2">
                 <section class="rounded-2xl border border-ink-700 bg-ink-900/70 p-4">
                   <div class="mb-3 flex items-center justify-between gap-2">
-                    <h4 class="text-sm font-semibold text-white">对端信息（写入本端）</h4>
-                    <span class="chip bg-cyan-500/10 text-cyan-300 ring-1 ring-cyan-500/30">{{ form.source === 'managed' ? '已有节点' : '手动 Peer' }}</span>
+                    <h4 class="text-sm font-semibold text-white">{{ peerFormTitle }} · 对端信息（写入本端）</h4>
+                    <div class="flex items-center gap-2">
+                      <button class="rounded-md px-2 py-1 text-[11px] text-cyan-300 transition hover:bg-cyan-500/10" @click="pickerOpen = true">从已有节点填充</button>
+                      <span class="chip bg-cyan-500/10 text-cyan-300 ring-1 ring-cyan-500/30">{{ form.source === 'managed' ? '已有节点' : '手动 Peer' }}</span>
+                    </div>
                   </div>
                   <p class="mb-3 rounded-xl bg-ink-950/70 px-3 py-2 text-[11px] leading-relaxed text-slate-500 ring-1 ring-ink-700">
                     WireGuard [Peer] 完整字段：<span class="text-slate-300">PublicKey、AllowedIPs</span> 为必填；<span class="text-slate-300">Endpoint、PresharedKey、PersistentKeepalive</span> 为选填。只填写必填项即可生成可启动的最小 Peer 配置。
@@ -677,10 +771,10 @@ onMounted(load)
                 <section class="rounded-2xl border border-ink-700 bg-ink-900/70 p-4">
                   <div class="mb-3 flex items-center justify-between gap-2">
                     <h4 class="text-sm font-semibold text-white">本端信息（写入对端）</h4>
-                    <span class="text-[11px] text-slate-500">{{ form.source === 'managed' ? '将自动同步到对端' : '手动 Peer 不生成对端配置' }}</span>
+                    <span class="text-[11px] text-slate-500">只生成配置文本，不会自动写入对端</span>
                   </div>
                   <p class="mb-3 rounded-xl bg-ink-950/70 px-3 py-2 text-[11px] leading-relaxed text-slate-500 ring-1 ring-ink-700">
-                    选择已有节点时，这里会生成“对端机器里看到的本端 Peer”。字段同样分为必填和选填，确保两端配置完整对称。
+                    这里会生成“对端机器里看到的本端 Peer”。保存时只写入本端；对端配置会在预览区生成，可以复制后粘贴到对端 WireGuard 配置中。
                   </p>
                   <div class="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-3">
                     <div class="mb-3 flex items-center gap-2">
@@ -694,7 +788,7 @@ onMounted(load)
                       </label>
                       <label>
                         <span class="label">AllowedIPs · 本端允许 IP</span>
-                      <input v-model="form.localAllowedIPs" class="input font-mono" :disabled="form.source !== 'managed'" placeholder="10.88.88.1/32" />
+                      <input v-model="form.localAllowedIPs" class="input font-mono" placeholder="10.88.88.1/32" />
                       </label>
                     </div>
                   </div>
@@ -706,19 +800,23 @@ onMounted(load)
                     <div class="grid gap-3 sm:grid-cols-2">
                       <label>
                         <span class="label">Endpoint 地址</span>
-                      <input v-model.trim="form.localEndpointHost" class="input font-mono" :disabled="form.source !== 'managed'" placeholder="可选，用于对端配置" />
+                      <input v-model.trim="form.localEndpointHost" class="input font-mono" placeholder="可选，用于对端配置" />
                       </label>
                       <label>
                         <span class="label">Endpoint 端口</span>
-                      <input v-model="form.localEndpointPort" class="input font-mono" :disabled="form.source !== 'managed'" placeholder="51820" />
+                      <input v-model="form.localEndpointPort" class="input font-mono" placeholder="51820" />
                       </label>
                     </div>
                   </div>
                   <p class="mt-3 text-[11px] leading-relaxed text-slate-500">快捷表单只生成 [Peer] 段。保存后复用现有下发链路，客户端会替换 Peer 段并重启对应 WireGuard 接口。</p>
                 </section>
               </div>
+              <div v-else class="rounded-2xl border border-dashed border-ink-700 bg-ink-950/50 px-4 py-10 text-center">
+                <p class="text-sm font-medium text-slate-300">请选择一个已有 Peer，或点击“添加新 Peer”。</p>
+                <p class="mt-2 text-xs text-slate-500">下方会打开用于输入配置的窗口；本端配置保存下发，对端配置仅生成文本供复制粘贴。</p>
+              </div>
 
-              <div class="flex flex-wrap items-center justify-between gap-3">
+              <div v-if="peerFormVisible" class="flex flex-wrap items-center justify-between gap-3">
                 <p class="text-xs text-slate-500">
                   <span v-if="previewReady">{{ preview.localUpdatesExisting ? '本端将更新已有 Peer' : '本端将新增 Peer' }}<span v-if="preview.remoteEnabled">；{{ preview.remoteUpdatesExisting ? '对端将更新已有 Peer' : '对端将新增 Peer' }}</span></span>
                   <span v-else>请先生成预览，确认两端配置内容后再保存下发。</span>
@@ -726,16 +824,18 @@ onMounted(load)
                 <button class="btn-secondary !py-1.5 text-xs" :disabled="saving" @click="generatePreview">生成预览</button>
               </div>
 
-              <div v-if="previewReady" class="grid gap-4 xl:grid-cols-2">
+              <div v-if="peerFormVisible && previewReady" class="grid gap-4 xl:grid-cols-2">
                 <section class="overflow-hidden rounded-2xl border border-cyan-500/30 bg-ink-950">
                   <div class="border-b border-ink-700 px-3 py-2 text-xs text-cyan-300">本端 {{ agent.name }}/{{ preview.localInterface }}</div>
                   <pre class="max-h-72 overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-slate-300">{{ preview.localContent }}</pre>
                 </section>
                 <section v-if="preview.remoteEnabled" class="overflow-hidden rounded-2xl border border-violet-500/30 bg-ink-950">
-                  <div class="border-b border-ink-700 px-3 py-2 text-xs text-violet-300">对端 {{ preview.remoteName }}/{{ preview.remoteInterface }}</div>
+                  <div class="flex items-center justify-between gap-2 border-b border-ink-700 px-3 py-2 text-xs text-violet-300">
+                    <span>对端可粘贴配置 · {{ preview.remoteName }}/{{ preview.remoteInterface }}</span>
+                    <button class="rounded-md px-2 py-1 text-[11px] text-violet-200 transition hover:bg-violet-500/10" @click="copyRemoteConfig">{{ copiedRemoteConfig ? '已复制 ✓' : '复制' }}</button>
+                  </div>
                   <pre class="max-h-72 overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-slate-300">{{ preview.remoteContent }}</pre>
                 </section>
-                <section v-else class="flex min-h-40 items-center justify-center rounded-2xl border border-ink-700 bg-ink-950 p-4 text-center text-xs text-slate-500">手动 Peer 不属于已管理节点，因此不会生成对端配置。</section>
               </div>
             </div>
           </template>
@@ -745,7 +845,7 @@ onMounted(load)
       <div class="flex items-center justify-end gap-2 border-t border-ink-700 px-6 py-4">
         <button class="btn-secondary" @click="emit('close')">取消</button>
         <button v-if="mode === 'manual'" class="btn-primary" :disabled="loading || saving" @click="saveManual">{{ saving ? '保存中…' : '保存并下发' }}</button>
-        <button v-else class="btn-primary" :disabled="loading || saving" @click="saveGenerated">{{ saving ? '保存中…' : previewReady ? '确认保存并下发' : '生成预览' }}</button>
+        <button v-else class="btn-primary" :disabled="loading || saving || !peerFormVisible" @click="saveGenerated">{{ saving ? '保存中…' : previewReady ? '确认保存并下发' : '生成预览' }}</button>
       </div>
     </div>
   </div>
