@@ -143,6 +143,15 @@ function doReset() {
 
 const currentRevision = computed(() => mesh.revisions[0])
 
+async function refreshAudit() {
+  await mesh.loadAuditPage(true)
+}
+
+async function clearAuditLogs() {
+  if (!window.confirm('确定清空全部审计日志吗？此操作无法恢复。')) return
+  await mesh.clearAudit()
+}
+
 // ---- 通知配置 ----
 const channelTypeMeta: Record<NotifyChannelType, { l: string; c: string; description: string }> = {
   webhook: { l: 'Webhook', c: 'bg-cyan-500/10 text-cyan-300 ring-cyan-500/30', description: '自定义 HTTP 请求、请求头和签名' },
@@ -658,7 +667,16 @@ function channelConfigSummary(c: NotifyChannel) {
 
       <!-- 审计日志 -->
       <section v-else-if="tab === 'audit'" class="panel p-4 sm:p-6 2xl:p-7">
-        <h2 class="text-sm font-semibold text-white">审计日志</h2>
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 class="text-sm font-semibold text-white">审计日志</h2>
+            <p class="mt-0.5 text-xs text-slate-500">每次仅加载 50 条；每个租户最多自动保留 10,000 条最新记录。</p>
+          </div>
+          <div class="flex gap-2">
+            <button class="btn-secondary !py-2 text-xs" :disabled="mesh.auditLoading" @click="refreshAudit">{{ mesh.auditLoading ? '加载中…' : '刷新' }}</button>
+            <button v-if="app.isAdmin" class="btn-secondary !py-2 text-xs text-red-300" :disabled="mesh.auditLoading || !mesh.audit.length" @click="clearAuditLogs">清空日志</button>
+          </div>
+        </div>
         <div class="mt-4 space-y-2">
           <p v-if="!mesh.audit.length" class="py-8 text-center text-xs text-slate-500">后端未返回审计记录</p>
           <div v-for="e in mesh.audit" :key="e.id" class="flex items-start gap-3 rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600">
@@ -669,6 +687,9 @@ function channelConfigSummary(c: NotifyChannel) {
             </div>
             <span class="shrink-0 text-[11px] text-slate-600">{{ fmtDateTime(e.time) }}</span>
           </div>
+          <button v-if="mesh.auditHasMore" class="btn-secondary mx-auto mt-3 block !py-2 text-xs" :disabled="mesh.auditLoading" @click="mesh.loadAuditPage(false)">
+            {{ mesh.auditLoading ? '加载中…' : '加载更多' }}
+          </button>
         </div>
       </section>
 

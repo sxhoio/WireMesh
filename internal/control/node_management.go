@@ -5,7 +5,6 @@ import (
 	"math"
 	"net/http"
 	"net/netip"
-	"sort"
 	"strings"
 	"time"
 )
@@ -332,11 +331,11 @@ func (a *App) nodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
 		writeError(w, http.StatusNotFound, "node not found")
 		return
 	}
+	limit, offset := parseLogPage(r)
+	errorsOnly := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("level")), "error")
+	commands := a.store.ListCommandsPage(c.TenantID, node.ID, limit+1, offset, errorsOnly)
 	logs := make([]NodeLog, 0)
-	if node.CollectionError != "" {
-		logs = append(logs, NodeLog{ID: "collection-" + node.ID, Level: "warning", Source: "heartbeat", Message: node.CollectionError, CreatedAt: node.LastSeen})
-	}
-	for _, command := range a.store.ListCommands(c.TenantID, node.ID) {
+	for _, command := range commands {
 		message := command.Type + " · " + command.State
 		if command.Result != "" {
 			message += " · " + command.Result
@@ -351,27 +350,27 @@ func (a *App) nodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
 		}
 		logs = append(logs, NodeLog{ID: command.ID, Level: level, Source: "command", Message: message, CreatedAt: created})
 	}
-	for _, delivery := range a.store.ListDeliveries(c.TenantID, node.ID) {
-		message := fmt.Sprintf("配置版本 %d · %s", delivery.Version, delivery.State)
-		if delivery.Message != "" {
-			message += " · " + delivery.Message
-		}
-		level := "info"
-		if delivery.State == "failed" || delivery.State == "rolled_back" {
-			level = "error"
-		}
-		logs = append(logs, NodeLog{ID: delivery.ID, Level: level, Source: "configuration", Message: message, CreatedAt: delivery.UpdatedAt})
+	hasMore := len(commands) > limit
+	if hasMore {
+		logs = logs[:limit]
 	}
-	for _, event := range a.store.ListAudit(c.TenantID) {
-		if event.ResourceType == "node" && event.ResourceID == node.ID && strings.HasPrefix(event.Action, "agent.") {
-			logs = append(logs, NodeLog{ID: event.ID, Level: "info", Source: "control-plane", Message: event.Action, CreatedAt: event.CreatedAt})
-		}
+	if logs == nil {
+		logs = []NodeLog{}
 	}
-	sort.Slice(logs, func(i, j int) bool { return logs[i].CreatedAt.After(logs[j].CreatedAt) })
-	if len(logs) > 200 {
-		logs = logs[:200]
+	writeJSON(w, http.StatusOK, NodeLogPage{Items: logs, CurrentError: node.CollectionError, Limit: limit, Offset: offset, HasMore: hasMore})
+}
+
+func (a *App) clearNodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
+	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "node not found")
+		return
 	}
-	writeJSON(w, http.StatusOK, logs)
+	if err := a.store.ClearCommands(c.TenantID, node.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to clear Agent logs")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *App) agentCommands(w http.ResponseWriter, r *http.Request) {

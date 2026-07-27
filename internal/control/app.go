@@ -86,11 +86,13 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /api/v1/nodes/collect", a.withUser(RoleOperator, a.collectNodes))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/connectivity-check", a.withUser(RoleOperator, a.createNodeCommand("connectivity_check")))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/logs", a.withUser(RoleViewer, a.nodeLogs))
+	mux.HandleFunc("DELETE /api/v1/nodes/{id}/logs", a.withUser(RoleOperator, a.clearNodeLogs))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/traffic", a.withUser(RoleViewer, a.nodeTraffic))
 	mux.HandleFunc("POST /api/v1/networks/{id}/peers", a.withUser(RoleOperator, a.addPeer))
 	mux.HandleFunc("POST /api/v1/networks/{id}/publish", a.withUser(RoleOperator, a.publish))
 	mux.HandleFunc("GET /api/v1/deliveries", a.withUser(RoleViewer, a.deliveries))
 	mux.HandleFunc("GET /api/v1/audit", a.withUser(RoleAdmin, a.audit))
+	mux.HandleFunc("DELETE /api/v1/audit", a.withUser(RoleAdmin, a.clearAudit))
 	mux.HandleFunc("GET /api/v1/settings", a.withUser(RoleViewer, a.settings))
 	mux.HandleFunc("PUT /api/v1/settings", a.withUser(RoleAdmin, a.settings))
 	mux.HandleFunc("GET /api/v1/settings/geoip", a.withUser(RoleViewer, a.geoIPStatus))
@@ -407,7 +409,24 @@ func (a *App) deliveries(w http.ResponseWriter, r *http.Request, c claims) {
 	writeJSON(w, 200, a.store.ListDeliveries(c.TenantID, r.URL.Query().Get("node_id")))
 }
 func (a *App) audit(w http.ResponseWriter, r *http.Request, c claims) {
-	writeJSON(w, 200, a.store.ListAudit(c.TenantID))
+	limit, offset := parseLogPage(r)
+	items := a.store.ListAuditPage(c.TenantID, limit+1, offset)
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	if items == nil {
+		items = []AuditEvent{}
+	}
+	writeJSON(w, http.StatusOK, AuditLogPage{Items: items, Limit: limit, Offset: offset, HasMore: hasMore})
+}
+
+func (a *App) clearAudit(w http.ResponseWriter, r *http.Request, c claims) {
+	if err := a.store.ClearAudit(c.TenantID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to clear audit logs")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *App) createEnrollment(w http.ResponseWriter, r *http.Request, c claims) {

@@ -85,7 +85,6 @@ func TestEmptyListEndpointsReturnArrays(t *testing.T) {
 		"/api/v1/networks?project_id=missing",
 		"/api/v1/nodes",
 		"/api/v1/deliveries",
-		"/api/v1/audit",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Header.Set("Authorization", "Bearer "+token)
@@ -98,6 +97,62 @@ func TestEmptyListEndpointsReturnArrays(t *testing.T) {
 		if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil || items == nil {
 			t.Fatalf("%s must return a JSON array, got %s (%v)", path, response.Body.String(), err)
 		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/audit", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("/api/v1/audit returned %d: %s", response.Code, response.Body.String())
+	}
+	var page AuditLogPage
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil || page.Items == nil || page.Limit == 0 {
+		t.Fatalf("/api/v1/audit must return a paged JSON response, got %s (%v)", response.Body.String(), err)
+	}
+}
+
+func TestAuditLogsArePagedAndClearable(t *testing.T) {
+	app := testApp(t)
+	admin, token := initializeTestAdmin(t, app, "audit-page@example.com", "strong-password")
+	for index := 0; index < 3; index++ {
+		app.auditEvent(admin.TenantID, admin.ID, "test.audit", "node", "node-"+string(rune('a'+index)), nil)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/audit?limit=2", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("audit page failed: %d %s", response.Code, response.Body.String())
+	}
+	var page AuditLogPage
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || !page.HasMore || page.Limit != 2 || page.Offset != 0 {
+		t.Fatalf("unexpected audit page: %#v", page)
+	}
+
+	request = httptest.NewRequest(http.MethodDelete, "/api/v1/audit", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("clear audit failed: %d %s", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/audit", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read cleared audit failed: %d %s", response.Code, response.Body.String())
+	}
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 0 || page.HasMore {
+		t.Fatalf("audit logs were not cleared: %#v", page)
 	}
 }
 
@@ -368,6 +423,25 @@ func TestAgentCommandsLogsAndDelete(t *testing.T) {
 	app.Router().ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "wireguard_interfaces=1") {
 		t.Fatalf("node logs missing command result: %d %s", response.Code, response.Body.String())
+	}
+	var logPage NodeLogPage
+	if err := json.NewDecoder(response.Body).Decode(&logPage); err != nil || len(logPage.Items) != 1 {
+		t.Fatalf("unexpected paged node logs: %#v %v", logPage, err)
+	}
+
+	request = httptest.NewRequest(http.MethodDelete, "/api/v1/nodes/"+node.ID+"/logs", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("clear node logs failed: %d %s", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/nodes/"+node.ID+"/logs?limit=1", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "wireguard_interfaces=1") {
+		t.Fatalf("node logs were not cleared: %d %s", response.Code, response.Body.String())
 	}
 
 	request = httptest.NewRequest(http.MethodDelete, "/api/v1/nodes/"+node.ID, nil)

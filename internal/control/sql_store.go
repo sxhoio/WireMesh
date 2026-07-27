@@ -553,7 +553,10 @@ func (s *SQLStore) ListDeliveries(tenant, node string) []ConfigDelivery {
 
 func (s *SQLStore) CreateCommand(v AgentCommand) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO agent_commands (id, tenant_id, node_id, type, state, result, created_at, started_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.NodeID, v.Type, v.State, v.Result, timeText(v.CreatedAt), optionalTimeText(v.StartedAt), optionalTimeText(v.CompletedAt))
-	return err
+	if err != nil {
+		return err
+	}
+	return s.pruneCommands(v.TenantID, v.NodeID)
 }
 func (s *SQLStore) ClaimCommands(node string) []AgentCommand {
 	tx, err := s.db.Begin()
@@ -616,6 +619,39 @@ func (s *SQLStore) ListCommands(tenant, node string) []AgentCommand {
 	return out
 }
 
+func (s *SQLStore) ListCommandsPage(tenant, node string, limit, offset int, errorsOnly bool) []AgentCommand {
+	query := `SELECT id, tenant_id, node_id, type, state, result, created_at, started_at, completed_at FROM agent_commands WHERE tenant_id=?`
+	args := []any{tenant}
+	if node != "" {
+		query += ` AND node_id=?`
+		args = append(args, node)
+	}
+	if errorsOnly {
+		query += ` AND state='failed'`
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+	rows, err := s.db.Query(s.query(query), args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []AgentCommand
+	for rows.Next() {
+		command, err := scanCommand(rows)
+		if err != nil {
+			return nil
+		}
+		out = append(out, command)
+	}
+	return out
+}
+
+func (s *SQLStore) ClearCommands(tenant, node string) error {
+	_, err := s.db.Exec(s.query(`DELETE FROM agent_commands WHERE tenant_id=? AND node_id=?`), tenant, node)
+	return err
+}
+
 func (s *SQLStore) CreateEnrollment(v EnrollmentToken) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO enrollment_tokens (id, tenant_id, project_id, network_id, token, expires_at, used_at) VALUES (?, ?, ?, ?, ?, ?, NULL)`), v.ID, v.TenantID, v.ProjectID, v.NetworkID, v.Token, timeText(v.ExpiresAt))
 	return err
@@ -671,7 +707,10 @@ func (s *SQLStore) GetIdentity(node string) (AgentIdentity, error) {
 func (s *SQLStore) AddAudit(v AuditEvent) error {
 	metadata, _ := json.Marshal(v.Metadata)
 	_, err := s.db.Exec(s.query(`INSERT INTO audit_events (id, tenant_id, actor_id, action, resource_type, resource_id, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ActorID, v.Action, v.ResourceType, v.ResourceID, string(metadata), timeText(v.CreatedAt))
-	return err
+	if err != nil {
+		return err
+	}
+	return s.pruneAudit(v.TenantID)
 }
 func (s *SQLStore) ListAudit(tenant string) []AuditEvent {
 	rows, err := s.db.Query(s.query(`SELECT id, tenant_id, actor_id, action, resource_type, resource_id, metadata_json, created_at FROM audit_events WHERE tenant_id=? ORDER BY created_at DESC`), tenant)
@@ -691,6 +730,70 @@ func (s *SQLStore) ListAudit(tenant string) []AuditEvent {
 		out = append(out, v)
 	}
 	return out
+}
+
+func (s *SQLStore) ListAuditPage(tenant string, limit, offset int) []AuditEvent {
+	rows, err := s.db.Query(s.query(`SELECT id, tenant_id, actor_id, action, resource_type, resource_id, metadata_json, created_at FROM audit_events WHERE tenant_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`), tenant, limit, offset)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []AuditEvent
+	for rows.Next() {
+		var v AuditEvent
+		var metadata, created string
+		if rows.Scan(&v.ID, &v.TenantID, &v.ActorID, &v.Action, &v.ResourceType, &v.ResourceID, &metadata, &created) != nil {
+			return nil
+		}
+		_ = json.Unmarshal([]byte(metadata), &v.Metadata)
+		v.CreatedAt = parseTime(created)
+		out = append(out, v)
+	}
+	return out
+}
+
+func (s *SQLStore) ClearAudit(tenant string) error {
+	_, err := s.db.Exec(s.query(`DELETE FROM audit_events WHERE tenant_id=?`), tenant)
+	return err
+}
+
+func (s *SQLStore) pruneCommands(tenant, node string) error {
+	var count int
+	if err := s.db.QueryRow(s.query(`SELECT COUNT(*) FROM agent_commands WHERE tenant_id=? AND node_id=?`), tenant, node).Scan(&count); err != nil {
+		return err
+	}
+	if count <= maxAgentLogRecords {
+		return nil
+	}
+	return s.pruneTableKeepingNewest("agent_commands", tenant, node, maxAgentLogRecords)
+}
+
+func (s *SQLStore) pruneAudit(tenant string) error {
+	var count int
+	if err := s.db.QueryRow(s.query(`SELECT COUNT(*) FROM audit_events WHERE tenant_id=?`), tenant).Scan(&count); err != nil {
+		return err
+	}
+	if count <= maxAuditRecords {
+		return nil
+	}
+	return s.pruneTableKeepingNewest("audit_events", tenant, "", maxAuditRecords)
+}
+
+func (s *SQLStore) pruneTableKeepingNewest(table, tenant, node string, keep int) error {
+	if s.driver == "mysql" {
+		if table == "agent_commands" {
+			_, err := s.db.Exec(s.query(`DELETE target FROM agent_commands target LEFT JOIN (SELECT id FROM agent_commands WHERE tenant_id=? AND node_id=? ORDER BY created_at DESC, id DESC LIMIT ?) keep_rows ON target.id=keep_rows.id WHERE target.tenant_id=? AND target.node_id=? AND keep_rows.id IS NULL`), tenant, node, keep, tenant, node)
+			return err
+		}
+		_, err := s.db.Exec(s.query(`DELETE target FROM audit_events target LEFT JOIN (SELECT id FROM audit_events WHERE tenant_id=? ORDER BY created_at DESC, id DESC LIMIT ?) keep_rows ON target.id=keep_rows.id WHERE target.tenant_id=? AND keep_rows.id IS NULL`), tenant, keep, tenant)
+		return err
+	}
+	if table == "agent_commands" {
+		_, err := s.db.Exec(s.query(`DELETE FROM agent_commands WHERE tenant_id=? AND node_id=? AND id NOT IN (SELECT id FROM agent_commands WHERE tenant_id=? AND node_id=? ORDER BY created_at DESC, id DESC LIMIT ?)`), tenant, node, tenant, node, keep)
+		return err
+	}
+	_, err := s.db.Exec(s.query(`DELETE FROM audit_events WHERE tenant_id=? AND id NOT IN (SELECT id FROM audit_events WHERE tenant_id=? ORDER BY created_at DESC, id DESC LIMIT ?)`), tenant, tenant, keep)
+	return err
 }
 
 func (s *SQLStore) ListUsers(tenant string) []User {

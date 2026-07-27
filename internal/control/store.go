@@ -42,6 +42,8 @@ type Store interface {
 	ClaimCommands(string) []AgentCommand
 	UpdateCommand(AgentCommand) error
 	ListCommands(string, string) []AgentCommand
+	ListCommandsPage(string, string, int, int, bool) []AgentCommand
+	ClearCommands(string, string) error
 	CreateEnrollment(EnrollmentToken) error
 	ConsumeEnrollment(string) (EnrollmentToken, error)
 	CreateIdentity(AgentIdentity) error
@@ -64,6 +66,8 @@ type Store interface {
 	DeleteNotificationChannel(string, string) error
 	AddNotificationLog(NotificationLog) error
 	ListNotificationLogs(string) []NotificationLog
+	ListAuditPage(string, int, int) []AuditEvent
+	ClearAudit(string) error
 }
 
 type MemoryStore struct {
@@ -298,6 +302,7 @@ func (s *MemoryStore) CreateCommand(v AgentCommand) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.commands[v.ID] = v
+	s.pruneCommandsLocked(v.TenantID, v.NodeID)
 	return nil
 }
 func (s *MemoryStore) ClaimCommands(node string) (out []AgentCommand) {
@@ -334,6 +339,45 @@ func (s *MemoryStore) ListCommands(tenant, node string) (out []AgentCommand) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return
+}
+
+func (s *MemoryStore) ListCommandsPage(tenant, node string, limit, offset int, errorsOnly bool) (out []AgentCommand) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, v := range s.commands {
+		if v.TenantID != tenant || (node != "" && v.NodeID != node) {
+			continue
+		}
+		if errorsOnly && v.State != "failed" {
+			continue
+		}
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	if offset >= len(out) {
+		return []AgentCommand{}
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end]
+}
+
+func (s *MemoryStore) ClearCommands(tenant, node string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, command := range s.commands {
+		if command.TenantID == tenant && command.NodeID == node {
+			delete(s.commands, id)
+		}
+	}
+	return nil
 }
 
 func (s *MemoryStore) CreateEnrollment(v EnrollmentToken) error {
@@ -373,6 +417,7 @@ func (s *MemoryStore) AddAudit(v AuditEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.audits = append(s.audits, v)
+	s.pruneAuditLocked(v.TenantID)
 	return nil
 }
 func (s *MemoryStore) ListAudit(t string) (out []AuditEvent) {
@@ -385,6 +430,89 @@ func (s *MemoryStore) ListAudit(t string) (out []AuditEvent) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return
+}
+
+func (s *MemoryStore) ListAuditPage(tenant string, limit, offset int) (out []AuditEvent) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, v := range s.audits {
+		if v.TenantID == tenant {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	if offset >= len(out) {
+		return []AuditEvent{}
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end]
+}
+
+func (s *MemoryStore) ClearAudit(tenant string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.audits = slices.DeleteFunc(s.audits, func(event AuditEvent) bool {
+		return event.TenantID == tenant
+	})
+	return nil
+}
+
+func (s *MemoryStore) pruneCommandsLocked(tenant, node string) {
+	items := make([]AgentCommand, 0)
+	for _, command := range s.commands {
+		if command.TenantID == tenant && command.NodeID == node {
+			items = append(items, command)
+		}
+	}
+	if len(items) <= maxAgentLogRecords {
+		return
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].ID > items[j].ID
+		}
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	for _, command := range items[maxAgentLogRecords:] {
+		delete(s.commands, command.ID)
+	}
+}
+
+func (s *MemoryStore) pruneAuditLocked(tenant string) {
+	items := make([]AuditEvent, 0)
+	for _, event := range s.audits {
+		if event.TenantID == tenant {
+			items = append(items, event)
+		}
+	}
+	if len(items) <= maxAuditRecords {
+		return
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].ID > items[j].ID
+		}
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	keep := make(map[string]struct{}, maxAuditRecords)
+	for _, event := range items[:maxAuditRecords] {
+		keep[event.ID] = struct{}{}
+	}
+	s.audits = slices.DeleteFunc(s.audits, func(event AuditEvent) bool {
+		if event.TenantID != tenant {
+			return false
+		}
+		_, ok := keep[event.ID]
+		return !ok
+	})
 }
 func (s *MemoryStore) GetUserByEmail(email string) (User, error) {
 	s.mu.RLock()

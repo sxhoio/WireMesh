@@ -84,6 +84,12 @@ func (s *SwitchableStore) UpdateCommand(v AgentCommand) error { return s.store()
 func (s *SwitchableStore) ListCommands(tenant, node string) []AgentCommand {
 	return s.store().ListCommands(tenant, node)
 }
+func (s *SwitchableStore) ListCommandsPage(tenant, node string, limit, offset int, errorsOnly bool) []AgentCommand {
+	return s.store().ListCommandsPage(tenant, node, limit, offset, errorsOnly)
+}
+func (s *SwitchableStore) ClearCommands(tenant, node string) error {
+	return s.store().ClearCommands(tenant, node)
+}
 func (s *SwitchableStore) CreateEnrollment(v EnrollmentToken) error {
 	return s.store().CreateEnrollment(v)
 }
@@ -132,4 +138,10 @@ func (s *SwitchableStore) AddNotificationLog(v NotificationLog) error {
 }
 func (s *SwitchableStore) ListNotificationLogs(tenant string) []NotificationLog {
 	return s.store().ListNotificationLogs(tenant)
+}
+func (s *SwitchableStore) ListAuditPage(tenant string, limit, offset int) []AuditEvent {
+	return s.store().ListAuditPage(tenant, limit, offset)
+}
+func (s *SwitchableStore) ClearAudit(tenant string) error {
+	return s.store().ClearAudit(tenant)
 }

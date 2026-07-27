@@ -9,9 +9,11 @@ export interface ApiWireGuardInterface { name: string; public_key: string; liste
 export interface ApiNode { id: string; tenant_id: string; project_id: string; network_id: string; name: string; hostname?: string; interface_selector?: string; collection_error?: string; enabled: boolean; listen_port: number; mtu: number; address: string; endpoint: string; region: string; location_name: string; location_source: string; latitude: number; longitude: number; os: string; agent_version: string; labels: Record<string, string>; public_key: string; wireguard?: ApiWireGuardInterface[]; last_seen: string; created_at: string }
 export interface ApiAgentCommand { id: string; tenant_id: string; node_id: string; type: string; state: string; result?: string; created_at: string; started_at?: string; completed_at?: string }
 export interface ApiNodeLog { id: string; level: string; source: string; message: string; created_at: string }
+export interface ApiNodeLogPage { items: ApiNodeLog[]; current_error?: string; limit: number; offset: number; has_more: boolean }
 export interface ApiTrafficPoint { recorded_at: string; receive_bytes: number; transmit_bytes: number; rx_mbps: number; tx_mbps: number }
 export interface ApiDelivery { id: string; tenant_id: string; node_id: string; version: number; state: string; message: string; updated_at: string }
 export interface ApiAudit { id: string; tenant_id: string; actor_id: string; action: string; resource_type: string; resource_id: string; metadata?: Record<string, string>; created_at: string }
+export interface ApiAuditPage { items: ApiAudit[]; limit: number; offset: number; has_more: boolean }
 export interface EnrollmentResult { token: string; expires_at: string; network_id: string }
 export interface ApiSystemSettings {
   dashboardName: string
@@ -113,10 +115,12 @@ export const api = {
   collectNode: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/collect', { method: 'POST' }),
   collectAllNodes: (nodeIds?: string[]) => request<{ created: number }>('/api/v1/nodes/collect', { method: 'POST', body: JSON.stringify({ node_ids: nodeIds || [] }) }),
   checkNodeConnectivity: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/connectivity-check', { method: 'POST' }),
-  nodeLogs: (id: string) => requestArray<ApiNodeLog>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs'),
+  nodeLogs: (id: string, limit = 50, offset = 0, errorsOnly = false) => request<ApiNodeLogPage>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs?limit=' + limit + '&offset=' + offset + (errorsOnly ? '&level=error' : '')),
+  clearNodeLogs: (id: string) => request<void>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs', { method: 'DELETE' }),
   traffic: (id: string, interfaceName: string, range: '24h' | '7d' | '30d') => requestArray<ApiTrafficPoint>('/api/v1/nodes/' + encodeURIComponent(id) + '/traffic?interface=' + encodeURIComponent(interfaceName) + '&range=' + range),
   deliveries: () => requestArray<ApiDelivery>('/api/v1/deliveries'),
-  audit: () => requestArray<ApiAudit>('/api/v1/audit'),
+  audit: (limit = 50, offset = 0) => request<ApiAuditPage>('/api/v1/audit?limit=' + limit + '&offset=' + offset),
+  clearAudit: () => request<void>('/api/v1/audit', { method: 'DELETE' }),
   publish: (networkId: string) => request<{ version: number }>('/api/v1/networks/' + encodeURIComponent(networkId) + '/publish', { method: 'POST' }),
   addPeer: (networkId: string, sourceNodeId: string, targetNodeId: string) => request('/api/v1/networks/' + encodeURIComponent(networkId) + '/peers', { method: 'POST', body: JSON.stringify({ source_node_id: sourceNodeId, target_node_id: targetNodeId }) }),
   createEnrollment: (projectId: string, networkId: string, ttlMinutes = 30) => request<EnrollmentResult>('/api/v1/agent/enrollment-tokens', { method: 'POST', body: JSON.stringify({ project_id: projectId, network_id: networkId, ttl_minutes: ttlMinutes }) }),

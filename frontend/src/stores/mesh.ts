@@ -183,6 +183,9 @@ export const useMeshStore = defineStore('mesh', {
     tempPeers: [] as TempPeer[],
     feed: [] as FeedEvent[],
     audit: [] as AuditEntry[],
+    auditHasMore: false,
+    auditOffset: 0,
+    auditLoading: false,
     users: [] as UserAccount[],
     geoip: { dbPath: '', version: '', updatedAt: 0, entryCount: 0 } as GeoIPInfo,
     notifyChannels: [] as NotifyChannel[],
@@ -279,14 +282,19 @@ export const useMeshStore = defineStore('mesh', {
         const [deliveriesResult, geoipResult, channelsResult, logsResult, usersResult, auditsResult] = await Promise.allSettled([
           api.deliveries(), api.geoIPStatus(), api.notificationChannels(), api.notificationLogs(),
           app.isAdmin ? api.users() : Promise.resolve(app.user ? [app.user] : []),
-          app.isAdmin ? api.audit() : Promise.resolve([]),
+          app.isAdmin ? api.audit() : Promise.resolve({ items: [], limit: 50, offset: 0, has_more: false }),
         ] as const)
         const optionalResults = [deliveriesResult, geoipResult, channelsResult, logsResult, usersResult, auditsResult]
         failures.push(...optionalResults.filter((result) => result.status === 'rejected').map((result) => result.reason))
 
         const deliveries = deliveriesResult.status === 'fulfilled' ? deliveriesResult.value : []
-        const audits = auditsResult.status === 'fulfilled' ? auditsResult.value : []
-        if (auditsResult.status === 'fulfilled') this.audit = auditEntries(audits)
+        const auditPage = auditsResult.status === 'fulfilled' ? auditsResult.value : { items: [], limit: 50, offset: 0, has_more: false }
+        const audits = auditPage.items
+        if (auditsResult.status === 'fulfilled') {
+          this.audit = auditEntries(audits)
+          this.auditOffset = audits.length
+          this.auditHasMore = auditPage.has_more
+        }
         if (deliveriesResult.status === 'fulfilled' || auditsResult.status === 'fulfilled') this.feed = feedEntries(audits, deliveries)
         if (deliveriesResult.status === 'fulfilled') this.revisions = revisionsFrom(deliveries, this.agents, app.username)
         if (usersResult.status === 'fulfilled') this.users = usersResult.value.map((user) => ({ id: user.id, name: user.name, email: user.email, role: user.role, active: true, lastLogin: timestamp(user.last_login_at) }))
@@ -318,6 +326,40 @@ export const useMeshStore = defineStore('mesh', {
       pollingTimer = window.setInterval(() => { if (this.autoRefresh) void this.refresh() }, 30000)
     },
     stopPolling() { if (pollingTimer) window.clearInterval(pollingTimer); pollingTimer = undefined },
+    async loadAuditPage(reset = false) {
+      const app = useAppStore()
+      if (!app.authed || !app.isAdmin || this.auditLoading) return false
+      const offset = reset ? 0 : this.auditOffset
+      if (!reset && !this.auditHasMore) return true
+      this.auditLoading = true
+      try {
+        const page = await api.audit(50, offset)
+        const entries = auditEntries(page.items)
+        this.audit = reset ? entries : [...this.audit, ...entries]
+        this.auditOffset = offset + entries.length
+        this.auditHasMore = page.has_more
+        return true
+      } catch (reason) {
+        this.error = reason instanceof Error ? reason.message : '加载审计日志失败'
+        return false
+      } finally {
+        this.auditLoading = false
+      }
+    },
+    async clearAudit() {
+      this.error = ''
+      try {
+        await api.clearAudit()
+        this.audit = []
+        this.auditOffset = 0
+        this.auditHasMore = false
+        this.notice = '审计日志已清空'
+        return true
+      } catch (reason) {
+        this.error = reason instanceof Error ? reason.message : '清空审计日志失败'
+        return false
+      }
+    },
     async publish(_user?: string) {
       if (this.selectedNetworkId === 'all') { this.error = '请先选择一个网络'; return }
       try {
@@ -399,6 +441,17 @@ export const useMeshStore = defineStore('mesh', {
       this.error = ''
       try { await api.checkNodeConnectivity(id); this.notice = '连通性检测命令已下发，可稍后在 Agent 日志中查看结果'; return true }
       catch (reason) { this.error = reason instanceof Error ? reason.message : '下发连通性检测失败'; return false }
+    },
+    async clearAgentLogs(id: string) {
+      this.error = ''
+      try {
+        await api.clearNodeLogs(id)
+        this.notice = 'Agent 日志已清空'
+        return true
+      } catch (reason) {
+        this.error = reason instanceof Error ? reason.message : '清空 Agent 日志失败'
+        return false
+      }
     },
     async toggleAgentEnabled(id: string, _user?: string) {
       const agent = this.agents.find((value) => value.id === id); if (!agent) return false
