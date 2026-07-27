@@ -467,6 +467,7 @@ func (a *App) publishNetwork(tenantID string, network Network) (ConfigPublishRes
 		ChangedNodeIDs: changedNodeIDs, QueuedNodeIDs: make([]string, 0, len(queuedNodeIDs)), OfflineNodeIDs: []string{},
 		Unchanged: len(changedNodeIDs) == 0,
 	}
+	commands := make([]AgentCommand, 0, len(queuedNodeIDs))
 	for _, node := range nodes {
 		if !deliveryTargets[node.ID] {
 			continue
@@ -476,13 +477,14 @@ func (a *App) publishNetwork(tenantID string, network Network) (ConfigPublishRes
 				return ConfigPublishResult{}, fmt.Errorf("create configuration delivery: %w", err)
 			}
 		}
-		if err := a.createAgentCommand(AgentCommand{ID: newID("cmd"), TenantID: tenantID, NodeID: node.ID, Type: "apply_config", State: "pending", CreatedAt: time.Now()}); err != nil {
-			return ConfigPublishResult{}, fmt.Errorf("queue configuration delivery: %w", err)
-		}
+		commands = append(commands, AgentCommand{ID: newID("cmd"), TenantID: tenantID, NodeID: node.ID, Type: "apply_config", State: "pending", CreatedAt: time.Now()})
 		result.QueuedNodeIDs = append(result.QueuedNodeIDs, node.ID)
 		if node.LastSeen.IsZero() || time.Since(node.LastSeen) > offlineAfter {
 			result.OfflineNodeIDs = append(result.OfflineNodeIDs, node.ID)
 		}
+	}
+	if err := a.createAgentCommandsParallel(commands); err != nil {
+		return ConfigPublishResult{}, fmt.Errorf("queue configuration delivery: %w", err)
 	}
 	return result, nil
 }

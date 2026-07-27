@@ -6,13 +6,15 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	defaultNodeListenPort = 51820
-	defaultNodeMTU        = 1420
-	maxCommandWait        = 25 * time.Second
+	defaultNodeListenPort           = 51820
+	defaultNodeMTU                  = 1420
+	maxCommandWait                  = 25 * time.Second
+	maxParallelAgentCommandDispatch = 32
 )
 
 func normalizeNodeDefaults(node Node) Node {
@@ -342,17 +344,17 @@ func (a *App) collectNodes(w http.ResponseWriter, r *http.Request, c claims) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"created": 0, "node_ids": []string{}})
 		return
 	}
-	created := 0
 	nodeIDs := make([]string, 0, len(targets))
+	commands := make([]AgentCommand, 0, len(targets))
 	for _, node := range targets {
-		command := AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: "collect", State: "pending", CreatedAt: time.Now()}
-		if err := a.createAgentCommand(command); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to create agent command")
-			return
-		}
-		created++
+		commands = append(commands, AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: "collect", State: "pending", CreatedAt: time.Now()})
 		nodeIDs = append(nodeIDs, node.ID)
 	}
+	if err := a.createAgentCommandsParallel(commands); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create agent command")
+		return
+	}
+	created := len(commands)
 	a.auditEvent(c.TenantID, c.Subject, "agent.command.collect_all", "tenant", c.TenantID, map[string]string{"count": fmt.Sprint(created)})
 	writeJSON(w, http.StatusAccepted, map[string]any{"created": created, "node_ids": nodeIDs})
 }
@@ -439,6 +441,42 @@ func (a *App) createAgentCommand(command AgentCommand) error {
 		return err
 	}
 	a.wakeAgentCommand(command.NodeID)
+	return nil
+}
+
+func (a *App) createAgentCommandsParallel(commands []AgentCommand) error {
+	if len(commands) == 0 {
+		return nil
+	}
+	workers := len(commands)
+	if workers > maxParallelAgentCommandDispatch {
+		workers = maxParallelAgentCommandDispatch
+	}
+	jobs := make(chan AgentCommand)
+	errors := make(chan error, len(commands))
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for command := range jobs {
+				if err := a.createAgentCommand(command); err != nil {
+					errors <- err
+				}
+			}
+		}()
+	}
+	for _, command := range commands {
+		jobs <- command
+	}
+	close(jobs)
+	wg.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
