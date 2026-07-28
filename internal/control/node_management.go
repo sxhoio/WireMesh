@@ -395,22 +395,7 @@ func (a *App) collectNodes(w http.ResponseWriter, r *http.Request, c claims) {
 	if !decode(w, r, &in) {
 		return
 	}
-	targets := make([]Node, 0, len(in.NodeIDs))
-	if len(in.NodeIDs) == 0 {
-		for _, node := range a.store.ListNodes(c.TenantID, "") {
-			if node.Enabled {
-				targets = append(targets, node)
-			}
-		}
-	} else {
-		for _, id := range in.NodeIDs {
-			node, err := a.store.GetNode(c.TenantID, id)
-			if err != nil {
-				continue
-			}
-			targets = append(targets, node)
-		}
-	}
+	targets := a.commandTargetNodes(c.TenantID, in.NodeIDs)
 	if len(targets) == 0 {
 		writeJSON(w, http.StatusAccepted, map[string]any{"created": 0, "node_ids": []string{}})
 		return
@@ -432,22 +417,7 @@ func (a *App) updateAgents(w http.ResponseWriter, r *http.Request, c claims) {
 	if !decode(w, r, &in) {
 		return
 	}
-	targets := make([]Node, 0, len(in.NodeIDs))
-	if len(in.NodeIDs) == 0 {
-		for _, node := range a.store.ListNodes(c.TenantID, "") {
-			if node.Enabled {
-				targets = append(targets, node)
-			}
-		}
-	} else {
-		for _, id := range in.NodeIDs {
-			node, err := a.store.GetNode(c.TenantID, id)
-			if err != nil {
-				continue
-			}
-			targets = append(targets, node)
-		}
-	}
+	targets := a.commandTargetNodes(c.TenantID, in.NodeIDs)
 	if len(targets) == 0 {
 		writeJSON(w, http.StatusAccepted, AgentUpdateDispatchResult{Created: 0, NodeIDs: []string{}, SkippedNodeIDs: []string{}, Skipped: []AgentUpdateSkippedNode{}})
 		return
@@ -472,6 +442,27 @@ func (a *App) updateAgents(w http.ResponseWriter, r *http.Request, c claims) {
 	created := len(commands)
 	a.auditEvent(c.TenantID, c.Subject, "agent.command.update_all", "tenant", c.TenantID, map[string]string{"count": fmt.Sprint(created), "skipped": fmt.Sprint(len(skipped))})
 	writeJSON(w, http.StatusAccepted, AgentUpdateDispatchResult{Created: created, NodeIDs: nodeIDs, SkippedNodeIDs: skippedNodeIDs, Skipped: skipped})
+}
+
+func (a *App) commandTargetNodes(tenant string, nodeIDs []string) []Node {
+	if len(nodeIDs) == 0 {
+		nodes := a.store.ListNodes(tenant, "")
+		targets := make([]Node, 0, len(nodes))
+		for _, node := range nodes {
+			if node.Enabled {
+				targets = append(targets, node)
+			}
+		}
+		return targets
+	}
+	targets := make([]Node, 0, len(nodeIDs))
+	for _, id := range nodeIDs {
+		node, err := a.store.GetNode(tenant, id)
+		if err == nil {
+			targets = append(targets, node)
+		}
+	}
+	return targets
 }
 
 func (a *App) nodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
@@ -678,15 +669,8 @@ func (a *App) agentCommandProgress(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	var command *AgentCommand
-	for _, current := range a.store.ListCommands(node.TenantID, node.ID) {
-		if current.ID == r.PathValue("id") {
-			value := current
-			command = &value
-			break
-		}
-	}
-	if command == nil {
+	command, ok := a.findAgentCommand(node.TenantID, node.ID, r.PathValue("id"))
+	if !ok {
 		writeError(w, http.StatusNotFound, "command not found")
 		return
 	}
@@ -700,7 +684,7 @@ func (a *App) agentCommandProgress(w http.ResponseWriter, r *http.Request) {
 	if command.StartedAt == nil {
 		command.StartedAt = &now
 	}
-	if err := a.store.UpdateCommand(*command); err != nil {
+	if err := a.store.UpdateCommand(command); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update command progress")
 		return
 	}
@@ -720,15 +704,8 @@ func (a *App) agentCommandResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid command state")
 		return
 	}
-	var command *AgentCommand
-	for _, current := range a.store.ListCommands(node.TenantID, node.ID) {
-		if current.ID == r.PathValue("id") {
-			value := current
-			command = &value
-			break
-		}
-	}
-	if command == nil {
+	command, ok := a.findAgentCommand(node.TenantID, node.ID, r.PathValue("id"))
+	if !ok {
 		writeError(w, http.StatusNotFound, "command not found")
 		return
 	}
@@ -736,7 +713,7 @@ func (a *App) agentCommandResult(w http.ResponseWriter, r *http.Request) {
 	command.State = in.State
 	command.Result = strings.TrimSpace(in.Result)
 	command.CompletedAt = &now
-	if err := a.store.UpdateCommand(*command); err != nil {
+	if err := a.store.UpdateCommand(command); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update command")
 		return
 	}
@@ -748,4 +725,13 @@ func (a *App) agentCommandResult(w http.ResponseWriter, r *http.Request) {
 	}
 	a.auditEvent(node.TenantID, node.ID, "agent.command."+in.State, "node", node.ID, map[string]string{"command_id": command.ID, "type": command.Type})
 	writeJSON(w, http.StatusOK, command)
+}
+
+func (a *App) findAgentCommand(tenant, node, id string) (AgentCommand, bool) {
+	for _, command := range a.store.ListCommands(tenant, node) {
+		if command.ID == id {
+			return command, true
+		}
+	}
+	return AgentCommand{}, false
 }

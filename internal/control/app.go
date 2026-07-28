@@ -208,13 +208,12 @@ func (a *App) setup(w http.ResponseWriter, r *http.Request) {
 		PasswordHash: passwordHash,
 		CreatedAt:    time.Now().UTC(),
 	}
-	var createErr error
 	if a.database != nil {
-		createErr = a.database.CreateInitialAdmin(user)
+		err = a.database.CreateInitialAdmin(user)
 	} else {
-		createErr = a.store.CreateInitialAdmin(user)
+		err = a.store.CreateInitialAdmin(user)
 	}
-	if err := createErr; err != nil {
+	if err != nil {
 		if errors.Is(err, errAlreadyInitialized) {
 			writeError(w, http.StatusConflict, "WireMesh is already initialized")
 			return

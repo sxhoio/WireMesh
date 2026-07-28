@@ -78,6 +78,9 @@ const preview = reactive({
   remoteEnabled: false,
 })
 
+type PeerFormValues = Partial<typeof form>
+type PeerConfigSaveResult = Awaited<ReturnType<typeof api.updateNodePeerConfig>>
+
 const currentFile = computed(() => files.value.find((file) => file.interface === selectedInterface.value))
 const currentLocalInterface = computed(() => props.agent.interfaces.find((iface) => iface.name === selectedInterface.value) || props.agent.interfaces[0])
 const remoteAgent = computed(() => mesh.agents.find((agent) => agent.id === form.remoteNodeId))
@@ -113,16 +116,34 @@ const managedPeerCandidates = computed(() => {
 })
 
 function clearPreview() {
-  preview.localContent = ''
-  preview.remoteContent = ''
-  preview.localInterface = ''
-  preview.remoteNodeId = ''
-  preview.remoteInterface = ''
-  preview.remoteName = ''
-  preview.localUpdatesExisting = false
-  preview.remoteUpdatesExisting = false
-  preview.remoteEnabled = false
+  Object.assign(preview, {
+    localContent: '',
+    remoteContent: '',
+    localInterface: '',
+    remoteNodeId: '',
+    remoteInterface: '',
+    remoteName: '',
+    localUpdatesExisting: false,
+    remoteUpdatesExisting: false,
+    remoteEnabled: false,
+  })
   clearRemoteCopied()
+}
+
+function resetPeerForm(values: PeerFormValues, defaultKeepalive = true) {
+  Object.assign(form, values)
+  if (defaultKeepalive && !form.keepalive.trim()) form.keepalive = '25'
+  applyLocalDefaults(false)
+  clearPreview()
+}
+
+function activatePeerForm(adding: boolean, editingIndex: number | null, originalPublicKey = '', expandedIndex: number | null = null) {
+  addingPeer.value = adding
+  editingPeerIndex.value = editingIndex
+  editingOriginalPublicKey.value = originalPublicKey
+  expandedPeerIndex.value = expandedIndex
+  pickerOpen.value = false
+  mode.value = 'form'
 }
 
 function fileLabel(file?: ApiPeerConfigFile) {
@@ -170,24 +191,18 @@ function applyLocalDefaults(force = false) {
 }
 
 function fillFromManagedAgent(agent: Agent, iface = primaryInterface(agent)) {
-  form.source = 'managed'
-  form.remoteNodeId = agent.id
-  form.remoteName = agent.name
-  form.remoteInterface = iface?.name || 'wg0'
-  form.remotePublicKey = iface?.publicKey || agent.publicKey || ''
-  form.remoteAllowedIPs = interfaceTunnelPrefix(iface, agent.address)
   const endpoint = endpointDefaults(agent, iface)
-  form.remoteEndpointHost = endpoint.host
-  form.remoteEndpointPort = endpoint.port
-  if (!form.keepalive.trim()) form.keepalive = '25'
-  applyLocalDefaults(false)
-  addingPeer.value = true
-  editingPeerIndex.value = null
-  editingOriginalPublicKey.value = ''
-  expandedPeerIndex.value = null
-  pickerOpen.value = false
-  mode.value = 'form'
-  clearPreview()
+  resetPeerForm({
+    source: 'managed',
+    remoteNodeId: agent.id,
+    remoteName: agent.name,
+    remoteInterface: iface?.name || 'wg0',
+    remotePublicKey: iface?.publicKey || agent.publicKey || '',
+    remoteAllowedIPs: interfaceTunnelPrefix(iface, agent.address),
+    remoteEndpointHost: endpoint.host,
+    remoteEndpointPort: endpoint.port,
+  })
+  activatePeerForm(true, null)
 }
 
 function fillRemoteInterface(name: string) {
@@ -198,52 +213,42 @@ function fillRemoteInterface(name: string) {
 }
 
 function startManualPeer() {
-  form.source = 'manual'
-  form.remoteNodeId = ''
-  form.remoteName = ''
-  form.remoteInterface = 'wg0'
-  form.remotePublicKey = ''
-  form.remoteAllowedIPs = ''
-  form.remoteEndpointHost = ''
-  form.remoteEndpointPort = ''
-  form.presharedKey = ''
-  if (!form.keepalive.trim()) form.keepalive = '25'
-  applyLocalDefaults(false)
+  resetPeerForm({
+    source: 'manual',
+    remoteNodeId: '',
+    remoteName: '',
+    remoteInterface: 'wg0',
+    remotePublicKey: '',
+    remoteAllowedIPs: '',
+    remoteEndpointHost: '',
+    remoteEndpointPort: '',
+    presharedKey: '',
+  })
   pickerOpen.value = false
   mode.value = 'form'
-  clearPreview()
 }
 
 function startNewPeerForm() {
   startManualPeer()
-  addingPeer.value = true
-  editingPeerIndex.value = null
-  editingOriginalPublicKey.value = ''
-  expandedPeerIndex.value = null
-  pickerOpen.value = false
+  activatePeerForm(true, null)
 }
 
 function loadPeerIntoForm(index: number) {
   const peer = peerRows.value[index]
   if (!peer) return
-  form.source = 'manual'
-  form.remoteNodeId = ''
-  form.remoteName = peer.label
-  form.remoteInterface = 'wg0'
-  form.remotePublicKey = peer.publicKey
-  form.remoteAllowedIPs = peer.allowedIPs
-  form.remoteEndpointHost = peer.endpointHost
-  form.remoteEndpointPort = peer.endpointPort
-  form.presharedKey = peer.presharedKey
-  form.keepalive = peer.keepalive || ''
-  applyLocalDefaults(false)
-  addingPeer.value = false
-  editingPeerIndex.value = index
-  editingOriginalPublicKey.value = peer.publicKey
-  expandedPeerIndex.value = index
-  pickerOpen.value = false
-  mode.value = 'form'
-  clearPreview()
+  resetPeerForm({
+    source: 'manual',
+    remoteNodeId: '',
+    remoteName: peer.label,
+    remoteInterface: 'wg0',
+    remotePublicKey: peer.publicKey,
+    remoteAllowedIPs: peer.allowedIPs,
+    remoteEndpointHost: peer.endpointHost,
+    remoteEndpointPort: peer.endpointPort,
+    presharedKey: peer.presharedKey,
+    keepalive: peer.keepalive || '',
+  }, false)
+  activatePeerForm(false, index, peer.publicKey, index)
 }
 
 function togglePeer(index: number) {
@@ -331,18 +336,7 @@ async function saveManual() {
     error.value = '请选择或填写接口名'
     return
   }
-  saving.value = true
-  error.value = ''
-  try {
-    const result = await api.updateNodePeerConfig(props.agent.id, { interface: selectedInterface.value.trim(), content: draft.value })
-    mesh.notice = result.message || (result.offline ? 'Peer 配置已保存，客户端上线后下发' : 'Peer 配置已保存并下发')
-    await mesh.refresh()
-    emit('close')
-  } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '保存 Peer 配置失败'
-  } finally {
-    saving.value = false
-  }
+  await savePeerConfig(selectedInterface.value.trim(), draft.value, (result) => result.message || (result.offline ? 'Peer 配置已保存，客户端上线后下发' : 'Peer 配置已保存并下发'), '保存 Peer 配置失败')
 }
 
 async function saveGenerated() {
@@ -350,15 +344,19 @@ async function saveGenerated() {
     await generatePreview()
     return
   }
+  await savePeerConfig(preview.localInterface, preview.localContent, (result) => (result.message || 'Peer 配置已保存并下发') + '；对端配置已生成，可复制后粘贴到对端', '保存生成的 Peer 配置失败')
+}
+
+async function savePeerConfig(interfaceName: string, content: string, successMessage: (result: PeerConfigSaveResult) => string, fallbackError: string) {
   saving.value = true
   error.value = ''
   try {
-    const result = await api.updateNodePeerConfig(props.agent.id, { interface: preview.localInterface, content: preview.localContent })
-    mesh.notice = (result.message || 'Peer 配置已保存并下发') + '；对端配置已生成，可复制后粘贴到对端'
+    const result = await api.updateNodePeerConfig(props.agent.id, { interface: interfaceName, content })
+    mesh.notice = successMessage(result)
     await mesh.refresh()
     emit('close')
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '保存生成的 Peer 配置失败'
+    error.value = reason instanceof Error ? reason.message : fallbackError
   } finally {
     saving.value = false
   }

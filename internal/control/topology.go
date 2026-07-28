@@ -44,6 +44,7 @@ func CompileTopology(network Network, nodes []Node, relations []PeerRelation, bo
 		node = normalizeNodeDefaults(node)
 		configs[node.ID] = NodeConfig{NodeID: node.ID, NetworkID: network.ID, Address: node.Address, PrivateKey: string(privateKey), ListenPort: node.ListenPort, MTU: node.MTU}
 	}
+	relationSet := topologyRelationSet(network, relations)
 	linked := func(a, b Node) bool {
 		switch network.Topology {
 		case TopologyFullMesh:
@@ -51,11 +52,7 @@ func CompileTopology(network Network, nodes []Node, relations []PeerRelation, bo
 		case TopologyHubSpoke:
 			return a.Labels["wiremesh.role"] == "hub" || b.Labels["wiremesh.role"] == "hub"
 		case TopologyCustom:
-			for _, relation := range relations {
-				if (relation.SourceNodeID == a.ID && relation.TargetNodeID == b.ID) || (relation.SourceNodeID == b.ID && relation.TargetNodeID == a.ID) {
-					return true
-				}
-			}
+			return relationSet[[2]string{a.ID, b.ID}]
 		}
 		return false
 	}
@@ -70,4 +67,16 @@ func CompileTopology(network Network, nodes []Node, relations []PeerRelation, bo
 		configs[node.ID] = config
 	}
 	return configs, nil
+}
+
+func topologyRelationSet(network Network, relations []PeerRelation) map[[2]string]bool {
+	if network.Topology != TopologyCustom {
+		return nil
+	}
+	out := make(map[[2]string]bool, len(relations)*2)
+	for _, relation := range relations {
+		out[[2]string{relation.SourceNodeID, relation.TargetNodeID}] = true
+		out[[2]string{relation.TargetNodeID, relation.SourceNodeID}] = true
+	}
+	return out
 }

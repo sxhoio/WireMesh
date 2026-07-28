@@ -359,14 +359,7 @@ func (s *MemoryStore) ListCommandsPage(tenant, node string, limit, offset int, e
 		}
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
-	if offset >= len(out) {
-		return []AgentCommand{}
-	}
-	end := offset + limit
-	if end > len(out) {
-		end = len(out)
-	}
-	return out[offset:end]
+	return pageSlice(out, limit, offset)
 }
 
 func (s *MemoryStore) ClearCommands(tenant, node string) error {
@@ -446,14 +439,18 @@ func (s *MemoryStore) ListAuditPage(tenant string, limit, offset int) (out []Aud
 		}
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
-	if offset >= len(out) {
-		return []AuditEvent{}
+	return pageSlice(out, limit, offset)
+}
+
+func pageSlice[T any](items []T, limit, offset int) []T {
+	if offset >= len(items) {
+		return []T{}
 	}
 	end := offset + limit
-	if end > len(out) {
-		end = len(out)
+	if end > len(items) {
+		end = len(items)
 	}
-	return out[offset:end]
+	return items[offset:end]
 }
 
 func (s *MemoryStore) ClearAudit(tenant string) error {

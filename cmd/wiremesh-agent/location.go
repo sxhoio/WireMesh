@@ -103,11 +103,7 @@ func fetchRealPublicIPv4(ctx context.Context, client *http.Client, endpoint stri
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return "", fmt.Errorf("decode public IPv4 response: %w", err)
 		}
-		for _, candidate := range []string{payload.IP, payload.Query, payload.PublicIP} {
-			if text = strings.TrimSpace(candidate); text != "" {
-				break
-			}
-		}
+		text = firstNonEmpty(payload.IP, payload.Query, payload.PublicIP)
 	}
 	address, err := netip.ParseAddr(text)
 	if err != nil || !address.Is4() {
@@ -117,4 +113,14 @@ func fetchRealPublicIPv4(ctx context.Context, client *http.Client, endpoint stri
 		return "", fmt.Errorf("response is not a public IPv4 address: %s", text)
 	}
 	return address.String(), nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

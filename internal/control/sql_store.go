@@ -140,6 +140,23 @@ func (s *SQLStore) query(value string) string {
 	return out.String()
 }
 
+func queryList[T any](store *SQLStore, query string, scan func(scanner) (T, error), args ...any) []T {
+	rows, err := store.db.Query(store.query(query), args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []T
+	for rows.Next() {
+		value, err := scan(rows)
+		if err != nil {
+			return nil
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
 func (s *SQLStore) HasUsers() (bool, error) {
 	var count int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
@@ -210,20 +227,7 @@ func (s *SQLStore) CreateProject(v Project) error {
 	return err
 }
 func (s *SQLStore) ListProjects(tenant string) []Project {
-	rows, err := s.db.Query(s.query(`SELECT id, tenant_id, name, description, created_at FROM projects WHERE tenant_id = ? ORDER BY created_at`), tenant)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []Project
-	for rows.Next() {
-		v, err := scanProject(rows)
-		if err != nil {
-			return nil
-		}
-		out = append(out, v)
-	}
-	return out
+	return queryList(s, `SELECT id, tenant_id, name, description, created_at FROM projects WHERE tenant_id = ? ORDER BY created_at`, scanProject, tenant)
 }
 func (s *SQLStore) GetProject(tenant, id string) (Project, error) {
 	return scanProject(s.db.QueryRow(s.query(`SELECT id, tenant_id, name, description, created_at FROM projects WHERE tenant_id = ? AND id = ?`), tenant, id))
@@ -234,20 +238,7 @@ func (s *SQLStore) CreateNetwork(v Network) error {
 	return err
 }
 func (s *SQLStore) ListNetworks(tenant, project string) []Network {
-	rows, err := s.db.Query(s.query(`SELECT id, tenant_id, project_id, name, cidr, dns, topology, created_at FROM networks WHERE tenant_id = ? AND project_id = ? ORDER BY created_at`), tenant, project)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []Network
-	for rows.Next() {
-		v, err := scanNetwork(rows)
-		if err != nil {
-			return nil
-		}
-		out = append(out, v)
-	}
-	return out
+	return queryList(s, `SELECT id, tenant_id, project_id, name, cidr, dns, topology, created_at FROM networks WHERE tenant_id = ? AND project_id = ? ORDER BY created_at`, scanNetwork, tenant, project)
 }
 func (s *SQLStore) GetNetwork(tenant, id string) (Network, error) {
 	return scanNetwork(s.db.QueryRow(s.query(`SELECT id, tenant_id, project_id, name, cidr, dns, topology, created_at FROM networks WHERE tenant_id = ? AND id = ?`), tenant, id))
@@ -277,20 +268,7 @@ func (s *SQLStore) ListNodes(tenant, network string) []Node {
 		args = append(args, network)
 	}
 	query += ` ORDER BY created_at`
-	rows, err := s.db.Query(s.query(query), args...)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []Node
-	for rows.Next() {
-		v, err := scanNode(rows)
-		if err != nil {
-			return nil
-		}
-		out = append(out, v)
-	}
-	return out
+	return queryList(s, query, scanNode, args...)
 }
 func (s *SQLStore) UpdateNode(v Node) error {
 	labels, _ := json.Marshal(v.Labels)
@@ -354,21 +332,7 @@ func (s *SQLStore) AddTrafficSamples(samples []TrafficSample) error {
 	return tx.Commit()
 }
 func (s *SQLStore) ListTrafficSamples(tenant, node, iface string, since time.Time) (out []TrafficSample) {
-	rows, err := s.db.Query(s.query(`SELECT id, tenant_id, node_id, interface_name, receive_bytes, transmit_bytes, recorded_at FROM traffic_samples WHERE tenant_id=? AND node_id=? AND interface_name=? AND recorded_at>=? ORDER BY recorded_at`), tenant, node, iface, timeText(since))
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var v TrafficSample
-		var at string
-		if rows.Scan(&v.ID, &v.TenantID, &v.NodeID, &v.InterfaceName, &v.ReceiveBytes, &v.TransmitBytes, &at) != nil {
-			return nil
-		}
-		v.RecordedAt = parseTime(at)
-		out = append(out, v)
-	}
-	return
+	return queryList(s, `SELECT id, tenant_id, node_id, interface_name, receive_bytes, transmit_bytes, recorded_at FROM traffic_samples WHERE tenant_id=? AND node_id=? AND interface_name=? AND recorded_at>=? ORDER BY recorded_at`, scanTrafficSample, tenant, node, iface, timeText(since))
 }
 
 func (s *SQLStore) AddPeer(v PeerRelation) error {
@@ -376,22 +340,7 @@ func (s *SQLStore) AddPeer(v PeerRelation) error {
 	return err
 }
 func (s *SQLStore) ListPeers(tenant, network string) []PeerRelation {
-	rows, err := s.db.Query(s.query(`SELECT id, tenant_id, network_id, source_node_id, target_node_id, created_at FROM peer_relations WHERE tenant_id=? AND network_id=? ORDER BY created_at`), tenant, network)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []PeerRelation
-	for rows.Next() {
-		var v PeerRelation
-		var created string
-		if rows.Scan(&v.ID, &v.TenantID, &v.NetworkID, &v.SourceNodeID, &v.TargetNodeID, &created) != nil {
-			return nil
-		}
-		v.CreatedAt = parseTime(created)
-		out = append(out, v)
-	}
-	return out
+	return queryList(s, `SELECT id, tenant_id, network_id, source_node_id, target_node_id, created_at FROM peer_relations WHERE tenant_id=? AND network_id=? ORDER BY created_at`, scanPeerRelation, tenant, network)
 }
 
 func (s *SQLStore) CreateRevision(v ConfigRevision) error {
@@ -439,22 +388,7 @@ func (s *SQLStore) ListDeliveries(tenant, node string) []ConfigDelivery {
 		args = append(args, node)
 	}
 	query += ` ORDER BY updated_at DESC`
-	rows, err := s.db.Query(s.query(query), args...)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []ConfigDelivery
-	for rows.Next() {
-		var v ConfigDelivery
-		var updated string
-		if rows.Scan(&v.ID, &v.TenantID, &v.NodeID, &v.Version, &v.State, &v.Message, &updated) != nil {
-			return nil
-		}
-		v.UpdatedAt = parseTime(updated)
-		out = append(out, v)
-	}
-	return out
+	return queryList(s, query, scanDelivery, args...)
 }
 
 func (s *SQLStore) CreateCommand(v AgentCommand) error {
@@ -509,20 +443,7 @@ func (s *SQLStore) ListCommands(tenant, node string) []AgentCommand {
 		args = append(args, node)
 	}
 	query += ` ORDER BY created_at DESC`
-	rows, err := s.db.Query(s.query(query), args...)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []AgentCommand
-	for rows.Next() {
-		command, err := scanCommand(rows)
-		if err != nil {
-			return nil
-		}
-		out = append(out, command)
-	}
-	return out
+	return queryList(s, query, scanCommand, args...)
 }
 
 func (s *SQLStore) ListCommandsPage(tenant, node string, limit, offset int, errorsOnly bool) []AgentCommand {
@@ -537,20 +458,7 @@ func (s *SQLStore) ListCommandsPage(tenant, node string, limit, offset int, erro
 	}
 	query += ` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
-	rows, err := s.db.Query(s.query(query), args...)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []AgentCommand
-	for rows.Next() {
-		command, err := scanCommand(rows)
-		if err != nil {
-			return nil
-		}
-		out = append(out, command)
-	}
-	return out
+	return queryList(s, query, scanCommand, args...)
 }
 
 func (s *SQLStore) ClearCommands(tenant, node string) error {
@@ -619,43 +527,11 @@ func (s *SQLStore) AddAudit(v AuditEvent) error {
 	return s.pruneAudit(v.TenantID)
 }
 func (s *SQLStore) ListAudit(tenant string) []AuditEvent {
-	rows, err := s.db.Query(s.query(`SELECT id, tenant_id, actor_id, action, resource_type, resource_id, metadata_json, created_at FROM audit_events WHERE tenant_id=? ORDER BY created_at DESC`), tenant)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []AuditEvent
-	for rows.Next() {
-		var v AuditEvent
-		var metadata, created string
-		if rows.Scan(&v.ID, &v.TenantID, &v.ActorID, &v.Action, &v.ResourceType, &v.ResourceID, &metadata, &created) != nil {
-			return nil
-		}
-		_ = json.Unmarshal([]byte(metadata), &v.Metadata)
-		v.CreatedAt = parseTime(created)
-		out = append(out, v)
-	}
-	return out
+	return queryList(s, `SELECT id, tenant_id, actor_id, action, resource_type, resource_id, metadata_json, created_at FROM audit_events WHERE tenant_id=? ORDER BY created_at DESC`, scanAudit, tenant)
 }
 
 func (s *SQLStore) ListAuditPage(tenant string, limit, offset int) []AuditEvent {
-	rows, err := s.db.Query(s.query(`SELECT id, tenant_id, actor_id, action, resource_type, resource_id, metadata_json, created_at FROM audit_events WHERE tenant_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`), tenant, limit, offset)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []AuditEvent
-	for rows.Next() {
-		var v AuditEvent
-		var metadata, created string
-		if rows.Scan(&v.ID, &v.TenantID, &v.ActorID, &v.Action, &v.ResourceType, &v.ResourceID, &metadata, &created) != nil {
-			return nil
-		}
-		_ = json.Unmarshal([]byte(metadata), &v.Metadata)
-		v.CreatedAt = parseTime(created)
-		out = append(out, v)
-	}
-	return out
+	return queryList(s, `SELECT id, tenant_id, actor_id, action, resource_type, resource_id, metadata_json, created_at FROM audit_events WHERE tenant_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, scanAudit, tenant, limit, offset)
 }
 
 func (s *SQLStore) ClearAudit(tenant string) error {
@@ -703,20 +579,7 @@ func (s *SQLStore) pruneTableKeepingNewest(table, tenant, node string, keep int)
 }
 
 func (s *SQLStore) ListUsers(tenant string) []User {
-	rows, err := s.db.Query(s.query(`SELECT id, tenant_id, email, password_hash, name, role, last_login_at, created_at FROM users WHERE tenant_id = ? ORDER BY created_at`), tenant)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []User
-	for rows.Next() {
-		v, err := scanUser(rows)
-		if err != nil {
-			return nil
-		}
-		out = append(out, v)
-	}
-	return out
+	return queryList(s, `SELECT id, tenant_id, email, password_hash, name, role, last_login_at, created_at FROM users WHERE tenant_id = ? ORDER BY created_at`, scanUser, tenant)
 }
 func (s *SQLStore) ensureNodeWireGuardColumn(ctx context.Context) error {
 	return s.ensureSchemaColumn(
@@ -772,20 +635,7 @@ func (s *SQLStore) UpsertSettings(v SystemSettings) error {
 	return err
 }
 func (s *SQLStore) ListNotificationChannels(tenant string) []NotificationChannel {
-	rows, err := s.db.Query(s.query(`SELECT id, tenant_id, name, type, target_json, enabled, all_agents, agent_ids_json, created_at, updated_at FROM notification_channels WHERE tenant_id = ? ORDER BY created_at`), tenant)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []NotificationChannel
-	for rows.Next() {
-		v, err := scanNotificationChannel(rows)
-		if err != nil {
-			return nil
-		}
-		out = append(out, v)
-	}
-	return out
+	return queryList(s, `SELECT id, tenant_id, name, type, target_json, enabled, all_agents, agent_ids_json, created_at, updated_at FROM notification_channels WHERE tenant_id = ? ORDER BY created_at`, scanNotificationChannel, tenant)
 }
 func (s *SQLStore) GetNotificationChannel(tenant, id string) (NotificationChannel, error) {
 	return scanNotificationChannel(s.db.QueryRow(s.query(`SELECT id, tenant_id, name, type, target_json, enabled, all_agents, agent_ids_json, created_at, updated_at FROM notification_channels WHERE tenant_id = ? AND id = ?`), tenant, id))
@@ -809,23 +659,60 @@ func (s *SQLStore) AddNotificationLog(v NotificationLog) error {
 	return err
 }
 func (s *SQLStore) ListNotificationLogs(tenant string) []NotificationLog {
-	rows, err := s.db.Query(s.query(`SELECT id, tenant_id, channel_id, channel_name, channel_type, agent_name, message, status, created_at FROM notification_logs WHERE tenant_id=? ORDER BY created_at DESC`), tenant)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []NotificationLog
-	for rows.Next() {
-		var v NotificationLog
-		var created string
-		if rows.Scan(&v.ID, &v.TenantID, &v.ChannelID, &v.ChannelName, &v.ChannelType, &v.AgentName, &v.Message, &v.Status, &created) != nil {
-			return nil
-		}
-		v.CreatedAt = parseTime(created)
-		out = append(out, v)
-	}
-	return out
+	return queryList(s, `SELECT id, tenant_id, channel_id, channel_name, channel_type, agent_name, message, status, created_at FROM notification_logs WHERE tenant_id=? ORDER BY created_at DESC`, scanNotificationLog, tenant)
 }
+
+func scanTrafficSample(row scanner) (TrafficSample, error) {
+	var v TrafficSample
+	var at string
+	if err := row.Scan(&v.ID, &v.TenantID, &v.NodeID, &v.InterfaceName, &v.ReceiveBytes, &v.TransmitBytes, &at); err != nil {
+		return TrafficSample{}, err
+	}
+	v.RecordedAt = parseTime(at)
+	return v, nil
+}
+
+func scanPeerRelation(row scanner) (PeerRelation, error) {
+	var v PeerRelation
+	var created string
+	if err := row.Scan(&v.ID, &v.TenantID, &v.NetworkID, &v.SourceNodeID, &v.TargetNodeID, &created); err != nil {
+		return PeerRelation{}, err
+	}
+	v.CreatedAt = parseTime(created)
+	return v, nil
+}
+
+func scanDelivery(row scanner) (ConfigDelivery, error) {
+	var v ConfigDelivery
+	var updated string
+	if err := row.Scan(&v.ID, &v.TenantID, &v.NodeID, &v.Version, &v.State, &v.Message, &updated); err != nil {
+		return ConfigDelivery{}, err
+	}
+	v.UpdatedAt = parseTime(updated)
+	return v, nil
+}
+
+func scanAudit(row scanner) (AuditEvent, error) {
+	var v AuditEvent
+	var metadata, created string
+	if err := row.Scan(&v.ID, &v.TenantID, &v.ActorID, &v.Action, &v.ResourceType, &v.ResourceID, &metadata, &created); err != nil {
+		return AuditEvent{}, err
+	}
+	_ = json.Unmarshal([]byte(metadata), &v.Metadata)
+	v.CreatedAt = parseTime(created)
+	return v, nil
+}
+
+func scanNotificationLog(row scanner) (NotificationLog, error) {
+	var v NotificationLog
+	var created string
+	if err := row.Scan(&v.ID, &v.TenantID, &v.ChannelID, &v.ChannelName, &v.ChannelType, &v.AgentName, &v.Message, &v.Status, &created); err != nil {
+		return NotificationLog{}, err
+	}
+	v.CreatedAt = parseTime(created)
+	return v, nil
+}
+
 func scanNotificationChannel(row scanner) (NotificationChannel, error) {
 	var v NotificationChannel
 	var target, agents, created, updated string

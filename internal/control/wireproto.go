@@ -31,9 +31,6 @@ func wireGuardStatusFromWire(interfaces []wireproto.WireGuardInterfaceStatus) []
 			Peers:      peers,
 		})
 	}
-	if out == nil {
-		return []WireGuardInterfaceStatus{}
-	}
 	return out
 }
 
@@ -46,9 +43,6 @@ func peerConfigFilesFromWire(files []wireproto.PeerConfigFile) []PeerConfigFile 
 			Content:   file.Content,
 			UpdatedAt: parseWireTime(file.UpdatedAt),
 		})
-	}
-	if out == nil {
-		return []PeerConfigFile{}
 	}
 	return out
 }
@@ -63,9 +57,6 @@ func peerConfigFilesToWire(files []PeerConfigFile) []wireproto.PeerConfigFile {
 			UpdatedAt: formatWireTime(file.UpdatedAt),
 		})
 	}
-	if out == nil {
-		return []wireproto.PeerConfigFile{}
-	}
 	return out
 }
 
@@ -77,9 +68,6 @@ func agentCommandsToWire(commands []AgentCommand) []wireproto.AgentCommand {
 			Type:  command.Type,
 			State: command.State,
 		})
-	}
-	if out == nil {
-		return []wireproto.AgentCommand{}
 	}
 	return out
 }

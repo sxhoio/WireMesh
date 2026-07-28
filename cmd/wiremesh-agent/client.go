@@ -192,50 +192,51 @@ func (client agentClient) PostConfigStatus(ctx context.Context, version uint64, 
 }
 
 func (client agentClient) PollConfig(ctx context.Context) (configResponse, bool, error) {
-	response, err := client.newRequest(ctx, http.MethodGet, "/agent/v1/config", nil)
+	payload, found, err := pollOptionalJSON[configResponse](ctx, client, "/agent/v1/config", http.StatusNotFound, http.StatusLocked)
 	if err != nil {
 		return configResponse{}, false, err
 	}
-	reply, err := client.httpClient.Do(response)
-	if err != nil {
-		return configResponse{}, false, err
-	}
-	defer reply.Body.Close()
-	if reply.StatusCode == http.StatusNotFound || reply.StatusCode == http.StatusLocked {
+	if !found {
 		return configResponse{}, false, nil
-	}
-	if reply.StatusCode != http.StatusOK {
-		return configResponse{}, false, responseError(reply)
-	}
-	var payload configResponse
-	if err := json.NewDecoder(reply.Body).Decode(&payload); err != nil {
-		return configResponse{}, false, err
 	}
 	return payload, true, nil
 }
 
 func (client agentClient) PollPeerConfig(ctx context.Context) (peerConfigResponse, bool, error) {
-	response, err := client.newRequest(ctx, http.MethodGet, "/agent/v1/peer-config", nil)
+	payload, found, err := pollOptionalJSON[peerConfigResponse](ctx, client, "/agent/v1/peer-config", http.StatusNotFound)
 	if err != nil {
 		return peerConfigResponse{}, false, err
 	}
-	reply, err := client.httpClient.Do(response)
-	if err != nil {
-		return peerConfigResponse{}, false, err
-	}
-	defer reply.Body.Close()
-	if reply.StatusCode == http.StatusNotFound {
+	if !found {
 		return peerConfigResponse{}, false, nil
-	}
-	if reply.StatusCode != http.StatusOK {
-		return peerConfigResponse{}, false, responseError(reply)
-	}
-	var payload peerConfigResponse
-	if err := json.NewDecoder(reply.Body).Decode(&payload); err != nil {
-		return peerConfigResponse{}, false, err
 	}
 	if payload.Files == nil {
 		payload.Files = []peerConfigFile{}
+	}
+	return payload, true, nil
+}
+
+func pollOptionalJSON[T any](ctx context.Context, client agentClient, path string, absentStatuses ...int) (T, bool, error) {
+	var payload T
+	request, err := client.newRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return payload, false, err
+	}
+	reply, err := client.httpClient.Do(request)
+	if err != nil {
+		return payload, false, err
+	}
+	defer reply.Body.Close()
+	for _, status := range absentStatuses {
+		if reply.StatusCode == status {
+			return payload, false, nil
+		}
+	}
+	if reply.StatusCode != http.StatusOK {
+		return payload, false, responseError(reply)
+	}
+	if err := json.NewDecoder(reply.Body).Decode(&payload); err != nil {
+		return payload, false, err
 	}
 	return payload, true, nil
 }

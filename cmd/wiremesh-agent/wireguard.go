@@ -109,17 +109,17 @@ func parseWireGuardDump(value, selector string) ([]wireGuardInterfaceStatus, err
 			iface = &wireGuardInterfaceStatus{Name: name, Addresses: []string{}, Peers: []wireGuardPeerStatus{}}
 			byName[name] = iface
 		}
-		handshake, parseErr := strconv.ParseInt(fields[5], 10, 64)
+		handshake, parseErr := parseDumpInt(fields[5], "handshake timestamp", name)
 		if parseErr != nil {
-			return nil, fmt.Errorf("invalid handshake timestamp for %s", name)
+			return nil, parseErr
 		}
-		receiveBytes, parseErr := strconv.ParseInt(fields[6], 10, 64)
+		receiveBytes, parseErr := parseDumpInt(fields[6], "receive counter", name)
 		if parseErr != nil {
-			return nil, fmt.Errorf("invalid receive counter for %s", name)
+			return nil, parseErr
 		}
-		transmitBytes, parseErr := strconv.ParseInt(fields[7], 10, 64)
+		transmitBytes, parseErr := parseDumpInt(fields[7], "transmit counter", name)
 		if parseErr != nil {
-			return nil, fmt.Errorf("invalid transmit counter for %s", name)
+			return nil, parseErr
 		}
 		keepalive, parseErr := parsePersistentKeepalive(fields[8])
 		if parseErr != nil {
@@ -148,6 +148,14 @@ func parseWireGuardDump(value, selector string) ([]wireGuardInterfaceStatus, err
 		result = append(result, *byName[name])
 	}
 	return result, nil
+}
+
+func parseDumpInt(value, field, name string) (int64, error) {
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s for %s", field, name)
+	}
+	return parsed, nil
 }
 
 func parsePersistentKeepalive(value string) (int, error) {

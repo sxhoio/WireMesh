@@ -195,14 +195,13 @@ func main() {
 		refreshLocation()
 		heartbeat := baseHeartbeat
 		heartbeat.WireGuard, heartbeat.CollectionError = collectWireGuard(ctx, *interfaces, manager.runner)
-		if peerConfigs, peerConfigWarning := collectPeerConfigFiles(*interfaces, manager.configDir, heartbeat.WireGuard); peerConfigWarning != "" {
+		peerConfigs, peerConfigWarning := collectPeerConfigFiles(*interfaces, manager.configDir, heartbeat.WireGuard)
+		heartbeat.PeerConfigs = peerConfigs
+		if peerConfigWarning != "" {
 			if heartbeat.CollectionError != "" {
 				heartbeat.CollectionError += "; "
 			}
 			heartbeat.CollectionError += peerConfigWarning
-			heartbeat.PeerConfigs = peerConfigs
-		} else {
-			heartbeat.PeerConfigs = peerConfigs
 		}
 		if heartbeat.CollectionError != lastCollectionError {
 			if heartbeat.CollectionError != "" {

@@ -90,21 +90,13 @@ func peerConfigInterfaceNames(selector, configDir string, observed []wireGuardIn
 }
 
 func extractPeerConfigSections(content string) string {
-	content = strings.ReplaceAll(content, "\r\n", "\n")
-	content = strings.ReplaceAll(content, "\r", "\n")
-	scanner := bufio.NewScanner(strings.NewReader(content))
 	lines := []string{}
-	inPeer := false
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			inPeer = strings.EqualFold(trimmed, "[Peer]")
-		}
-		if inPeer {
+	_ = scanWireGuardSections(content, func(line, section string, _ bool) error {
+		if strings.EqualFold(section, "Peer") {
 			lines = append(lines, line)
 		}
-	}
+		return nil
+	})
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
@@ -204,30 +196,25 @@ func (manager wireGuardManager) replaceAndRestart(parent context.Context, interf
 }
 
 func replacePeerConfigSections(fullConfig, peerContent string) ([]byte, error) {
-	fullConfig = strings.ReplaceAll(fullConfig, "\r\n", "\n")
-	fullConfig = strings.ReplaceAll(fullConfig, "\r", "\n")
 	if !strings.Contains(strings.ToLower(fullConfig), "[interface]") {
 		return nil, errors.New("existing WireGuard configuration is missing [Interface]")
 	}
-	scanner := bufio.NewScanner(strings.NewReader(fullConfig))
 	prefix := []string{}
 	inPeer := false
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			if strings.EqualFold(trimmed, "[Peer]") {
+	if err := scanWireGuardSections(fullConfig, func(line, section string, sectionHeader bool) error {
+		if sectionHeader {
+			if strings.EqualFold(section, "Peer") {
 				inPeer = true
 			} else if inPeer {
-				return nil, fmt.Errorf("unsupported section %s after [Peer]", trimmed)
+				return fmt.Errorf("unsupported section %s after [Peer]", strings.TrimSpace(line))
 			}
 		}
 		if inPeer {
-			continue
+			return nil
 		}
 		prefix = append(prefix, line)
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	base := strings.TrimRight(strings.Join(prefix, "\n"), "\n")
@@ -236,4 +223,26 @@ func replacePeerConfigSections(fullConfig, peerContent string) ([]byte, error) {
 		return []byte(base + "\n"), nil
 	}
 	return []byte(base + "\n\n" + peerContent + "\n"), nil
+}
+
+func scanWireGuardSections(content string, visit func(line, section string, sectionHeader bool) error) error {
+	scanner := bufio.NewScanner(strings.NewReader(normalizeLineEndings(content)))
+	section := ""
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		sectionHeader := strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")
+		if sectionHeader {
+			section = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]"))
+		}
+		if err := visit(line, section, sectionHeader); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
+}
+
+func normalizeLineEndings(content string) string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	return strings.ReplaceAll(content, "\r", "\n")
 }
