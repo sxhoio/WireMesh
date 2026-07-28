@@ -42,7 +42,6 @@ const draft = ref('')
 const mode = ref<EditMode>(props.initialMode)
 
 const pickerOpen = ref(false)
-const pickerTab = ref<PeerSource>('managed')
 const peerSearch = ref('')
 const expandedPeerIndex = ref<number | null>(null)
 const editingPeerIndex = ref<number | null>(null)
@@ -84,7 +83,6 @@ type PeerConfigSaveResult = Awaited<ReturnType<typeof api.updateNodePeerConfig>>
 const currentFile = computed(() => files.value.find((file) => file.interface === selectedInterface.value))
 const currentLocalInterface = computed(() => props.agent.interfaces.find((iface) => iface.name === selectedInterface.value) || props.agent.interfaces[0])
 const remoteAgent = computed(() => mesh.agents.find((agent) => agent.id === form.remoteNodeId))
-const remoteInterfaces = computed(() => remoteAgent.value?.interfaces || [])
 const previewReady = computed(() => preview.localContent.trim() !== '')
 const localPublicKey = computed(() => currentLocalInterface.value?.publicKey || props.agent.publicKey || '')
 const peerRows = computed(() => splitPeerBlocks(draft.value).map((block, index) => ({ ...parsePeerBlock(block), index, raw: block })))
@@ -146,6 +144,14 @@ function activatePeerForm(adding: boolean, editingIndex: number | null, original
   mode.value = 'form'
 }
 
+function closePeerForm() {
+  addingPeer.value = false
+  editingPeerIndex.value = null
+  editingOriginalPublicKey.value = ''
+  pickerOpen.value = false
+  clearPreview()
+}
+
 function fileLabel(file?: ApiPeerConfigFile) {
   if (!file) return '未上传配置快照'
   const stamp = file.updated_at ? new Date(file.updated_at).toLocaleString('zh-CN') : '未知时间'
@@ -205,13 +211,6 @@ function fillFromManagedAgent(agent: Agent, iface = primaryInterface(agent)) {
   activatePeerForm(true, null)
 }
 
-function fillRemoteInterface(name: string) {
-  const agent = remoteAgent.value
-  if (!agent) return
-  const iface = agent.interfaces.find((item) => item.name === name) || primaryInterface(agent)
-  fillFromManagedAgent(agent, iface)
-}
-
 function startManualPeer() {
   resetPeerForm({
     source: 'manual',
@@ -254,12 +253,9 @@ function loadPeerIntoForm(index: number) {
 function togglePeer(index: number) {
   if (expandedPeerIndex.value === index) {
     expandedPeerIndex.value = null
-    editingPeerIndex.value = null
-    editingOriginalPublicKey.value = ''
-    clearPreview()
     return
   }
-  loadPeerIntoForm(index)
+  expandedPeerIndex.value = index
 }
 
 function generatePresharedKey() {
@@ -303,6 +299,7 @@ function validateForm() {
 async function generatePreview() {
   error.value = ''
   clearPreview()
+  applyLocalDefaults(true)
   const validation = validateForm()
   if (validation) {
     error.value = validation
@@ -396,7 +393,7 @@ onMounted(load)
     <template #header>
         <div>
           <h3 class="text-base font-semibold text-white">{{ agent.name }} · 编辑 Peer</h3>
-          <p class="mt-1 text-xs text-slate-500">手动模式保留原始文本编辑；表单模式可从已有节点自动填充并生成两端 Peer 配置。</p>
+          <p class="mt-1 text-xs text-slate-500">手动模式保留原始文本编辑；表单模式用单窗填写对端信息并生成两端 Peer 配置。</p>
         </div>
     </template>
 
@@ -476,7 +473,7 @@ onMounted(load)
                 <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <h4 class="text-sm font-semibold text-white">已有 Peer</h4>
-                    <p class="mt-1 text-xs text-slate-500">点击 Peer 可以展开查看，并把该 Peer 载入下方配置窗口修改。</p>
+                    <p class="mt-1 text-xs text-slate-500">点击 Peer 展开查看详情；需要修改时再进入编辑。</p>
                   </div>
                   <button class="btn-secondary !py-1.5 text-xs" @click="startNewPeerForm">添加新 Peer</button>
                 </div>
@@ -488,7 +485,7 @@ onMounted(load)
                         <span class="block truncate font-mono text-[11px] text-slate-500">{{ peer.label }}</span>
                       </span>
                       <span class="flex shrink-0 items-center gap-2 text-[11px] text-slate-500">
-                        {{ expandedPeerIndex === peer.index ? '收起' : '展开配置' }}
+                        {{ expandedPeerIndex === peer.index ? '收起' : '查看详情' }}
                         <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4 transition-transform" :class="{ 'rotate-90': expandedPeerIndex === peer.index }" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" /></svg>
                       </span>
                     </button>
@@ -499,107 +496,70 @@ onMounted(load)
                         <p class="truncate text-slate-500">Endpoint <span class="ml-1 font-mono text-slate-300">{{ peer.endpoint || '未填写' }}</span></p>
                         <p class="truncate text-slate-500">KeepAlive <span class="ml-1 font-mono text-slate-300">{{ peer.keepalive || '未填写' }}</span></p>
                       </div>
-                      <p class="mt-2 text-[11px] text-cyan-300">已载入下方“{{ peerFormTitle }}”窗口，可直接修改后生成预览并保存。</p>
+                      <div class="mt-3 flex justify-end">
+                        <button class="rounded-md px-2 py-1 text-[11px] text-cyan-300 transition hover:bg-cyan-500/10" @click="loadPeerIntoForm(peer.index)">编辑此 Peer</button>
+                      </div>
                     </div>
                   </div>
                   <p v-if="!peerRows.length" class="rounded-xl border border-dashed border-ink-700 px-3 py-6 text-center text-xs text-slate-500">当前接口还没有 Peer，点击“添加新 Peer”开始配置。</p>
                 </div>
               </section>
 
-              <div v-if="pickerOpen" class="rounded-2xl border border-ink-700 bg-ink-900/80 p-4 shadow-2xl">
-                <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p class="text-sm font-semibold text-white">添加新 Peer</p>
-                    <p class="mt-1 text-xs text-slate-500">优先从已有节点选择，系统会自动带出公钥、隧道 IP 和 Endpoint。</p>
+              <div
+                v-if="peerFormVisible"
+                class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 py-6 backdrop-blur-sm"
+                @click.self="closePeerForm"
+              >
+                <section class="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-ink-700 bg-ink-950 shadow-2xl">
+                  <div class="flex items-start justify-between gap-4 border-b border-ink-700 px-5 py-4">
+                    <div>
+                      <h4 class="text-sm font-semibold text-white">{{ peerFormTitle }}</h4>
+                      <p class="mt-1 text-xs text-slate-500">填写写入本端的对端 Peer 信息，生成后会同时给出可复制到对端的 Peer 配置。</p>
+                    </div>
+                    <button class="rounded-lg px-2 py-1 text-slate-500 transition hover:bg-ink-800 hover:text-white" @click="closePeerForm">✕</button>
                   </div>
-                  <button class="text-slate-500 hover:text-white" @click="pickerOpen = false">✕</button>
-                </div>
-                <div class="mb-3 flex rounded-xl bg-ink-950 p-1 ring-1 ring-ink-700">
-                  <button class="flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition" :class="pickerTab === 'managed' ? 'bg-cyan-500/15 text-cyan-300' : 'text-slate-500 hover:text-slate-300'" @click="pickerTab = 'managed'">从已有节点选择</button>
-                  <button class="flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition" :class="pickerTab === 'manual' ? 'bg-cyan-500/15 text-cyan-300' : 'text-slate-500 hover:text-slate-300'" @click="pickerTab = 'manual'">手动填写</button>
-                </div>
-                <template v-if="pickerTab === 'managed'">
-                  <input v-model="peerSearch" class="input mb-3 w-full" placeholder="搜索节点名称 / 主机名 / IP / 公钥…" />
-                  <div class="max-h-56 space-y-2 overflow-auto pr-1">
-                    <button
-                      v-for="candidate in managedPeerCandidates"
-                      :key="candidate.id"
-                      class="flex w-full items-center justify-between gap-3 rounded-xl border border-ink-700 bg-ink-950/70 px-3 py-2 text-left transition hover:border-cyan-500/40 hover:bg-cyan-500/5"
-                      @click="fillFromManagedAgent(candidate)"
-                    >
-                      <span class="min-w-0">
-                        <span class="block truncate text-sm font-medium text-slate-200">{{ candidate.name }}</span>
-                        <span class="block truncate text-[11px] text-slate-500">{{ candidate.hostname }} · {{ primaryInterface(candidate)?.name || 'wg0' }} · {{ primaryInterface(candidate)?.tunnelIP || candidate.address }}</span>
-                      </span>
-                      <span class="shrink-0 rounded-full px-2 py-0.5 text-[10px]" :class="candidate.status === 'online' ? 'bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30' : 'bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/30'">{{ candidate.status === 'online' ? '在线' : '离线' }}</span>
-                    </button>
-                    <p v-if="!managedPeerCandidates.length" class="py-6 text-center text-xs text-slate-500">当前网络没有可选节点</p>
-                  </div>
-                </template>
-                <template v-else>
-                  <p class="mb-3 text-xs text-slate-500">适用于不在 WireMesh 管理范围内的对端，只会保存并下发本端配置。</p>
-                  <button class="btn-primary" @click="startNewPeerForm">进入手动表单</button>
-                </template>
-              </div>
 
-              <div v-if="peerFormVisible" class="grid gap-4 xl:grid-cols-2">
-                <section class="rounded-2xl border border-ink-700 bg-ink-900/70 p-4">
-                  <div class="mb-3 flex items-center justify-between gap-2">
-                    <h4 class="text-sm font-semibold text-white">{{ peerFormTitle }} · 对端信息（写入本端）</h4>
-                    <div class="flex items-center gap-2">
-                      <button class="rounded-md px-2 py-1 text-[11px] text-cyan-300 transition hover:bg-cyan-500/10" @click="pickerOpen = true">从已有节点填充</button>
+                  <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
                       <span class="chip bg-cyan-500/10 text-cyan-300 ring-1 ring-cyan-500/30">{{ form.source === 'managed' ? '已有节点' : '手动 Peer' }}</span>
+                      <button class="rounded-md px-2 py-1 text-[11px] text-cyan-300 transition hover:bg-cyan-500/10" @click="pickerOpen = !pickerOpen">从已有节点填充</button>
                     </div>
-                  </div>
-                  <p class="mb-3 rounded-xl bg-ink-950/70 px-3 py-2 text-[11px] leading-relaxed text-slate-500 ring-1 ring-ink-700">
-                    WireGuard [Peer] 完整字段：<span class="text-slate-300">PublicKey、AllowedIPs</span> 为必填；<span class="text-slate-300">Endpoint、PresharedKey、PersistentKeepalive</span> 为选填。只填写必填项即可生成可启动的最小 Peer 配置。
-                  </p>
-                  <div class="grid gap-3 sm:grid-cols-2">
-                    <label class="sm:col-span-2">
-                      <span class="label">对端节点标识</span>
-                      <input v-model="form.remoteName" class="input" placeholder="例如 TXY-GZ-OUT" />
-                    </label>
-                    <label v-if="form.source === 'managed'">
-                      <span class="label">对端接口</span>
-                      <select v-model="form.remoteInterface" class="input" @change="fillRemoteInterface(form.remoteInterface)">
-                        <option v-for="iface in remoteInterfaces" :key="iface.id" :value="iface.name">{{ iface.name }} · {{ iface.tunnelIP || '无隧道 IP' }}</option>
-                        <option v-if="!remoteInterfaces.length" value="wg0">wg0</option>
-                      </select>
-                    </label>
-                  </div>
 
-                  <div class="mt-4 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-3">
-                    <div class="mb-3 flex items-center gap-2">
-                      <span class="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300 ring-1 ring-emerald-500/30">必填</span>
-                      <p class="text-xs text-slate-400">最小可启动配置，只需要这两项。</p>
+                    <div v-if="pickerOpen" class="rounded-xl border border-ink-700 bg-ink-900/80 p-3">
+                      <input v-model="peerSearch" class="input mb-3 w-full" placeholder="搜索节点名称 / 主机名 / IP / 公钥…" />
+                      <div class="max-h-52 space-y-2 overflow-auto pr-1">
+                        <button
+                          v-for="candidate in managedPeerCandidates"
+                          :key="candidate.id"
+                          class="flex w-full items-center justify-between gap-3 rounded-xl border border-ink-700 bg-ink-950/70 px-3 py-2 text-left transition hover:border-cyan-500/40 hover:bg-cyan-500/5"
+                          @click="fillFromManagedAgent(candidate)"
+                        >
+                          <span class="min-w-0">
+                            <span class="block truncate text-sm font-medium text-slate-200">{{ candidate.name }}</span>
+                            <span class="block truncate text-[11px] text-slate-500">{{ candidate.hostname }} · {{ primaryInterface(candidate)?.name || 'wg0' }} · {{ primaryInterface(candidate)?.tunnelIP || candidate.address }}</span>
+                          </span>
+                          <span class="shrink-0 rounded-full px-2 py-0.5 text-[10px]" :class="candidate.status === 'online' ? 'bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30' : 'bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/30'">{{ candidate.status === 'online' ? '在线' : '离线' }}</span>
+                        </button>
+                        <p v-if="!managedPeerCandidates.length" class="py-6 text-center text-xs text-slate-500">当前网络没有可选节点</p>
+                      </div>
                     </div>
-                    <div class="grid gap-3">
-                      <label>
-                        <span class="label">PublicKey · 对端公钥 *</span>
-                      <input v-model.trim="form.remotePublicKey" class="input font-mono" placeholder="base64 WireGuard public key" />
-                        <span class="mt-1 block text-[10px] text-slate-600">写入本端配置，用于识别对端 Peer。</span>
-                      </label>
-                      <label>
-                        <span class="label">AllowedIPs · 对端允许 IP *</span>
-                      <input v-model="form.remoteAllowedIPs" class="input font-mono" placeholder="10.88.88.2/32, fd00::2/128" />
-                        <span class="mt-1 block text-[10px] text-slate-600">至少填写对端隧道 IP/32；也可填写对端网段。</span>
-                      </label>
-                    </div>
-                  </div>
 
-                  <div class="mt-4 rounded-2xl border border-ink-700 bg-ink-950/60 p-3">
-                    <div class="mb-3 flex items-center gap-2">
-                      <span class="rounded-full bg-slate-500/10 px-2 py-0.5 text-[10px] font-semibold text-slate-300 ring-1 ring-slate-500/30">选填</span>
-                      <p class="text-xs text-slate-500">不填也能启动；如果填写 Endpoint，则地址和端口需要同时填写。</p>
-                    </div>
                     <div class="grid gap-3 sm:grid-cols-2">
+                      <label class="sm:col-span-2">
+                        <span class="label">PublicKey · 对端公钥 *</span>
+                        <input v-model.trim="form.remotePublicKey" class="input font-mono" placeholder="base64 WireGuard public key" />
+                      </label>
+                      <label class="sm:col-span-2">
+                        <span class="label">AllowedIPs · 对端允许 IP *</span>
+                        <input v-model="form.remoteAllowedIPs" class="input font-mono" placeholder="10.88.88.2/32, fd00::2/128" />
+                      </label>
                       <label>
                         <span class="label">Endpoint 地址</span>
-                      <input v-model.trim="form.remoteEndpointHost" class="input font-mono" placeholder="1.2.3.4 或 example.com" />
+                        <input v-model.trim="form.remoteEndpointHost" class="input font-mono" placeholder="1.2.3.4 或 example.com" />
                       </label>
                       <label>
                         <span class="label">Endpoint 端口</span>
-                      <input v-model="form.remoteEndpointPort" class="input font-mono" placeholder="51820" />
+                        <input v-model="form.remoteEndpointPort" class="input font-mono" placeholder="51820" />
                       </label>
                       <label class="sm:col-span-2">
                         <span class="label">PresharedKey · 预共享密钥</span>
@@ -607,83 +567,39 @@ onMounted(load)
                           <input v-model.trim="form.presharedKey" class="input min-w-0 flex-1 font-mono" placeholder="可手动填写，留空则不生成" />
                           <button class="btn-secondary shrink-0 !py-2 text-xs" type="button" @click="generatePresharedKey">随机生成</button>
                         </div>
-                        <span class="mt-1 block text-[10px] text-slate-600">生成规则等同于 32 字节随机密钥；也可以粘贴已有 PresharedKey。</span>
                       </label>
-                      <label class="sm:col-span-2">
+                      <label>
                         <span class="label">PersistentKeepalive · 保活间隔秒</span>
                         <input v-model="form.keepalive" class="input font-mono" placeholder="25；留空或 0 不生成" />
                       </label>
                     </div>
-                  </div>
-                </section>
 
-                <section class="rounded-2xl border border-ink-700 bg-ink-900/70 p-4">
-                  <div class="mb-3 flex items-center justify-between gap-2">
-                    <h4 class="text-sm font-semibold text-white">本端信息（写入对端）</h4>
-                    <span class="text-[11px] text-slate-500">只生成配置文本，不会自动写入对端</span>
-                  </div>
-                  <p class="mb-3 rounded-xl bg-ink-950/70 px-3 py-2 text-[11px] leading-relaxed text-slate-500 ring-1 ring-ink-700">
-                    这里会生成“对端机器里看到的本端 Peer”。保存时只写入本端；对端配置会在预览区生成，可以复制后粘贴到对端 WireGuard 配置中。
-                  </p>
-                  <div class="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-3">
-                    <div class="mb-3 flex items-center gap-2">
-                      <span class="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300 ring-1 ring-emerald-500/30">必填</span>
-                      <p class="text-xs text-slate-400">用于生成对端 Peer 的最小可启动配置。</p>
-                    </div>
-                    <div class="grid gap-3">
-                      <label>
-                        <span class="label">PublicKey · 本端公钥</span>
-                      <input :value="localPublicKey" disabled class="input font-mono opacity-80" placeholder="等待 Agent 上传" />
-                      </label>
-                      <label>
-                        <span class="label">AllowedIPs · 本端允许 IP</span>
-                      <input v-model="form.localAllowedIPs" class="input font-mono" placeholder="10.88.88.1/32" />
-                      </label>
+                    <div v-if="previewReady" class="grid gap-4 lg:grid-cols-2">
+                      <section class="overflow-hidden rounded-xl border border-cyan-500/30 bg-[#05070a]">
+                        <div class="border-b border-ink-700 px-3 py-2 text-xs text-cyan-300">将写入本端 · {{ agent.name }}/{{ preview.localInterface }}</div>
+                        <pre class="max-h-64 overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-slate-300">{{ preview.localContent }}</pre>
+                      </section>
+                      <section class="overflow-hidden rounded-xl border border-violet-500/30 bg-[#05070a]">
+                        <div class="flex items-center justify-between gap-2 border-b border-ink-700 px-3 py-2 text-xs text-violet-300">
+                          <span>对端可复制配置</span>
+                          <button class="rounded-md px-2 py-1 text-[11px] text-violet-200 transition hover:bg-violet-500/10" @click="copyRemoteConfig">{{ copiedRemoteConfig ? '已复制 ✓' : '复制' }}</button>
+                        </div>
+                        <pre class="max-h-64 overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-slate-300">{{ preview.remoteContent }}</pre>
+                      </section>
                     </div>
                   </div>
-                  <div class="mt-4 rounded-2xl border border-ink-700 bg-ink-950/60 p-3">
-                    <div class="mb-3 flex items-center gap-2">
-                      <span class="rounded-full bg-slate-500/10 px-2 py-0.5 text-[10px] font-semibold text-slate-300 ring-1 ring-slate-500/30">选填</span>
-                      <p class="text-xs text-slate-500">用于让对端主动连接本端；不填则不生成 Endpoint。</p>
-                    </div>
-                    <div class="grid gap-3 sm:grid-cols-2">
-                      <label>
-                        <span class="label">Endpoint 地址</span>
-                      <input v-model.trim="form.localEndpointHost" class="input font-mono" placeholder="可选，用于对端配置" />
-                      </label>
-                      <label>
-                        <span class="label">Endpoint 端口</span>
-                      <input v-model="form.localEndpointPort" class="input font-mono" placeholder="51820" />
-                      </label>
-                    </div>
-                  </div>
-                  <p class="mt-3 text-[11px] leading-relaxed text-slate-500">快捷表单只生成 [Peer] 段。保存后复用现有下发链路，客户端会替换 Peer 段并重启对应 WireGuard 接口。</p>
-                </section>
-              </div>
-              <div v-else class="rounded-2xl border border-dashed border-ink-700 bg-ink-950/50 px-4 py-10 text-center">
-                <p class="text-sm font-medium text-slate-300">请选择一个已有 Peer，或点击“添加新 Peer”。</p>
-                <p class="mt-2 text-xs text-slate-500">下方会打开用于输入配置的窗口；本端配置保存下发，对端配置仅生成文本供复制粘贴。</p>
-              </div>
 
-              <div v-if="peerFormVisible" class="flex flex-wrap items-center justify-between gap-3">
-                <p class="text-xs text-slate-500">
-                  <span v-if="previewReady">{{ preview.localUpdatesExisting ? '本端将更新已有 Peer' : '本端将新增 Peer' }}<span v-if="preview.remoteEnabled">；{{ preview.remoteUpdatesExisting ? '对端将更新已有 Peer' : '对端将新增 Peer' }}</span></span>
-                  <span v-else>请先生成预览，确认两端配置内容后再保存下发。</span>
-                </p>
-                <button class="btn-secondary !py-1.5 text-xs" :disabled="saving" @click="generatePreview">生成预览</button>
-              </div>
-
-              <div v-if="peerFormVisible && previewReady" class="grid gap-4 xl:grid-cols-2">
-                <section class="overflow-hidden rounded-2xl border border-cyan-500/30 bg-ink-950">
-                  <div class="border-b border-ink-700 px-3 py-2 text-xs text-cyan-300">本端 {{ agent.name }}/{{ preview.localInterface }}</div>
-                  <pre class="max-h-72 overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-slate-300">{{ preview.localContent }}</pre>
-                </section>
-                <section v-if="preview.remoteEnabled" class="overflow-hidden rounded-2xl border border-violet-500/30 bg-ink-950">
-                  <div class="flex items-center justify-between gap-2 border-b border-ink-700 px-3 py-2 text-xs text-violet-300">
-                    <span>对端可粘贴配置 · {{ preview.remoteName }}/{{ preview.remoteInterface }}</span>
-                    <button class="rounded-md px-2 py-1 text-[11px] text-violet-200 transition hover:bg-violet-500/10" @click="copyRemoteConfig">{{ copiedRemoteConfig ? '已复制 ✓' : '复制' }}</button>
+                  <div class="flex flex-wrap items-center justify-between gap-3 border-t border-ink-700 px-5 py-4">
+                    <p class="text-xs text-slate-500">
+                      <span v-if="previewReady">{{ preview.localUpdatesExisting ? '本端将更新已有 Peer' : '本端将新增 Peer' }}；对端配置已生成，可复制后粘贴。</span>
+                      <span v-else>填写完成后先生成 Peer，确认配置再保存下发。</span>
+                    </p>
+                    <div class="flex items-center gap-2">
+                      <button class="btn-secondary" @click="closePeerForm">取消</button>
+                      <button class="btn-secondary" :disabled="saving" @click="generatePreview">生成 Peer</button>
+                      <button class="btn-primary" :disabled="saving || !previewReady" @click="saveGenerated">{{ saving ? '保存中…' : '保存并下发' }}</button>
+                    </div>
                   </div>
-                  <pre class="max-h-72 overflow-auto whitespace-pre-wrap p-3 font-mono text-xs leading-5 text-slate-300">{{ preview.remoteContent }}</pre>
                 </section>
               </div>
             </div>
@@ -694,7 +610,6 @@ onMounted(load)
     <template #footer>
         <button class="btn-secondary" @click="emit('close')">取消</button>
         <button v-if="mode === 'manual'" class="btn-primary" :disabled="loading || saving" @click="saveManual">{{ saving ? '保存中…' : '保存并下发' }}</button>
-        <button v-else class="btn-primary" :disabled="loading || saving || !peerFormVisible" @click="saveGenerated">{{ saving ? '保存中…' : previewReady ? '确认保存并下发' : '生成预览' }}</button>
     </template>
   </BaseModal>
 </template>
