@@ -6,13 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/wiremesh/wiremesh/internal/wgconfig"
 )
 
 type peerConfigFile struct {
@@ -72,14 +72,14 @@ func peerConfigInterfaceNames(selector, configDir string, observed []wireGuardIn
 	names := map[string]bool{}
 	if all {
 		for _, iface := range observed {
-			if validInterfaceName(iface.Name) {
+			if wgconfig.ValidInterfaceName(iface.Name) {
 				names[iface.Name] = true
 			}
 		}
 		if matches, err := filepath.Glob(filepath.Join(configDir, "*.conf")); err == nil {
 			for _, match := range matches {
 				name := strings.TrimSuffix(filepath.Base(match), ".conf")
-				if validInterfaceName(name) {
+				if wgconfig.ValidInterfaceName(name) {
 					names[name] = true
 				}
 			}
@@ -144,11 +144,11 @@ func (manager wireGuardManager) ApplyPeerConfigFiles(parent context.Context, fil
 
 func (manager wireGuardManager) applyPeerConfigFile(parent context.Context, file peerConfigFile) (string, error) {
 	interfaceName := strings.TrimSpace(file.Interface)
-	if !validInterfaceName(interfaceName) {
+	if !wgconfig.ValidInterfaceName(interfaceName) {
 		return "invalid interface", fmt.Errorf("invalid WireGuard interface name %q", interfaceName)
 	}
-	content := normalizePeerConfigContent(file.Content)
-	if err := validatePeerConfigContent(content); err != nil {
+	content := wgconfig.NormalizePeerConfig(file.Content)
+	if err := wgconfig.ValidatePeerConfig(content); err != nil {
 		return err.Error(), err
 	}
 	if err := os.MkdirAll(manager.configDir, 0o700); err != nil {
@@ -239,102 +239,9 @@ func replacePeerConfigSections(fullConfig, peerContent string) ([]byte, error) {
 		return nil, err
 	}
 	base := strings.TrimRight(strings.Join(prefix, "\n"), "\n")
-	peerContent = normalizePeerConfigContent(peerContent)
+	peerContent = wgconfig.NormalizePeerConfig(peerContent)
 	if peerContent == "" {
 		return []byte(base + "\n"), nil
 	}
 	return []byte(base + "\n\n" + peerContent + "\n"), nil
-}
-
-func normalizePeerConfigContent(content string) string {
-	content = strings.ReplaceAll(content, "\r\n", "\n")
-	content = strings.ReplaceAll(content, "\r", "\n")
-	return strings.TrimSpace(content)
-}
-
-func validatePeerConfigContent(content string) error {
-	if strings.TrimSpace(content) == "" {
-		return nil
-	}
-	lower := strings.ToLower(content)
-	if strings.Contains(lower, "[interface]") || strings.Contains(lower, "privatekey") {
-		return errors.New("peer config must only contain [Peer] sections and must not contain Interface or PrivateKey")
-	}
-	inPeer := false
-	peerIndex := 0
-	hasPublicKey := false
-	hasAllowedIPs := false
-	checkPeer := func() error {
-		if peerIndex == 0 {
-			return nil
-		}
-		if !hasPublicKey {
-			return fmt.Errorf("peer %d is missing PublicKey", peerIndex)
-		}
-		if !hasAllowedIPs {
-			return fmt.Errorf("peer %d is missing AllowedIPs", peerIndex)
-		}
-		return nil
-	}
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			if !strings.EqualFold(trimmed, "[Peer]") {
-				return errors.New("peer config must only contain [Peer] sections")
-			}
-			if err := checkPeer(); err != nil {
-				return err
-			}
-			inPeer = true
-			peerIndex++
-			hasPublicKey = false
-			hasAllowedIPs = false
-			continue
-		}
-		if !inPeer {
-			return errors.New("peer config must start with a [Peer] section")
-		}
-		key, value, ok := strings.Cut(trimmed, "=")
-		if !ok {
-			return fmt.Errorf("invalid peer config line %q", trimmed)
-		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		switch strings.ToLower(key) {
-		case "publickey":
-			if err := validateWireGuardKey(value); err != nil {
-				return fmt.Errorf("peer %d has an invalid PublicKey", peerIndex)
-			}
-			hasPublicKey = true
-		case "presharedkey":
-			if err := validateWireGuardKey(value); err != nil {
-				return fmt.Errorf("peer %d has an invalid PresharedKey", peerIndex)
-			}
-		case "allowedips":
-			if value == "" {
-				return fmt.Errorf("peer %d has empty AllowedIPs", peerIndex)
-			}
-			for _, allowed := range strings.Split(value, ",") {
-				if _, err := netip.ParsePrefix(strings.TrimSpace(allowed)); err != nil {
-					return fmt.Errorf("peer %d has an invalid AllowedIPs entry", peerIndex)
-				}
-			}
-			hasAllowedIPs = true
-		case "endpoint":
-			if strings.ContainsAny(value, "\r\n") {
-				return fmt.Errorf("peer %d has an invalid Endpoint", peerIndex)
-			}
-		case "persistentkeepalive":
-			keepalive, err := strconv.Atoi(value)
-			if err != nil || keepalive < 0 || keepalive > 65535 {
-				return fmt.Errorf("peer %d has an invalid PersistentKeepalive", peerIndex)
-			}
-		default:
-			return fmt.Errorf("unsupported peer config key %q", key)
-		}
-	}
-	return checkPeer()
 }

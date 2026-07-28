@@ -4,6 +4,7 @@ import type {
   Agent, AuditEntry, ConfigRevision, FeedEvent, GeoIPInfo, Network, NotifyChannel, NotifyLog,
   PendingChange, PeerLink, Project, TempPeer, UserAccount, WGInterface, PeerState,
 } from '../types'
+import { pollUntil } from '../utils/pollUntil'
 import { useAppStore } from './app'
 
 let pollingTimer: number | undefined
@@ -13,10 +14,6 @@ const immediateCollectTimeoutMs = 10_000
 const immediateCollectPollMs = 400
 const immediateDeliveryTimeoutMs = 15_000
 const immediateDeliveryPollMs = 500
-
-function sleep(milliseconds: number) {
-  return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds))
-}
 
 function timestamp(value?: string | null) {
   if (!value || value.startsWith('0001-')) return 0
@@ -422,7 +419,6 @@ export const useMeshStore = defineStore('mesh', {
   actions: {
     setProject(id: string) { this.selectedProjectId = id; this.selectedNetworkId = 'all' },
     clearMessage() { this.error = ''; this.notice = '' },
-    unsupported(feature: string) { this.error = feature + '：当前 WireMesh 后端尚未提供对应 API，页面不会创建本地伪造数据。' },
     async refresh() {
       const app = useAppStore()
       if (!app.authed || this.loading) return
@@ -537,31 +533,34 @@ export const useMeshStore = defineStore('mesh', {
       }
 
       const receivedCount = () => onlineIDs.filter((id) => (this.agentById(id)?.lastSeen || 0) > (previousLastSeen.get(id) || 0)).length
-      const deadline = Date.now() + immediateCollectTimeoutMs
-      let received = 0
-      do {
-        await sleep(immediateCollectPollMs)
+      const received = await pollUntil({
+        timeoutMs: immediateCollectTimeoutMs,
+        intervalMs: immediateCollectPollMs,
+        poll: async () => {
         await this.refreshNodeTelemetry(true)
-        received = receivedCount()
-        if (received === onlineIDs.length) break
-      } while (Date.now() < deadline)
+          return receivedCount()
+        },
+        done: (count) => count === onlineIDs.length,
+      })
       return { received, expected: onlineIDs.length }
     },
     async waitForDeliveryResult(result?: ApiConfigPublishResult) {
       const targets = deliveryTargets(result)
       if (!result || !targets.length) return { applied: 0, failed: 0, pending: 0, expected: 0 }
       if ((result.offline_node_ids?.length || 0) >= targets.length) return { applied: 0, failed: 0, pending: targets.length, expected: targets.length }
-      const deadline = Date.now() + immediateDeliveryTimeoutMs
       let summary = { applied: 0, failed: 0, pending: targets.length, expected: targets.length }
-      do {
-        await sleep(immediateDeliveryPollMs)
+      summary = await pollUntil({
+        timeoutMs: immediateDeliveryTimeoutMs,
+        intervalMs: immediateDeliveryPollMs,
+        poll: async () => {
         const deliveries = await api.deliveries()
         const rows = deliveries.filter((delivery) => delivery.version === result.version && targets.includes(delivery.node_id))
         const applied = rows.filter((delivery) => delivery.state === 'applied').length
         const failed = rows.filter((delivery) => delivery.state === 'failed' || delivery.state === 'rolled_back').length
-        summary = { applied, failed, pending: Math.max(0, targets.length - applied - failed), expected: targets.length }
-        if (summary.pending === 0) break
-      } while (Date.now() < deadline)
+          return { applied, failed, pending: Math.max(0, targets.length - applied - failed), expected: targets.length }
+        },
+        done: (value) => value.pending === 0,
+      })
       return summary
     },
     startPolling() {
@@ -799,8 +798,6 @@ export const useMeshStore = defineStore('mesh', {
       }
     },
     discardPending(_user?: string) { this.pendingChanges = [] },
-    adoptTempPeer(_id: string, _target: { projectId: string; networkId: string; agentId: string }, _user?: string) { this.unsupported('纳入临时 Peer') },
-    removeTempPeer(_id: string, _user?: string) { this.unsupported('清理临时 Peer') },
     async reloadGeoIP(_user?: string) {
       this.error = ''
       try {
@@ -824,8 +821,6 @@ export const useMeshStore = defineStore('mesh', {
       try { return await api.lookupGeoIP(ip) }
       catch (reason) { this.error = reason instanceof Error ? reason.message : 'GeoIP 查询失败'; return null }
     },
-    pushEvent(_kind: FeedEvent['kind'], _message: string) {},
-    pushAudit(_user: string, _action: string, _detail: string) {},
     async addNotifyChannel(payload: Omit<NotifyChannel, 'id' | 'createdAt'>, _user?: string) {
       this.error = ''
       try {

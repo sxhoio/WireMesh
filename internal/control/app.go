@@ -97,11 +97,11 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}", a.withUser(RoleAdmin, a.deleteNode))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/peer-config", a.withUser(RoleViewer, a.nodePeerConfig))
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/peer-config", a.withUser(RoleOperator, a.updateNodePeerConfig))
-	mux.HandleFunc("POST /api/v1/nodes/{id}/collect", a.withUser(RoleOperator, a.createNodeCommand("collect")))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/collect", a.withUser(RoleOperator, a.createNodeCommand(agentCommandTypeCollect)))
 	mux.HandleFunc("POST /api/v1/nodes/collect", a.withUser(RoleOperator, a.collectNodes))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/update-agent", a.withUser(RoleOperator, a.updateAgent))
 	mux.HandleFunc("POST /api/v1/nodes/update-agent", a.withUser(RoleOperator, a.updateAgents))
-	mux.HandleFunc("POST /api/v1/nodes/{id}/connectivity-check", a.withUser(RoleOperator, a.createNodeCommand("connectivity_check")))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/connectivity-check", a.withUser(RoleOperator, a.createNodeCommand(agentCommandTypeConnectivityCheck)))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/logs", a.withUser(RoleViewer, a.nodeLogs))
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}/logs", a.withUser(RoleOperator, a.clearNodeLogs))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/traffic", a.withUser(RoleViewer, a.nodeTraffic))
@@ -485,7 +485,7 @@ func (a *App) publishNetwork(tenantID string, network Network) (ConfigPublishRes
 				return ConfigPublishResult{}, fmt.Errorf("create configuration delivery: %w", err)
 			}
 		}
-		commands = append(commands, AgentCommand{ID: newID("cmd"), TenantID: tenantID, NodeID: node.ID, Type: "apply_config", State: "pending", CreatedAt: time.Now()})
+		commands = append(commands, newAgentCommand(tenantID, node.ID, agentCommandTypeApplyConfig))
 		result.QueuedNodeIDs = append(result.QueuedNodeIDs, node.ID)
 		if node.LastSeen.IsZero() || time.Since(node.LastSeen) > offlineAfter {
 			result.OfflineNodeIDs = append(result.OfflineNodeIDs, node.ID)

@@ -1,17 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -177,6 +172,7 @@ func main() {
 		state.PublicIP = publicIP
 		log.Printf("public IPv4 discovered at startup: %s", publicIP)
 	}
+	agentAPI := newAgentClient(client, state)
 	hostname, _ := os.Hostname()
 	baseHeartbeat := heartbeatRequest{
 		Hostname: hostname, OS: runtime.GOOS + "/" + runtime.GOARCH,
@@ -206,7 +202,7 @@ func main() {
 			return
 		}
 		lastLocationAttempt = time.Now()
-		location, locationErr := fetchAgentLocation(ctx, client, state)
+		location, locationErr := agentAPI.FetchLocation(ctx)
 		if locationErr != nil {
 			message := locationErr.Error()
 			if message != lastLocationError {
@@ -246,7 +242,7 @@ func main() {
 			}
 			lastCollectionError = heartbeat.CollectionError
 		}
-		if err := postHeartbeat(ctx, client, state, heartbeat); err != nil {
+		if err := agentAPI.PostHeartbeat(ctx, heartbeat); err != nil {
 			log.Printf("heartbeat failed: %v", err)
 			return len(heartbeat.WireGuard), heartbeat.CollectionError, err
 		}
@@ -258,7 +254,7 @@ func main() {
 	}
 	configurationChecked := false
 	reconcileConfiguration := func() (string, error) {
-		payload, found, err := pollConfig(ctx, client, state)
+		payload, found, err := agentAPI.PollConfig(ctx)
 		if err != nil {
 			log.Printf("configuration check failed: %v", err)
 			return "", err
@@ -275,7 +271,7 @@ func main() {
 			return fmt.Sprintf("configuration version %d already attempted", payload.Version), nil
 		}
 		status, message := manager.Apply(ctx, payload.Config, state.NodeID)
-		if err := postConfigStatus(ctx, client, state, payload.Version, status, message); err != nil {
+		if err := agentAPI.PostConfigStatus(ctx, payload.Version, status, message); err != nil {
 			log.Printf("report configuration version %d result: %v", payload.Version, err)
 			return "", err
 		}
@@ -317,7 +313,7 @@ func main() {
 			case "apply_config":
 				result, commandErr = reconcileConfiguration()
 			case "apply_peer_config":
-				payload, found, err := pollPeerConfig(ctx, client, state)
+				payload, found, err := agentAPI.PollPeerConfig(ctx)
 				if err != nil {
 					commandErr = err
 					result = "peer_config_fetch=failed"
@@ -330,7 +326,7 @@ func main() {
 					}
 				}
 			case "update_agent":
-				result, commandErr = performAgentUpdate(ctx, client, state, statePath, *stateDir, *useMTLS, command.ID)
+				result, commandErr = performAgentUpdate(ctx, agentAPI, statePath, *stateDir, *useMTLS, command.ID)
 			case "connectivity_check":
 				result, commandErr = connectivityCheck(ctx, *interfaces, manager.runner)
 			default:
@@ -348,7 +344,7 @@ func main() {
 				}
 				result += commandErr.Error()
 			}
-			if err := postAgentCommandResult(ctx, client, state, command.ID, commandState, result); err != nil {
+			if err := agentAPI.PostCommandResult(ctx, command.ID, commandState, result); err != nil {
 				log.Printf("report command %s result: %v", command.ID, err)
 			} else {
 				log.Printf("agent command %s (%s): %s", command.ID, command.Type, commandState)
@@ -363,7 +359,7 @@ func main() {
 	commandBatches := make(chan []agentCommand)
 	go func() {
 		for {
-			commands, longPollSupported, err := pollAgentCommands(ctx, client, state)
+			commands, longPollSupported, err := agentAPI.PollCommands(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -405,271 +401,6 @@ func main() {
 		case commands := <-commandBatches:
 			processCommands(commands)
 		}
-	}
-}
-
-func resolveControlPlaneURL(server string, client *http.Client) (string, error) {
-	request, err := http.NewRequest(http.MethodGet, server+"/healthz", nil)
-	if err != nil {
-		return "", err
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return "", err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return "", responseError(response)
-	}
-	var health struct {
-		Status string `json:"status"`
-	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&health); err != nil {
-		return "", fmt.Errorf("decode health response: %w", err)
-	}
-	if health.Status != "ok" {
-		return "", fmt.Errorf("unexpected health status %q", health.Status)
-	}
-
-	finalURL := *response.Request.URL
-	if !strings.EqualFold(request.URL.Hostname(), finalURL.Hostname()) {
-		return "", fmt.Errorf("control plane redirected to a different host %q", finalURL.Hostname())
-	}
-	if strings.EqualFold(request.URL.Scheme, "https") && !strings.EqualFold(finalURL.Scheme, "https") {
-		return "", errors.New("control plane attempted to downgrade HTTPS to HTTP")
-	}
-	if !strings.HasSuffix(finalURL.Path, "/healthz") {
-		return "", fmt.Errorf("health check redirected to unexpected path %q", finalURL.Path)
-	}
-	finalURL.Path = strings.TrimSuffix(finalURL.Path, "/healthz")
-	finalURL.RawPath = ""
-	finalURL.RawQuery = ""
-	finalURL.Fragment = ""
-	return strings.TrimRight(finalURL.String(), "/"), nil
-}
-
-func enroll(client *http.Client, server, token, name string, labels map[string]string) (agentState, error) {
-	body, err := json.Marshal(enrollmentRequest{
-		Token: token, Name: name, OS: runtime.GOOS + "/" + runtime.GOARCH,
-		AgentVersion: agentVersion, Labels: labels,
-	})
-	if err != nil {
-		return agentState{}, err
-	}
-	response, err := client.Post(server+"/agent/v1/enroll", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return agentState{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusCreated {
-		return agentState{}, responseError(response)
-	}
-	var enrolled enrollmentResponse
-	if err := json.NewDecoder(response.Body).Decode(&enrolled); err != nil {
-		return agentState{}, err
-	}
-	if enrolled.Node.ID == "" || enrolled.CertificatePEM == "" || enrolled.PrivateKeyPEM == "" {
-		return agentState{}, errors.New("control plane returned incomplete agent identity")
-	}
-	return agentState{
-		NodeID: enrolled.Node.ID, Server: server, CertificatePEM: enrolled.CertificatePEM,
-		PrivateKeyPEM: enrolled.PrivateKeyPEM, CAPEM: enrolled.CAPEM, ExpiresAt: enrolled.ExpiresAt,
-	}, nil
-}
-
-func authenticatedClient(state agentState, useMTLS bool) (*http.Client, error) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	roots, err := x509.SystemCertPool()
-	if err != nil || roots == nil {
-		roots = x509.NewCertPool()
-	}
-	if state.CAPEM != "" {
-		roots.AppendCertsFromPEM([]byte(state.CAPEM))
-	}
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots}
-	if useMTLS && (state.CertificatePEM != "" || state.PrivateKeyPEM != "") {
-		if state.CertificatePEM == "" || state.PrivateKeyPEM == "" {
-			return nil, errors.New("incomplete enrolled client certificate material")
-		}
-		certificate, err := tls.X509KeyPair([]byte(state.CertificatePEM), []byte(state.PrivateKeyPEM))
-		if err != nil {
-			return nil, err
-		}
-		tlsConfig.Certificates = []tls.Certificate{certificate}
-	}
-	transport.TLSClientConfig = tlsConfig
-	return &http.Client{Timeout: 35 * time.Second, Transport: transport}, nil
-}
-
-func pollAgentCommands(ctx context.Context, client *http.Client, state agentState) ([]agentCommand, bool, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, state.Server+"/agent/v1/commands?wait="+agentCommandWait.String(), nil)
-	if err != nil {
-		return nil, false, err
-	}
-	setDevelopmentIdentity(request, state)
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, false, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, false, responseError(response)
-	}
-	var commands []agentCommand
-	if err := json.NewDecoder(response.Body).Decode(&commands); err != nil {
-		return nil, false, err
-	}
-	if commands == nil {
-		commands = []agentCommand{}
-	}
-	return commands, response.Header.Get("X-WireMesh-Command-Long-Poll") == "true", nil
-}
-
-func postAgentCommandResult(ctx context.Context, client *http.Client, state agentState, id, commandState, result string) error {
-	body, err := json.Marshal(map[string]string{"state": commandState, "result": result})
-	if err != nil {
-		return err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, state.Server+"/agent/v1/commands/"+id+"/result", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	setDevelopmentIdentity(request, state)
-	response, err := client.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return responseError(response)
-	}
-	return nil
-}
-
-func postAgentCommandProgress(ctx context.Context, client *http.Client, state agentState, id, progress string) error {
-	body, err := json.Marshal(map[string]string{"progress": progress})
-	if err != nil {
-		return err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, state.Server+"/agent/v1/commands/"+id+"/progress", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	setDevelopmentIdentity(request, state)
-	response, err := client.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return responseError(response)
-	}
-	return nil
-}
-
-func postHeartbeat(ctx context.Context, client *http.Client, state agentState, heartbeat heartbeatRequest) error {
-	body, err := json.Marshal(heartbeat)
-	if err != nil {
-		return err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, state.Server+"/agent/v1/heartbeat", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	setDevelopmentIdentity(request, state)
-	response, err := client.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return responseError(response)
-	}
-	return nil
-}
-
-func postConfigStatus(ctx context.Context, client *http.Client, state agentState, version uint64, status, message string) error {
-	body, err := json.Marshal(map[string]any{"version": version, "state": status, "message": message})
-	if err != nil {
-		return err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, state.Server+"/agent/v1/status", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	setDevelopmentIdentity(request, state)
-	response, err := client.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return responseError(response)
-	}
-	return nil
-}
-
-func pollConfig(ctx context.Context, client *http.Client, state agentState) (configResponse, bool, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, state.Server+"/agent/v1/config", nil)
-	if err != nil {
-		return configResponse{}, false, err
-	}
-	setDevelopmentIdentity(request, state)
-	response, err := client.Do(request)
-	if err != nil {
-		return configResponse{}, false, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusLocked {
-		return configResponse{}, false, nil
-	}
-	if response.StatusCode != http.StatusOK {
-		return configResponse{}, false, responseError(response)
-	}
-	var payload configResponse
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return configResponse{}, false, err
-	}
-	return payload, true, nil
-}
-
-func pollPeerConfig(ctx context.Context, client *http.Client, state agentState) (peerConfigResponse, bool, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, state.Server+"/agent/v1/peer-config", nil)
-	if err != nil {
-		return peerConfigResponse{}, false, err
-	}
-	setDevelopmentIdentity(request, state)
-	response, err := client.Do(request)
-	if err != nil {
-		return peerConfigResponse{}, false, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusNotFound {
-		return peerConfigResponse{}, false, nil
-	}
-	if response.StatusCode != http.StatusOK {
-		return peerConfigResponse{}, false, responseError(response)
-	}
-	var payload peerConfigResponse
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return peerConfigResponse{}, false, err
-	}
-	if payload.Files == nil {
-		payload.Files = []peerConfigFile{}
-	}
-	return payload, true, nil
-}
-
-func setDevelopmentIdentity(request *http.Request, state agentState) {
-	if state.NodeID != "" {
-		request.Header.Set("X-Agent-ID", state.NodeID)
-	}
-	if state.PublicIP != "" {
-		request.Header.Set("X-Agent-Public-IP", state.PublicIP)
 	}
 }
 
@@ -736,13 +467,4 @@ func saveState(filename string, state agentState) error {
 		return err
 	}
 	return os.Rename(temporary, filename)
-}
-
-func responseError(response *http.Response) error {
-	data, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-	message := strings.TrimSpace(string(data))
-	if message == "" {
-		message = response.Status
-	}
-	return fmt.Errorf("control plane returned %s: %s", response.Status, message)
 }

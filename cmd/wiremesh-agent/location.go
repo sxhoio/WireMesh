@@ -46,21 +46,12 @@ func (location agentLocation) summary() string {
 }
 
 func fetchAgentLocation(ctx context.Context, client *http.Client, state agentState) (agentLocation, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, state.Server+"/agent/v1/location", nil)
-	if err != nil {
-		return agentLocation{}, err
-	}
-	setDevelopmentIdentity(request, state)
-	response, err := client.Do(request)
-	if err != nil {
-		return agentLocation{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return agentLocation{}, responseError(response)
-	}
+	return newAgentClient(client, state).FetchLocation(ctx)
+}
+
+func (client agentClient) FetchLocation(ctx context.Context) (agentLocation, error) {
 	var location agentLocation
-	if err := json.NewDecoder(response.Body).Decode(&location); err != nil {
+	if _, err := client.doJSON(ctx, http.MethodGet, "/agent/v1/location", nil, &location, 0, http.StatusOK); err != nil {
 		return agentLocation{}, fmt.Errorf("decode location response: %w", err)
 	}
 	location.PublicIP = strings.TrimSpace(location.PublicIP)

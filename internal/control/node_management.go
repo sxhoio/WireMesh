@@ -304,7 +304,7 @@ func (a *App) createNodeCommand(commandType string) func(http.ResponseWriter, *h
 			writeError(w, http.StatusNotFound, "node not found")
 			return
 		}
-		command := AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: commandType, State: "pending", CreatedAt: time.Now()}
+		command := newAgentCommand(c.TenantID, node.ID, commandType)
 		if err := a.createAgentCommand(command); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to create agent command")
 			return
@@ -338,12 +338,12 @@ func (a *App) updateAgent(w http.ResponseWriter, r *http.Request, c claims) {
 		writeError(w, http.StatusConflict, reason)
 		return
 	}
-	command := AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: "update_agent", State: "pending", CreatedAt: time.Now()}
+	command := newAgentCommand(c.TenantID, node.ID, agentCommandTypeUpdateAgent)
 	if err := a.createAgentCommand(command); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create agent update command")
 		return
 	}
-	a.auditEvent(c.TenantID, c.Subject, "agent.command.update_agent", "node", node.ID, map[string]string{"command_id": command.ID})
+	a.auditEvent(c.TenantID, c.Subject, "agent.command."+agentCommandTypeUpdateAgent, "node", node.ID, map[string]string{"command_id": command.ID})
 	writeJSON(w, http.StatusAccepted, command)
 }
 
@@ -355,7 +355,7 @@ func (a *App) agentRemoteUpdateBlockedReason(r *http.Request, node Node) string 
 		return fmt.Sprintf("节点 %s 当前 Agent 版本 %q 无法识别，暂不能远程更新；请先在节点机器上重新执行接入脚本手动升级一次", node.Name, node.AgentVersion)
 	}
 	if compareAgentVersions(node.AgentVersion, defaultAgentUpdateMinVersion) < 0 {
-		return fmt.Sprintf("节点 %s 当前 Agent 版本 %s 不支持远程更新命令 update_agent；请先在节点机器上重新执行接入脚本手动升级一次，升级到 %s 或更高版本后即可在管理端更新", node.Name, node.AgentVersion, defaultAgentUpdateMinVersion)
+		return fmt.Sprintf("节点 %s 当前 Agent 版本 %s 不支持远程更新命令 %s；请先在节点机器上重新执行接入脚本手动升级一次，升级到 %s 或更高版本后即可在管理端更新", node.Name, node.AgentVersion, agentCommandTypeUpdateAgent, defaultAgentUpdateMinVersion)
 	}
 	if osName := strings.ToLower(strings.TrimSpace(node.OS)); osName != "" && !strings.HasPrefix(osName, "linux") {
 		return fmt.Sprintf("节点 %s 当前系统为 %s，Agent 远程自更新目前仅支持 Linux + systemd；请手动更新该节点", node.Name, node.OS)
@@ -413,12 +413,7 @@ func (a *App) collectNodes(w http.ResponseWriter, r *http.Request, c claims) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"created": 0, "node_ids": []string{}})
 		return
 	}
-	nodeIDs := make([]string, 0, len(targets))
-	commands := make([]AgentCommand, 0, len(targets))
-	for _, node := range targets {
-		commands = append(commands, AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: "collect", State: "pending", CreatedAt: time.Now()})
-		nodeIDs = append(nodeIDs, node.ID)
-	}
+	commands, nodeIDs := newAgentCommandsForNodes(c.TenantID, agentCommandTypeCollect, targets)
 	if err := a.createAgentCommandsParallel(commands); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create agent command")
 		return
@@ -465,7 +460,7 @@ func (a *App) updateAgents(w http.ResponseWriter, r *http.Request, c claims) {
 			skipped = append(skipped, skippedAgentUpdateNode(node, reason))
 			continue
 		}
-		commands = append(commands, AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: "update_agent", State: "pending", CreatedAt: time.Now()})
+		commands = append(commands, newAgentCommand(c.TenantID, node.ID, agentCommandTypeUpdateAgent))
 		nodeIDs = append(nodeIDs, node.ID)
 	}
 	if err := a.createAgentCommandsParallel(commands); err != nil {
@@ -512,7 +507,7 @@ func (a *App) nodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
 func agentCommandLogMessage(command AgentCommand) string {
 	message := agentCommandTypeLabel(command.Type) + " · " + agentCommandStateLabel(command.State)
 	result := strings.TrimSpace(command.Result)
-	if command.Type == "update_agent" && strings.Contains(result, "unsupported command type update_agent") {
+	if command.Type == agentCommandTypeUpdateAgent && strings.Contains(result, "unsupported command type "+agentCommandTypeUpdateAgent) {
 		result = "当前客户端版本不支持远程更新命令，请在节点机器上重新执行接入脚本手动升级一次"
 	}
 	if result != "" {
@@ -523,15 +518,15 @@ func agentCommandLogMessage(command AgentCommand) string {
 
 func agentCommandTypeLabel(value string) string {
 	switch value {
-	case "collect":
+	case agentCommandTypeCollect:
 		return "立即采集状态"
-	case "apply_config":
+	case agentCommandTypeApplyConfig:
 		return "应用 WireGuard 配置"
-	case "apply_peer_config":
+	case agentCommandTypeApplyPeerConfig:
 		return "应用 Peer 配置"
-	case "update_agent":
+	case agentCommandTypeUpdateAgent:
 		return "更新 Agent"
-	case "connectivity_check":
+	case agentCommandTypeConnectivityCheck:
 		return "连通性检测"
 	default:
 		return value
@@ -748,7 +743,7 @@ func (a *App) agentCommandResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update command")
 		return
 	}
-	if command.Type == "apply_peer_config" {
+	if command.Type == agentCommandTypeApplyPeerConfig {
 		if err := a.recordPeerConfigCommandResult(&node, in.State); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to record peer config result")
 			return

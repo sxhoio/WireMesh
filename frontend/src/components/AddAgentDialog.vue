@@ -3,13 +3,14 @@ import { computed, reactive, ref, watch } from 'vue'
 import { apiBase } from '../api'
 import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
+import { useClipboard } from '../composables/useClipboard'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 const app = useAppStore()
 const mesh = useMeshStore()
 
 const tab = ref<'script' | 'manual' | 'uninstall'>('script')
-const copied = ref<'script' | 'manual' | 'uninstall' | ''>('')
+const { copied, copyText } = useClipboard<'script' | 'manual' | 'uninstall' | ''>('', 1600)
 const issuing = ref(false)
 const enrollmentToken = ref('')
 const expiresAt = ref('')
@@ -101,18 +102,7 @@ async function issueToken() {
 async function copy(kind: 'script' | 'manual' | 'uninstall') {
   if (kind !== 'uninstall' && !enrollmentToken.value) return
   const value = kind === 'script' ? installScript.value : kind === 'manual' ? manualCommand.value : uninstallScript.value
-  try {
-    await navigator.clipboard.writeText(value)
-  } catch {
-    const textarea = document.createElement('textarea')
-    textarea.value = value
-    document.body.appendChild(textarea)
-    textarea.select()
-    document.execCommand('copy')
-    textarea.remove()
-  }
-  copied.value = kind
-  window.setTimeout(() => (copied.value = ''), 1600)
+  if (!await copyText(value, kind)) error.value = '复制失败，请手动复制命令'
 }
 </script>
 

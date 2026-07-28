@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -40,18 +39,18 @@ type agentUpdateManifest struct {
 	Error             string `json:"error"`
 }
 
-func performAgentUpdate(ctx context.Context, client *http.Client, state agentState, statePath, stateDir string, useMTLS bool, commandID string) (string, error) {
+func performAgentUpdate(ctx context.Context, client agentClient, statePath, stateDir string, useMTLS bool, commandID string) (string, error) {
 	if runtime.GOOS != "linux" {
 		return "", fmt.Errorf("agent self-update is only supported on Linux")
 	}
 	progress := func(message string) {
 		log.Printf("agent update: %s", message)
-		if err := postAgentCommandProgress(ctx, client, state, commandID, message); err != nil {
+		if err := client.PostCommandProgress(ctx, commandID, message); err != nil {
 			log.Printf("agent update progress report failed: %v", err)
 		}
 	}
 	progress("检查更新清单")
-	manifest, err := pollAgentUpdateManifest(ctx, client, state)
+	manifest, err := client.PollUpdateManifest(ctx)
 	if err != nil {
 		return "检查更新清单失败", err
 	}
@@ -72,11 +71,11 @@ func performAgentUpdate(ctx context.Context, client *http.Client, state agentSta
 		return "", fmt.Errorf("create update directory: %w", err)
 	}
 	stagedPath := filepath.Join(updateDir, "wiremesh-agent-"+safeFilePart(manifest.Version)+"-"+runtime.GOOS+"-"+runtime.GOARCH+".new")
-	downloadURL, err := resolveAgentDownloadURL(state.Server, manifest.DownloadURL, runtime.GOOS, runtime.GOARCH, manifest.SHA256)
+	downloadURL, err := resolveAgentDownloadURL(client.state.Server, manifest.DownloadURL, runtime.GOOS, runtime.GOARCH, manifest.SHA256)
 	if err != nil {
 		return "", err
 	}
-	if err := downloadAgentUpdate(ctx, client, state, downloadURL, stagedPath, manifest, progress); err != nil {
+	if err := downloadAgentUpdate(ctx, client, downloadURL, stagedPath, manifest, progress); err != nil {
 		return "下载或校验更新包失败", err
 	}
 	if err := os.Chmod(stagedPath, 0o755); err != nil {
@@ -88,33 +87,11 @@ func performAgentUpdate(ctx context.Context, client *http.Client, state agentSta
 	}
 	targetPath, _ = filepath.Abs(targetPath)
 	progress("下载完成，准备替换并重启 Agent")
-	if err := startAgentUpdateHelper(stagedPath, state.Server, statePath, stateDir, targetPath, manifest.SHA256, commandID, useMTLS); err != nil {
+	if err := startAgentUpdateHelper(stagedPath, client.state.Server, statePath, stateDir, targetPath, manifest.SHA256, commandID, useMTLS); err != nil {
 		return "启动更新助手失败", err
 	}
 	progress("更新助手已启动，Agent 即将重启")
 	return "update helper started", errAgentUpdateHandedOff
-}
-
-func pollAgentUpdateManifest(ctx context.Context, client *http.Client, state agentState) (agentUpdateManifest, error) {
-	endpoint := state.Server + "/agent/v1/update?os=" + runtime.GOOS + "&arch=" + runtime.GOARCH + "&current_version=" + url.QueryEscape(agentVersion)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return agentUpdateManifest{}, err
-	}
-	setDevelopmentIdentity(request, state)
-	response, err := client.Do(request)
-	if err != nil {
-		return agentUpdateManifest{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return agentUpdateManifest{}, responseError(response)
-	}
-	var manifest agentUpdateManifest
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&manifest); err != nil {
-		return agentUpdateManifest{}, err
-	}
-	return manifest, nil
 }
 
 func resolveAgentDownloadURL(server, raw, osName, arch, sha string) (string, error) {
@@ -136,7 +113,7 @@ func resolveAgentDownloadURL(server, raw, osName, arch, sha string) (string, err
 	return base.ResolveReference(parsed).String(), nil
 }
 
-func downloadAgentUpdate(ctx context.Context, client *http.Client, state agentState, endpoint, stagedPath string, manifest agentUpdateManifest, progress func(string)) error {
+func downloadAgentUpdate(ctx context.Context, client agentClient, endpoint, stagedPath string, manifest agentUpdateManifest, progress func(string)) error {
 	var lastErr error
 	for attempt := 1; attempt <= agentUpdateRetries; attempt++ {
 		if attempt > 1 {
@@ -146,12 +123,11 @@ func downloadAgentUpdate(ctx context.Context, client *http.Client, state agentSt
 		}
 		_ = os.Remove(stagedPath)
 		err := func() error {
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+			request, err := client.newRequest(ctx, http.MethodGet, endpoint, nil)
 			if err != nil {
 				return err
 			}
-			setDevelopmentIdentity(request, state)
-			response, err := client.Do(request)
+			response, err := client.httpClient.Do(request)
 			if err != nil {
 				return err
 			}
@@ -270,16 +246,17 @@ func runUpdateHelper(args []string) error {
 	if strings.TrimSpace(*server) != "" {
 		state.Server = strings.TrimRight(strings.TrimSpace(*server), "/")
 	}
-	client, err := authenticatedClient(state, *useMTLS)
+	httpClient, err := authenticatedClient(state, *useMTLS)
 	if err != nil {
 		return fmt.Errorf("configure helper transport: %w", err)
 	}
+	agentAPI := newAgentClient(httpClient, state)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	progress := func(message string) {
 		log.Printf("agent update helper: %s", message)
 		if *commandID != "" {
-			if err := postAgentCommandProgress(ctx, client, state, *commandID, message); err != nil {
+			if err := agentAPI.PostCommandProgress(ctx, *commandID, message); err != nil {
 				log.Printf("agent update helper progress report failed: %v", err)
 			}
 		}
@@ -294,7 +271,7 @@ func runUpdateHelper(args []string) error {
 			}
 			result += err.Error()
 		}
-		if postErr := postAgentCommandResult(ctx, client, state, *commandID, stateText, result); postErr != nil {
+		if postErr := agentAPI.PostCommandResult(ctx, *commandID, stateText, result); postErr != nil {
 			log.Printf("agent update helper result report failed: %v", postErr)
 		}
 	}

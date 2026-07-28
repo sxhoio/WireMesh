@@ -5,6 +5,7 @@ import type { Agent } from '../types'
 import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
 import { requestConfirm } from '../utils/confirm'
+import BaseModal from './BaseModal.vue'
 
 const props = defineProps<{ agent: Agent }>()
 const emit = defineEmits<{ close: [] }>()
@@ -90,18 +91,16 @@ function toggleErrors() {
 onMounted(load)
 </script>
 <template>
-  <div class="fixed inset-0 z-[80] flex items-center justify-center bg-black/65 p-4" @click.self="emit('close')">
-    <div class="panel flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden">
-      <div class="flex flex-wrap items-center justify-between gap-3 border-b border-ink-700 px-6 py-5">
+  <BaseModal panel-class="max-h-[80vh] max-w-3xl" body-class="p-5" @close="emit('close')">
+    <template #header>
         <div><h3 class="text-base font-semibold text-white">{{ agent.name }} · Agent 日志</h3><p class="mt-1 text-xs text-slate-500">仅按页加载最近命令记录，服务端自动限制日志数量</p></div>
-        <div class="flex items-center gap-2">
+    </template>
+    <template #actions>
           <button class="btn-secondary" :class="onlyErrors ? 'text-red-300 ring-1 ring-red-500/30' : ''" :disabled="loading" @click="toggleErrors">{{ onlyErrors ? '显示全部' : '仅看异常' }}</button>
           <button v-if="app.canOperate" class="btn-secondary text-red-300" :disabled="clearing" @click="clearLogs">{{ clearing ? '清空中…' : '清空日志' }}</button>
           <button class="btn-secondary" :disabled="loading" @click="load(true)">刷新</button>
-          <button class="text-slate-500 hover:text-white" @click="emit('close')">✕</button>
-        </div>
-      </div>
-      <div class="min-h-0 flex-1 overflow-auto p-5">
+    </template>
+    <template #default>
         <p v-if="error" class="mb-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300">{{ error }}</p>
         <p v-if="currentError" class="mb-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-300 ring-1 ring-amber-500/30">当前 WireGuard 采集异常：{{ currentError }}</p>
         <p v-if="loading && !logs.length" class="py-10 text-center text-sm text-slate-500">加载中…</p>
@@ -127,7 +126,6 @@ onMounted(load)
             <button v-if="hasMore" class="block w-full border-t border-ink-800 px-3 py-2 text-center text-xs text-cyan-300 hover:bg-cyan-500/10 disabled:text-slate-600" :disabled="loading" @click="load(false)">{{ loading ? '加载中…' : '加载更多' }}</button>
           </div>
         </div>
-      </div>
-    </div>
-  </div>
+    </template>
+  </BaseModal>
 </template>

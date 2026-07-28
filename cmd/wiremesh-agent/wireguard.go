@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/wiremesh/wiremesh/internal/wgconfig"
 )
 
 const defaultAgentMTU = 1420
@@ -204,26 +205,12 @@ func parseInterfaceSelector(value string) (map[string]bool, bool, error) {
 	selected := map[string]bool{}
 	for _, item := range strings.Split(value, ",") {
 		name := strings.TrimSpace(item)
-		if !validInterfaceName(name) {
+		if !wgconfig.ValidInterfaceName(name) {
 			return nil, false, fmt.Errorf("invalid WireGuard interface name %q", name)
 		}
 		selected[name] = true
 	}
 	return selected, false, nil
-}
-
-func validInterfaceName(value string) bool {
-	if value == "" || len(value) > 15 {
-		return false
-	}
-	for _, character := range value {
-		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
-			(character >= '0' && character <= '9') || strings.ContainsRune("_.-", character) {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 func dashToEmpty(value string) string {
@@ -397,12 +384,12 @@ func validateNodeConfig(config nodeConfig, expectedNodeID string) error {
 	if config.MTU < 576 || config.MTU > 9000 {
 		return errors.New("configuration MTU is invalid")
 	}
-	if err := validateWireGuardKey(config.PrivateKey); err != nil {
+	if err := wgconfig.ValidateKey(config.PrivateKey); err != nil {
 		return errors.New("configuration private key is invalid")
 	}
 	seen := map[string]bool{}
 	for _, peer := range config.Peers {
-		if err := validateWireGuardKey(peer.PublicKey); err != nil {
+		if err := wgconfig.ValidateKey(peer.PublicKey); err != nil {
 			return fmt.Errorf("peer %s has an invalid public key", peer.NodeID)
 		}
 		if seen[peer.PublicKey] {
@@ -425,14 +412,6 @@ func validateNodeConfig(config nodeConfig, expectedNodeID string) error {
 				return fmt.Errorf("peer %s has an invalid allowed IP", peer.NodeID)
 			}
 		}
-	}
-	return nil
-}
-
-func validateWireGuardKey(value string) error {
-	decoded, err := base64.StdEncoding.DecodeString(value)
-	if err != nil || len(decoded) != 32 {
-		return errors.New("invalid WireGuard key")
 	}
 	return nil
 }

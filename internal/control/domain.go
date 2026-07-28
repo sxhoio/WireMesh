@@ -18,11 +18,6 @@ const (
 	TopologyCustom   Topology = "custom"
 )
 
-type Tenant struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-}
 type Project struct {
 	ID          string    `json:"id"`
 	TenantID    string    `json:"tenant_id"`

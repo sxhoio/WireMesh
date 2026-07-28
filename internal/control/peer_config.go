@@ -1,13 +1,12 @@
 package control
 
 import (
-	"encoding/base64"
 	"fmt"
 	"net/http"
-	"net/netip"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/wiremesh/wiremesh/internal/wgconfig"
 )
 
 const maxPeerConfigContentBytes = 128 * 1024
@@ -58,16 +57,16 @@ func (a *App) updateNodePeerConfig(w http.ResponseWriter, r *http.Request, c cla
 	if iface == "" && len(node.PeerConfigFiles) == 1 {
 		iface = node.PeerConfigFiles[0].Interface
 	}
-	if !validPeerConfigInterfaceName(iface) {
+	if !wgconfig.ValidInterfaceName(iface) {
 		writeError(w, http.StatusBadRequest, "interface must be a valid WireGuard interface name")
 		return
 	}
-	content := normalizePeerConfigContent(in.Content)
+	content := wgconfig.NormalizePeerConfig(in.Content)
 	if len(content) > maxPeerConfigContentBytes {
 		writeError(w, http.StatusBadRequest, "peer config is too large")
 		return
 	}
-	if err := validatePeerConfigContent(content); err != nil {
+	if err := wgconfig.ValidatePeerConfig(content); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -83,7 +82,7 @@ func (a *App) updateNodePeerConfig(w http.ResponseWriter, r *http.Request, c cla
 		writeError(w, http.StatusInternalServerError, "failed to save peer config")
 		return
 	}
-	command := AgentCommand{ID: newID("cmd"), TenantID: c.TenantID, NodeID: node.ID, Type: "apply_peer_config", State: "pending", CreatedAt: time.Now()}
+	command := newAgentCommand(c.TenantID, node.ID, agentCommandTypeApplyPeerConfig)
 	if err := a.createAgentCommand(command); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to queue peer config delivery")
 		return
@@ -137,11 +136,11 @@ func sanitizeAgentPeerConfigFiles(files []PeerConfigFile, updatedAt time.Time) [
 	seen := map[string]bool{}
 	for _, file := range files {
 		iface := strings.TrimSpace(file.Interface)
-		if !validPeerConfigInterfaceName(iface) || seen[iface] {
+		if !wgconfig.ValidInterfaceName(iface) || seen[iface] {
 			continue
 		}
-		content := normalizePeerConfigContent(file.Content)
-		if len(content) > maxPeerConfigContentBytes || peerConfigContainsSecretOrInterface(content) {
+		content := wgconfig.NormalizePeerConfig(file.Content)
+		if len(content) > maxPeerConfigContentBytes || wgconfig.PeerConfigContainsSecretOrInterface(content) {
 			continue
 		}
 		when := file.UpdatedAt
@@ -207,123 +206,4 @@ func upsertPeerConfigFile(files []PeerConfigFile, file PeerConfigFile) []PeerCon
 		out = append(out, file)
 	}
 	return out
-}
-
-func normalizePeerConfigContent(content string) string {
-	content = strings.ReplaceAll(content, "\r\n", "\n")
-	content = strings.ReplaceAll(content, "\r", "\n")
-	return strings.TrimSpace(content)
-}
-
-func peerConfigContainsSecretOrInterface(content string) bool {
-	lower := strings.ToLower(content)
-	return strings.Contains(lower, "[interface]") || strings.Contains(lower, "privatekey")
-}
-
-func validatePeerConfigContent(content string) error {
-	if strings.TrimSpace(content) == "" {
-		return nil
-	}
-	if peerConfigContainsSecretOrInterface(content) {
-		return fmt.Errorf("peer config must only contain [Peer] sections and must not contain Interface or PrivateKey")
-	}
-	inPeer := false
-	peerIndex := 0
-	hasPublicKey := false
-	hasAllowedIPs := false
-	checkPeer := func() error {
-		if peerIndex == 0 {
-			return nil
-		}
-		if !hasPublicKey {
-			return fmt.Errorf("peer %d is missing PublicKey", peerIndex)
-		}
-		if !hasAllowedIPs {
-			return fmt.Errorf("peer %d is missing AllowedIPs", peerIndex)
-		}
-		return nil
-	}
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			if !strings.EqualFold(trimmed, "[Peer]") {
-				return fmt.Errorf("peer config must only contain [Peer] sections")
-			}
-			if err := checkPeer(); err != nil {
-				return err
-			}
-			inPeer = true
-			peerIndex++
-			hasPublicKey = false
-			hasAllowedIPs = false
-			continue
-		}
-		if !inPeer {
-			return fmt.Errorf("peer config must start with a [Peer] section")
-		}
-		key, value, ok := strings.Cut(trimmed, "=")
-		if !ok {
-			return fmt.Errorf("invalid peer config line %q", trimmed)
-		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		switch strings.ToLower(key) {
-		case "publickey":
-			if err := validatePeerWireGuardKey(value); err != nil {
-				return fmt.Errorf("peer %d has an invalid PublicKey", peerIndex)
-			}
-			hasPublicKey = true
-		case "presharedkey":
-			if err := validatePeerWireGuardKey(value); err != nil {
-				return fmt.Errorf("peer %d has an invalid PresharedKey", peerIndex)
-			}
-		case "allowedips":
-			if value == "" {
-				return fmt.Errorf("peer %d has empty AllowedIPs", peerIndex)
-			}
-			for _, allowed := range strings.Split(value, ",") {
-				if _, err := netip.ParsePrefix(strings.TrimSpace(allowed)); err != nil {
-					return fmt.Errorf("peer %d has an invalid AllowedIPs entry", peerIndex)
-				}
-			}
-			hasAllowedIPs = true
-		case "endpoint":
-			if strings.ContainsAny(value, "\r\n") {
-				return fmt.Errorf("peer %d has an invalid Endpoint", peerIndex)
-			}
-		case "persistentkeepalive":
-			keepalive, err := strconv.Atoi(value)
-			if err != nil || keepalive < 0 || keepalive > 65535 {
-				return fmt.Errorf("peer %d has an invalid PersistentKeepalive", peerIndex)
-			}
-		default:
-			return fmt.Errorf("unsupported peer config key %q", key)
-		}
-	}
-	return checkPeer()
-}
-
-func validatePeerWireGuardKey(value string) error {
-	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(value))
-	if err != nil || len(decoded) != 32 {
-		return fmt.Errorf("invalid WireGuard key")
-	}
-	return nil
-}
-
-func validPeerConfigInterfaceName(value string) bool {
-	if value == "" || len(value) > 15 {
-		return false
-	}
-	for _, character := range value {
-		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
-			(character >= '0' && character <= '9') || strings.ContainsRune("_.-", character) {
-			continue
-		}
-		return false
-	}
-	return true
 }

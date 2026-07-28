@@ -3,7 +3,24 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api, type ApiPeerConfigFile } from '../api'
 import type { Agent, WGInterface } from '../types'
 import { useMeshStore } from '../stores/mesh'
+import { useClipboard } from '../composables/useClipboard'
 import { shortKey } from '../utils/format'
+import {
+  buildPeerBlock,
+  joinEndpoint,
+  parsePeerBlock,
+  peerExists,
+  randomWireGuardKey,
+  splitEndpoint,
+  splitPeerBlocks,
+  upsertPeerBlock,
+  validateAllowedIPs,
+  validateEndpoint,
+  validatePeerConfigDraft,
+  validWireGuardInterfaceName,
+  validWireGuardKey,
+} from '../utils/wireguard'
+import BaseModal from './BaseModal.vue'
 
 type EditMode = 'manual' | 'form'
 type PeerSource = 'managed' | 'manual'
@@ -31,7 +48,7 @@ const expandedPeerIndex = ref<number | null>(null)
 const editingPeerIndex = ref<number | null>(null)
 const editingOriginalPublicKey = ref('')
 const addingPeer = ref(props.initialMode === 'form')
-const copiedRemoteConfig = ref(false)
+const { copied: copiedRemoteConfig, copyText: copyTextToClipboard, clearCopied: clearRemoteCopied } = useClipboard(false)
 
 const form = reactive({
   source: 'managed' as PeerSource,
@@ -105,7 +122,7 @@ function clearPreview() {
   preview.localUpdatesExisting = false
   preview.remoteUpdatesExisting = false
   preview.remoteEnabled = false
-  copiedRemoteConfig.value = false
+  clearRemoteCopied()
 }
 
 function fileLabel(file?: ApiPeerConfigFile) {
@@ -121,15 +138,6 @@ function selectInterface(name: string) {
   clearPreview()
 }
 
-function clientValidatePeerConfig(content: string) {
-  const normalized = content.toLowerCase()
-  if (normalized.includes('[interface]') || normalized.includes('privatekey')) return '这里只能编辑 Peer 配置，不能包含 [Interface] 或 PrivateKey'
-  const text = content.trim()
-  if (!text) return ''
-  if (!/^\s*(#.*|;.*|\[Peer\])/m.test(text)) return 'Peer 配置需要以 [Peer] 段落开始'
-  return ''
-}
-
 function switchMode(next: EditMode) {
   mode.value = next
   if (next === 'form' && !peerFormVisible.value && !peerRows.value.length) startNewPeerForm()
@@ -143,30 +151,6 @@ function interfaceTunnelPrefix(iface?: WGInterface, fallback = '') {
   const value = iface?.tunnelIP || fallback
   if (!value) return ''
   return value.includes('/') ? value : value + '/32'
-}
-
-function splitEndpoint(endpoint: string) {
-  const value = endpoint.trim()
-  if (!value) return { host: '', port: '' }
-  if (value.startsWith('[')) {
-    const end = value.indexOf(']')
-    if (end >= 0) {
-      const host = value.slice(1, end)
-      const rest = value.slice(end + 1)
-      return { host, port: rest.startsWith(':') ? rest.slice(1) : '' }
-    }
-  }
-  const colon = value.lastIndexOf(':')
-  if (colon > 0 && value.indexOf(':') === colon) return { host: value.slice(0, colon), port: value.slice(colon + 1) }
-  return { host: value, port: '' }
-}
-
-function joinEndpoint(host: string, port: string) {
-  const cleanHost = host.trim()
-  const cleanPort = port.trim()
-  if (!cleanHost || !cleanPort) return ''
-  const wrappedHost = cleanHost.includes(':') && !cleanHost.startsWith('[') ? `[${cleanHost}]` : cleanHost
-  return `${wrappedHost}:${cleanPort}`
 }
 
 function endpointDefaults(agent: Agent, iface?: WGInterface) {
@@ -273,18 +257,6 @@ function togglePeer(index: number) {
   loadPeerIntoForm(index)
 }
 
-function validWireGuardKey(value: string) {
-  return /^[A-Za-z0-9+/]{43}=$/.test(value.trim())
-}
-
-function randomWireGuardKey() {
-  const bytes = new Uint8Array(32)
-  window.crypto.getRandomValues(bytes)
-  let binary = ''
-  bytes.forEach((byte) => { binary += String.fromCharCode(byte) })
-  return window.btoa(binary)
-}
-
 function generatePresharedKey() {
   form.presharedKey = randomWireGuardKey()
   error.value = ''
@@ -293,62 +265,14 @@ function generatePresharedKey() {
 
 async function copyRemoteConfig() {
   if (!preview.remoteContent.trim()) return
-  try {
-    await navigator.clipboard.writeText(preview.remoteContent)
-    copiedRemoteConfig.value = true
-    window.setTimeout(() => { copiedRemoteConfig.value = false }, 1400)
-  } catch {
+  if (!await copyTextToClipboard(preview.remoteContent, true)) {
     error.value = '复制失败，请手动选中对端配置复制'
   }
 }
 
-function validPort(value: string) {
-  const parsed = Number(value)
-  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535
-}
-
-function validIPv4(value: string) {
-  const parts = value.split('.')
-  return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) >= 0 && Number(part) <= 255)
-}
-
-function validIPv6(value: string) {
-  return /^[0-9a-f:]+$/i.test(value) && value.includes(':')
-}
-
-function validPrefix(value: string) {
-  const [ip, bitsText] = value.trim().split('/')
-  if (!ip || bitsText === undefined || !/^\d+$/.test(bitsText)) return false
-  const bits = Number(bitsText)
-  if (validIPv4(ip)) return bits >= 0 && bits <= 32
-  if (validIPv6(ip)) return bits >= 0 && bits <= 128
-  return false
-}
-
-function normalizeAllowedIPs(value: string) {
-  return value.split(',').map((item) => item.trim()).filter(Boolean).join(', ')
-}
-
-function validateAllowedIPs(label: string, value: string) {
-  const entries = value.split(',').map((item) => item.trim()).filter(Boolean)
-  if (!entries.length) return `${label} 不能为空`
-  const bad = entries.find((item) => !validPrefix(item))
-  return bad ? `${label} 包含无效网段：${bad}` : ''
-}
-
-function validateEndpoint(label: string, host: string, port: string, required = false) {
-  const hasHost = Boolean(host.trim())
-  const hasPort = Boolean(port.trim())
-  if (!hasHost && !hasPort) return required ? `${label} 不能为空` : ''
-  if (!hasHost) return `${label} 地址不能为空`
-  if (!hasPort) return `${label} 端口不能为空`
-  if (!validPort(port)) return `${label} 端口必须在 1-65535 之间`
-  return ''
-}
-
 function validateForm() {
   if (!selectedInterface.value.trim()) return '请选择本端接口'
-  if (!/^[A-Za-z0-9_.-]{1,15}$/.test(selectedInterface.value.trim())) return '本端接口名格式不正确'
+  if (!validWireGuardInterfaceName(selectedInterface.value)) return '本端接口名格式不正确'
   if (!form.remotePublicKey.trim()) return '对端公钥不能为空'
   if (!validWireGuardKey(form.remotePublicKey)) return '对端公钥格式不正确，应为 32 字节 WireGuard base64 公钥'
   if (form.presharedKey.trim() && !validWireGuardKey(form.presharedKey)) return '预共享密钥格式不正确，应为 32 字节 WireGuard base64 密钥'
@@ -369,79 +293,6 @@ function validateForm() {
     if (!form.remoteNodeId) return '请选择一个已存在的对端节点'
   }
   return ''
-}
-
-function buildPeerBlock(publicKey: string, allowedIPs: string, endpoint: string, presharedKey: string, keepalive: string) {
-  const lines = ['[Peer]', `PublicKey = ${publicKey.trim()}`]
-  if (presharedKey.trim()) lines.push(`PresharedKey = ${presharedKey.trim()}`)
-  lines.push(`AllowedIPs = ${normalizeAllowedIPs(allowedIPs)}`)
-  if (endpoint.trim()) lines.push(`Endpoint = ${endpoint.trim()}`)
-  if (keepalive.trim() && keepalive.trim() !== '0') lines.push(`PersistentKeepalive = ${keepalive.trim()}`)
-  return lines.join('\n')
-}
-
-function splitPeerBlocks(content: string) {
-  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
-  if (!normalized) return [] as string[]
-  const blocks: string[][] = []
-  let current: string[] = []
-  for (const line of normalized.split('\n')) {
-    const trimmed = line.trim().toLowerCase()
-    if (trimmed === '[peer]' && current.length) {
-      blocks.push(current)
-      current = [line]
-    } else {
-      current.push(line)
-    }
-  }
-  if (current.length) blocks.push(current)
-  return blocks.map((block) => block.join('\n').trim()).filter(Boolean)
-}
-
-function peerBlockPublicKey(block: string) {
-  for (const line of block.split('\n')) {
-    const [key, value] = line.split('=', 2)
-    if (key && value !== undefined && key.trim().toLowerCase() === 'publickey') return value.trim()
-  }
-  return ''
-}
-
-function peerBlockField(block: string, field: string) {
-  for (const line of block.split('\n')) {
-    const [key, value] = line.split('=', 2)
-    if (key && value !== undefined && key.trim().toLowerCase() === field.toLowerCase()) return value.trim()
-  }
-  return ''
-}
-
-function parsePeerBlock(block: string) {
-  const publicKey = peerBlockPublicKey(block)
-  const allowedIPs = peerBlockField(block, 'AllowedIPs')
-  const endpoint = peerBlockField(block, 'Endpoint')
-  const endpointParts = splitEndpoint(endpoint)
-  const presharedKey = peerBlockField(block, 'PresharedKey')
-  const keepalive = peerBlockField(block, 'PersistentKeepalive')
-  const label = endpoint || allowedIPs || shortKey(publicKey) || '未命名 Peer'
-  return { publicKey, allowedIPs, endpoint, endpointHost: endpointParts.host, endpointPort: endpointParts.port, presharedKey, keepalive, label }
-}
-
-function peerExists(content: string, publicKey: string) {
-  return splitPeerBlocks(content).some((block) => peerBlockPublicKey(block) === publicKey.trim())
-}
-
-function upsertPeerBlock(content: string, block: string, publicKey: string) {
-  const blocks = splitPeerBlocks(content)
-  if (!blocks.length) return block
-  let replaced = false
-  const next = blocks.map((current) => {
-    if (peerBlockPublicKey(current) === publicKey.trim()) {
-      replaced = true
-      return block
-    }
-    return current
-  })
-  if (!replaced) next.push(block)
-  return next.join('\n\n')
 }
 
 async function generatePreview() {
@@ -471,7 +322,7 @@ async function generatePreview() {
 }
 
 async function saveManual() {
-  const validation = clientValidatePeerConfig(draft.value)
+  const validation = validatePeerConfigDraft(draft.value)
   if (validation) {
     error.value = validation
     return
@@ -543,16 +394,15 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="fixed inset-0 z-[80] flex items-center justify-center bg-black/65 p-4" @click.self="emit('close')">
-    <div class="panel flex h-[86vh] max-h-[90vh] min-h-[36rem] w-full max-w-6xl flex-col overflow-hidden">
-      <div class="flex flex-wrap items-start justify-between gap-3 border-b border-ink-700 px-6 py-5">
+  <BaseModal panel-class="h-[86vh] max-h-[90vh] min-h-[36rem] max-w-6xl" body-class="p-5" @close="emit('close')">
+    <template #header>
         <div>
           <h3 class="text-base font-semibold text-white">{{ agent.name }} · 编辑 Peer</h3>
           <p class="mt-1 text-xs text-slate-500">手动模式保留原始文本编辑；表单模式可从已有节点自动填充并生成两端 Peer 配置。</p>
         </div>
-        <button class="text-slate-500 hover:text-white" @click="emit('close')">✕</button>
-      </div>
+    </template>
 
+    <template #toolbar>
       <div class="flex flex-wrap items-center justify-between gap-3 border-b border-ink-700 px-6 py-3">
         <div class="flex rounded-xl bg-ink-900 p-1 ring-1 ring-ink-700">
           <button class="rounded-lg px-3 py-1.5 text-xs font-medium transition" :class="mode === 'manual' ? 'bg-cyan-500/15 text-cyan-300' : 'text-slate-500 hover:text-slate-300'" @click="switchMode('manual')">手动编辑</button>
@@ -560,8 +410,9 @@ onMounted(load)
         </div>
         <button v-if="mode === 'form'" class="btn-secondary !py-1.5 text-xs" @click="startNewPeerForm">+ 添加新 Peer</button>
       </div>
+    </template>
 
-      <div class="min-h-0 flex-1 overflow-auto p-5">
+    <template #default>
         <p v-if="error" class="mb-3 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300">{{ error }}</p>
         <p v-if="hasPending" class="mb-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-300 ring-1 ring-amber-500/30">当前存在待下发 Peer 配置，编辑器优先显示待下发内容。</p>
 
@@ -840,13 +691,12 @@ onMounted(load)
             </div>
           </template>
         </div>
-      </div>
+    </template>
 
-      <div class="flex items-center justify-end gap-2 border-t border-ink-700 px-6 py-4">
+    <template #footer>
         <button class="btn-secondary" @click="emit('close')">取消</button>
         <button v-if="mode === 'manual'" class="btn-primary" :disabled="loading || saving" @click="saveManual">{{ saving ? '保存中…' : '保存并下发' }}</button>
         <button v-else class="btn-primary" :disabled="loading || saving || !peerFormVisible" @click="saveGenerated">{{ saving ? '保存中…' : previewReady ? '确认保存并下发' : '生成预览' }}</button>
-      </div>
-    </div>
-  </div>
+    </template>
+  </BaseModal>
 </template>

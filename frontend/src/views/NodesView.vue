@@ -10,6 +10,7 @@ import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
 import type { Agent, WGInterface } from '../types'
 import { stateMeta } from '../types'
+import { useClipboard } from '../composables/useClipboard'
 import { requestConfirm } from '../utils/confirm'
 import { ago, fmtHandshake, fmtMbps, shortKey } from '../utils/format'
 
@@ -52,7 +53,7 @@ function openMenu(e: MouseEvent, id: string) {
 function closeMenu() {
   menuFor.value = null
 }
-const copiedKey = ref<string | null>(null)
+const { copied: copiedKey, copyText: copyToClipboard } = useClipboard<string | null>(null)
 const editingAgent = ref<Agent | null>(null)
 const peerEditingAgent = ref<Agent | null>(null)
 const peerEditingMode = ref<'manual' | 'form'>('manual')
@@ -221,13 +222,7 @@ function peerErrorCount(a: Agent) {
 
 
 async function copyText(text: string, key: string) {
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
-    /* ignore */
-  }
-  copiedKey.value = key
-  setTimeout(() => (copiedKey.value = null), 1400)
+  await copyToClipboard(text, key)
 }
 
 async function confirmDelete(a: Agent) {

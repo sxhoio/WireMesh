@@ -7,10 +7,6 @@ export function ago(ts: number): string {
   return `${Math.floor(s / 86400)}d 前`
 }
 
-export function fmtTime(ts: number): string {
-  return ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour12: false }) : '—'
-}
-
 export function fmtDateTime(ts: number): string {
   if (!ts) return '—'
   const d = new Date(ts)
