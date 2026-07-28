@@ -9,6 +9,8 @@ import (
 	"os"
 	"runtime"
 	"strings"
+
+	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
 
 // defaultAgentUpdateMinVersion is the first Agent version that understands the
@@ -16,18 +18,7 @@ import (
 // bootstrap their own updater because they will reject the command as unknown.
 const defaultAgentUpdateMinVersion = "0.3.6"
 
-type AgentUpdateManifest struct {
-	Available         bool   `json:"available"`
-	Version           string `json:"version,omitempty"`
-	OS                string `json:"os,omitempty"`
-	Arch              string `json:"arch,omitempty"`
-	Size              int64  `json:"size,omitempty"`
-	SHA256            string `json:"sha256,omitempty"`
-	DownloadURL       string `json:"download_url,omitempty"`
-	MinAgentVersion   string `json:"min_agent_version,omitempty"`
-	CurrentCompatible bool   `json:"current_compatible"`
-	Error             string `json:"error,omitempty"`
-}
+type AgentUpdateManifest = wireproto.AgentUpdateManifest
 
 const agentInstallerScript = `#!/usr/bin/env bash
 set -euo pipefail

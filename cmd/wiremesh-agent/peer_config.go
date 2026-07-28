@@ -13,19 +13,11 @@ import (
 	"time"
 
 	"github.com/wiremesh/wiremesh/internal/wgconfig"
+	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
 
-type peerConfigFile struct {
-	Interface string `json:"interface"`
-	Path      string `json:"path,omitempty"`
-	Content   string `json:"content"`
-	UpdatedAt string `json:"updated_at,omitempty"`
-}
-
-type peerConfigResponse struct {
-	NodeID string           `json:"node_id"`
-	Files  []peerConfigFile `json:"files"`
-}
+type peerConfigFile = wireproto.PeerConfigFile
+type peerConfigResponse = wireproto.PeerConfigResponse
 
 func collectPeerConfigFiles(selector, configDir string, observed []wireGuardInterfaceStatus) ([]peerConfigFile, string) {
 	if configDir == "" {

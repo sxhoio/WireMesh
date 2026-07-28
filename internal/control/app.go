@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
 
 type Config struct {
@@ -576,15 +578,7 @@ func (a *App) createEnrollment(w http.ResponseWriter, r *http.Request, c claims)
 }
 
 func (a *App) enroll(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		Token        string            `json:"token"`
-		Name         string            `json:"name"`
-		Endpoint     string            `json:"endpoint"`
-		Region       string            `json:"region"`
-		OS           string            `json:"os"`
-		AgentVersion string            `json:"agent_version"`
-		Labels       map[string]string `json:"labels"`
-	}
+	var in wireproto.EnrollmentRequest
 	if !decode(w, r, &in) {
 		return
 	}
@@ -613,7 +607,10 @@ func (a *App) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.auditEvent(enrollment.TenantID, node.ID, "agent.enroll", "node", node.ID, nil)
-	writeJSON(w, 201, map[string]any{"node": node, "certificate_pem": cert, "private_key_pem": key, "certificate_fingerprint": fingerprint, "expires_at": expires, "ca_pem": a.caPEM()})
+	writeJSON(w, 201, wireproto.EnrollmentResponse{
+		Node: wireproto.EnrollmentNode{ID: node.ID}, CertificatePEM: cert, PrivateKeyPEM: key,
+		CertificateFingerprint: fingerprint, ExpiresAt: formatWireTime(expires), CAPEM: a.caPEM(),
+	})
 }
 
 // agentNode authorizes an agent by its enrolled mTLS certificate when it reaches
@@ -671,17 +668,14 @@ func (a *App) agentConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.auditEvent(node.TenantID, node.ID, "agent.config.read", "node", node.ID, map[string]string{"version": fmt.Sprint(revision.Version)})
-	writeJSON(w, 200, map[string]any{"version": revision.Version, "config": config})
+	writeJSON(w, 200, wireproto.ConfigResponse{Version: revision.Version, Config: config})
 }
 func (a *App) agentStatus(w http.ResponseWriter, r *http.Request) {
 	node, ok := a.agentNode(w, r)
 	if !ok {
 		return
 	}
-	var in struct {
-		Version        uint64
-		State, Message string
-	}
+	var in wireproto.ConfigStatusRequest
 	if !decode(w, r, &in) {
 		return
 	}
@@ -702,17 +696,7 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var in struct {
-		Hostname        string                     `json:"hostname"`
-		OS              string                     `json:"os"`
-		AgentVersion    string                     `json:"agent_version"`
-		Labels          map[string]string          `json:"labels"`
-		Interfaces      string                     `json:"interfaces"`
-		WireGuard       []WireGuardInterfaceStatus `json:"wireguard"`
-		PeerConfigs     *[]PeerConfigFile          `json:"peer_configs,omitempty"`
-		CollectionError string                     `json:"collection_error,omitempty"`
-		Location        geoIPLocation              `json:"location,omitempty"`
-	}
+	var in wireproto.HeartbeatRequest
 	if !decode(w, r, &in) {
 		return
 	}
@@ -734,15 +718,19 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	adoptedInterface := ""
 	adoptedConfiguration := false
 	if in.WireGuard != nil {
-		node.WireGuard = in.WireGuard
+		node.WireGuard = wireGuardStatusFromWire(in.WireGuard)
 		a.geoLocatePeerEndpoints(node.TenantID, node.WireGuard)
 		adoptedInterface, adoptedConfiguration = a.adoptReportedNodeConfiguration(&node)
 	}
 	if in.PeerConfigs != nil {
-		node.PeerConfigFiles = sanitizeAgentPeerConfigFiles(*in.PeerConfigs, node.LastSeen)
+		node.PeerConfigFiles = sanitizeAgentPeerConfigFiles(peerConfigFilesFromWire(in.PeerConfigs), node.LastSeen)
 	}
-	a.applyAutomaticNodeLocation(&node, in.Location, r)
-	a.adoptPublicEndpoint(&node, in.Location, r)
+	location := geoIPLocation{}
+	if in.Location != nil {
+		location = *in.Location
+	}
+	a.applyAutomaticNodeLocation(&node, location, r)
+	a.adoptPublicEndpoint(&node, location, r)
 	if err := a.store.UpdateNode(node); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record agent heartbeat")
 		return

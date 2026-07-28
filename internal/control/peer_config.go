@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wiremesh/wiremesh/internal/wgconfig"
+	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
 
 const maxPeerConfigContentBytes = 128 * 1024
@@ -110,7 +111,7 @@ func (a *App) agentPeerConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.auditEvent(node.TenantID, node.ID, "agent.peer_config.read", "node", node.ID, map[string]string{"files": fmt.Sprint(len(node.DesiredPeerConfig))})
-	writeJSON(w, http.StatusOK, NodePeerConfigResponse{NodeID: node.ID, Files: peerConfigFilesOrEmpty(node.DesiredPeerConfig), HasPending: true})
+	writeJSON(w, http.StatusOK, wireproto.PeerConfigResponse{NodeID: node.ID, Files: peerConfigFilesToWire(peerConfigFilesOrEmpty(node.DesiredPeerConfig))})
 }
 
 func (a *App) recordPeerConfigCommandResult(node *Node, state string) error {

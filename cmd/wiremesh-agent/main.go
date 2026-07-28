@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
 
 const (
@@ -23,25 +25,8 @@ const (
 
 var agentVersion = "0.3.6"
 
-type enrollmentRequest struct {
-	Token        string            `json:"token"`
-	Name         string            `json:"name"`
-	Endpoint     string            `json:"endpoint,omitempty"`
-	Region       string            `json:"region,omitempty"`
-	OS           string            `json:"os"`
-	AgentVersion string            `json:"agent_version"`
-	Labels       map[string]string `json:"labels"`
-}
-
-type enrollmentResponse struct {
-	Node struct {
-		ID string `json:"id"`
-	} `json:"node"`
-	CertificatePEM string `json:"certificate_pem"`
-	PrivateKeyPEM  string `json:"private_key_pem"`
-	CAPEM          string `json:"ca_pem"`
-	ExpiresAt      string `json:"expires_at"`
-}
+type enrollmentRequest = wireproto.EnrollmentRequest
+type enrollmentResponse = wireproto.EnrollmentResponse
 
 type agentState struct {
 	NodeID           string `json:"node_id"`
@@ -55,23 +40,8 @@ type agentState struct {
 	AttemptedVersion uint64 `json:"attempted_version,omitempty"`
 }
 
-type agentCommand struct {
-	ID    string `json:"id"`
-	Type  string `json:"type"`
-	State string `json:"state"`
-}
-
-type heartbeatRequest struct {
-	Hostname        string                     `json:"hostname"`
-	OS              string                     `json:"os"`
-	AgentVersion    string                     `json:"agent_version"`
-	Labels          map[string]string          `json:"labels"`
-	Interfaces      string                     `json:"interfaces"`
-	WireGuard       []wireGuardInterfaceStatus `json:"wireguard"`
-	PeerConfigs     []peerConfigFile           `json:"peer_configs,omitempty"`
-	CollectionError string                     `json:"collection_error,omitempty"`
-	Location        *agentLocation             `json:"location,omitempty"`
-}
+type agentCommand = wireproto.AgentCommand
+type heartbeatRequest = wireproto.HeartbeatRequest
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "update-helper" {
@@ -215,7 +185,7 @@ func main() {
 			log.Printf("location discovery recovered")
 		}
 		lastLocationError = ""
-		if summary := location.summary(); summary != lastLocationSummary {
+		if summary := agentLocationSummary(location); summary != lastLocationSummary {
 			log.Printf("location discovery completed: %s", summary)
 			lastLocationSummary = summary
 		}

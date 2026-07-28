@@ -1,6 +1,10 @@
 package control
 
-import "time"
+import (
+	"time"
+
+	"github.com/wiremesh/wiremesh/internal/wireproto"
+)
 
 type Role string
 
@@ -146,21 +150,8 @@ type AgentIdentity struct {
 	CertificateFingerprint string    `json:"certificate_fingerprint"`
 	ExpiresAt              time.Time `json:"expires_at"`
 }
-type PeerConfig struct {
-	NodeID     string   `json:"node_id"`
-	PublicKey  string   `json:"public_key"`
-	Endpoint   string   `json:"endpoint"`
-	AllowedIPs []string `json:"allowed_ips"`
-}
-type NodeConfig struct {
-	NodeID     string       `json:"node_id"`
-	NetworkID  string       `json:"network_id"`
-	Address    string       `json:"address"`
-	PrivateKey string       `json:"private_key"`
-	ListenPort int          `json:"listen_port"`
-	MTU        int          `json:"mtu"`
-	Peers      []PeerConfig `json:"peers"`
-}
+type PeerConfig = wireproto.PeerConfig
+type NodeConfig = wireproto.NodeConfig
 type AgentCommand struct {
 	ID          string     `json:"id"`
 	TenantID    string     `json:"tenant_id"`

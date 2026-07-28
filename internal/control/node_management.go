@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
 
 const (
@@ -587,7 +589,7 @@ func (a *App) agentCommands(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-WireMesh-Command-Long-Poll", "true")
-	writeJSON(w, http.StatusOK, commands)
+	writeJSON(w, http.StatusOK, agentCommandsToWire(commands))
 }
 
 func (a *App) createAgentCommand(command AgentCommand) error {
@@ -672,9 +674,7 @@ func (a *App) agentCommandProgress(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var in struct {
-		Progress string `json:"progress"`
-	}
+	var in wireproto.CommandProgressRequest
 	if !decode(w, r, &in) {
 		return
 	}
@@ -712,10 +712,7 @@ func (a *App) agentCommandResult(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var in struct {
-		State  string `json:"state"`
-		Result string `json:"result"`
-	}
+	var in wireproto.CommandResultRequest
 	if !decode(w, r, &in) {
 		return
 	}

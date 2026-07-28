@@ -19,51 +19,16 @@ import (
 	"time"
 
 	"github.com/wiremesh/wiremesh/internal/wgconfig"
+	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
 
 const defaultAgentMTU = 1420
 
-type wireGuardPeerStatus struct {
-	PublicKey           string   `json:"public_key"`
-	Endpoint            string   `json:"endpoint"`
-	AllowedIPs          []string `json:"allowed_ips"`
-	LatestHandshakeAt   string   `json:"latest_handshake_at,omitempty"`
-	ReceiveBytes        int64    `json:"receive_bytes"`
-	TransmitBytes       int64    `json:"transmit_bytes"`
-	PersistentKeepalive int      `json:"persistent_keepalive,omitempty"`
-}
-
-type wireGuardInterfaceStatus struct {
-	Name       string                `json:"name"`
-	PublicKey  string                `json:"public_key"`
-	ListenPort int                   `json:"listen_port"`
-	Addresses  []string              `json:"addresses"`
-	MTU        int                   `json:"mtu"`
-	Up         bool                  `json:"up"`
-	Peers      []wireGuardPeerStatus `json:"peers"`
-}
-
-type peerConfig struct {
-	NodeID     string   `json:"node_id"`
-	PublicKey  string   `json:"public_key"`
-	Endpoint   string   `json:"endpoint"`
-	AllowedIPs []string `json:"allowed_ips"`
-}
-
-type nodeConfig struct {
-	NodeID     string       `json:"node_id"`
-	NetworkID  string       `json:"network_id"`
-	Address    string       `json:"address"`
-	PrivateKey string       `json:"private_key"`
-	ListenPort int          `json:"listen_port"`
-	MTU        int          `json:"mtu"`
-	Peers      []peerConfig `json:"peers"`
-}
-
-type configResponse struct {
-	Version uint64     `json:"version"`
-	Config  nodeConfig `json:"config"`
-}
+type wireGuardPeerStatus = wireproto.WireGuardPeerStatus
+type wireGuardInterfaceStatus = wireproto.WireGuardInterfaceStatus
+type peerConfig = wireproto.PeerConfig
+type nodeConfig = wireproto.NodeConfig
+type configResponse = wireproto.ConfigResponse
 
 type commandRunner interface {
 	Run(context.Context, string, ...string) ([]byte, error)

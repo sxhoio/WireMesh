@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
 
 type agentClient struct {
@@ -170,12 +172,12 @@ func (client agentClient) PollCommands(ctx context.Context) ([]agentCommand, boo
 }
 
 func (client agentClient) PostCommandResult(ctx context.Context, id, commandState, result string) error {
-	_, err := client.doJSON(ctx, http.MethodPost, "/agent/v1/commands/"+id+"/result", map[string]string{"state": commandState, "result": result}, nil, 0, http.StatusOK)
+	_, err := client.doJSON(ctx, http.MethodPost, "/agent/v1/commands/"+id+"/result", wireproto.CommandResultRequest{State: commandState, Result: result}, nil, 0, http.StatusOK)
 	return err
 }
 
 func (client agentClient) PostCommandProgress(ctx context.Context, id, progress string) error {
-	_, err := client.doJSON(ctx, http.MethodPost, "/agent/v1/commands/"+id+"/progress", map[string]string{"progress": progress}, nil, 0, http.StatusOK)
+	_, err := client.doJSON(ctx, http.MethodPost, "/agent/v1/commands/"+id+"/progress", wireproto.CommandProgressRequest{Progress: progress}, nil, 0, http.StatusOK)
 	return err
 }
 
@@ -185,7 +187,7 @@ func (client agentClient) PostHeartbeat(ctx context.Context, heartbeat heartbeat
 }
 
 func (client agentClient) PostConfigStatus(ctx context.Context, version uint64, status, message string) error {
-	_, err := client.doJSON(ctx, http.MethodPost, "/agent/v1/status", map[string]any{"version": version, "state": status, "message": message}, nil, 0, http.StatusOK)
+	_, err := client.doJSON(ctx, http.MethodPost, "/agent/v1/status", wireproto.ConfigStatusRequest{Version: version, State: status, Message: message}, nil, 0, http.StatusOK)
 	return err
 }
 

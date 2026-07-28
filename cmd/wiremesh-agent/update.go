@@ -17,6 +17,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
 
 const (
@@ -26,18 +28,7 @@ const (
 
 var errAgentUpdateHandedOff = errors.New("agent update handed off to helper")
 
-type agentUpdateManifest struct {
-	Available         bool   `json:"available"`
-	Version           string `json:"version"`
-	OS                string `json:"os"`
-	Arch              string `json:"arch"`
-	Size              int64  `json:"size"`
-	SHA256            string `json:"sha256"`
-	DownloadURL       string `json:"download_url"`
-	MinAgentVersion   string `json:"min_agent_version"`
-	CurrentCompatible bool   `json:"current_compatible"`
-	Error             string `json:"error"`
-}
+type agentUpdateManifest = wireproto.AgentUpdateManifest
 
 func performAgentUpdate(ctx context.Context, client agentClient, statePath, stateDir string, useMTLS bool, commandID string) (string, error) {
 	if runtime.GOOS != "linux" {

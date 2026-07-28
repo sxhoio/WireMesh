@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+
+	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
 
 var (
@@ -15,18 +17,7 @@ var (
 	errGeoIPNotFound    = errors.New("GeoIP location was not found")
 )
 
-type geoIPLocation struct {
-	PublicIP       string  `json:"public_ip,omitempty"`
-	LocationName   string  `json:"location_name,omitempty"`
-	LocationSource string  `json:"location_source,omitempty"`
-	Country        string  `json:"country,omitempty"`
-	CountryCode    string  `json:"country_code,omitempty"`
-	Region         string  `json:"region,omitempty"`
-	City           string  `json:"city,omitempty"`
-	Latitude       float64 `json:"latitude,omitempty"`
-	Longitude      float64 `json:"longitude,omitempty"`
-	Timezone       string  `json:"timezone,omitempty"`
-}
+type geoIPLocation = wireproto.AgentLocation
 
 type geoIPRecord struct {
 	City struct {

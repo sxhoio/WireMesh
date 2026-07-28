@@ -10,28 +10,19 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+
+	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
 
-type agentLocation struct {
-	PublicIP       string  `json:"public_ip,omitempty"`
-	LocationName   string  `json:"location_name,omitempty"`
-	LocationSource string  `json:"location_source,omitempty"`
-	Country        string  `json:"country,omitempty"`
-	CountryCode    string  `json:"country_code,omitempty"`
-	Region         string  `json:"region,omitempty"`
-	City           string  `json:"city,omitempty"`
-	Latitude       float64 `json:"latitude,omitempty"`
-	Longitude      float64 `json:"longitude,omitempty"`
-	Timezone       string  `json:"timezone,omitempty"`
-}
+type agentLocation = wireproto.AgentLocation
 
-func (location agentLocation) validCoordinates() bool {
+func validAgentLocationCoordinates(location agentLocation) bool {
 	return !math.IsNaN(location.Latitude) && !math.IsInf(location.Latitude, 0) && location.Latitude >= -90 && location.Latitude <= 90 &&
 		!math.IsNaN(location.Longitude) && !math.IsInf(location.Longitude, 0) && location.Longitude >= -180 && location.Longitude <= 180 &&
 		(location.Latitude != 0 || location.Longitude != 0)
 }
 
-func (location agentLocation) summary() string {
+func agentLocationSummary(location agentLocation) string {
 	if location.LocationSource != "" {
 		name := location.LocationName
 		if name == "" {
@@ -65,7 +56,7 @@ func (client agentClient) FetchLocation(ctx context.Context) (agentLocation, err
 	if location.LocationSource != "agent" && location.LocationSource != "geoip" {
 		location.LocationSource = ""
 	}
-	if location.LocationSource != "" && !location.validCoordinates() {
+	if location.LocationSource != "" && !validAgentLocationCoordinates(location) {
 		location.LocationName = ""
 		location.LocationSource = ""
 		location.Latitude = 0
