@@ -12,7 +12,7 @@ import type { Agent, WGInterface } from '../types'
 import { stateMeta } from '../types'
 import { useClipboard } from '../composables/useClipboard'
 import { requestConfirm } from '../utils/confirm'
-import { ago, fmtHandshake, fmtMbps, shortKey } from '../utils/format'
+import { ago, fmtBytes, fmtHandshake, fmtMbps, shortKey } from '../utils/format'
 
 const app = useAppStore()
 const mesh = useMeshStore()
@@ -209,8 +209,15 @@ function peersOf(iface?: WGInterface) {
     .map((l) => {
       const otherId = l.a === iface.id ? l.b : l.a
       const other = mesh.ifaceWithAgent(otherId)
-      return { link: l, other, otherId }
+      // 当前接口上观测到的该对端记录（receive_bytes/transmit_bytes 为自接口启用以来的累计值）
+      const observed = iface.peers.find((peer) => peer.publicKey === other?.iface.publicKey)
+      return { link: l, other, otherId, observed }
     })
+}
+
+/** 节点自连接启用以来的累计流量字节数（接收 + 发送） */
+function agentTotalBytes(a: Agent) {
+  return (a.totalRxGB + a.totalTxGB) * 1024 ** 3
 }
 
 function peerErrorCount(a: Agent) {
@@ -297,6 +304,7 @@ async function confirmDelete(a: Agent) {
             <th class="hidden w-28 px-2 py-3 md:table-cell">隧道 IP</th>
             <th class="hidden w-28 px-2 py-3 2xl:table-cell">公网 Endpoint</th>
             <th class="hidden w-24 px-2 py-3 2xl:table-cell">速率 (Mbps)</th>
+            <th class="hidden w-24 px-2 py-3 2xl:table-cell">总流量</th>
             <th class="hidden w-20 px-2 py-3 2xl:table-cell">Peer</th>
             <th class="hidden w-56 px-2 py-3 xl:table-cell">版本 · 上报</th>
             <th class="w-28 px-2 py-3 text-center">操作</th>
@@ -320,7 +328,7 @@ async function confirmDelete(a: Agent) {
                 <p class="truncate font-medium leading-snug text-white">{{ a.name }}</p>
                 <p class="truncate text-xs text-slate-500">{{ a.hostname }}</p>
                 <p v-if="a.collectionError" class="mt-0.5 truncate text-[11px] text-amber-400" :title="a.collectionError">WireGuard 采集异常</p>
-                <p class="mt-0.5 truncate font-mono text-[11px] text-slate-600 md:hidden">{{ a.interfaces.map((i) => i.name).join(', ') || '待配置' }} · {{ a.interfaces.map((i) => i.tunnelIP).join(', ') || a.address }}</p>
+                <p class="mt-0.5 truncate font-mono text-[11px] text-slate-600 md:hidden">{{ a.interfaces.map((i) => i.name).join(', ') || '待配置' }} · {{ a.interfaces.map((i) => i.tunnelIP).join(', ') || a.address }} · 总 {{ fmtBytes(agentTotalBytes(a)) }}</p>
               </td>
               <td class="hidden px-2 py-3.5 md:table-cell">
                 <p class="flex items-center gap-1 whitespace-nowrap text-sm text-slate-300">
@@ -335,6 +343,7 @@ async function confirmDelete(a: Agent) {
                 <p class="truncate font-mono text-xs text-slate-300">{{ a.publicIP }}</p>
               </td>
               <td class="hidden whitespace-nowrap px-2 py-3.5 font-mono text-xs text-slate-300 2xl:table-cell">↓{{ fmtMbps(a.rxMbps) }} ↑{{ fmtMbps(a.txMbps) }}</td>
+              <td class="hidden whitespace-nowrap px-2 py-3.5 font-mono text-xs text-slate-300 2xl:table-cell" :title="`自接口启用以来累计：接收 ${fmtBytes(a.totalRxGB * 1024 ** 3)} · 发送 ${fmtBytes(a.totalTxGB * 1024 ** 3)}`">{{ fmtBytes(agentTotalBytes(a)) }}</td>
               <td class="hidden whitespace-nowrap px-2 py-3.5 text-xs text-slate-300 2xl:table-cell">
                 {{ peersOf(a.interfaces[0]).length + a.interfaces.slice(1).reduce((n, i) => n + peersOf(i).length, 0) }}
                 <span v-if="peerErrorCount(a)" class="ml-1 text-red-400">({{ peerErrorCount(a) }} 异常)</span>
@@ -366,7 +375,7 @@ async function confirmDelete(a: Agent) {
 
             <!-- 展开：接口详情 -->
             <tr v-if="expanded.has(a.id)" class="border-t border-ink-700/70 bg-ink-950/40">
-              <td colspan="10" class="px-4 py-4 sm:px-5">
+              <td colspan="11" class="px-4 py-4 sm:px-5">
           <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
             <div v-if="!a.interfaces.length" class="rounded-xl bg-ink-900/70 p-4 ring-1 xl:col-span-2" :class="a.collectionError ? 'ring-amber-500/30' : 'ring-ink-600'">
               <p class="text-sm font-medium" :class="a.collectionError ? 'text-amber-300' : 'text-slate-300'">未采集到 WireGuard 接口</p>
@@ -404,6 +413,7 @@ async function confirmDelete(a: Agent) {
                     <span class="font-mono text-[11px] text-slate-500">{{ p.other?.iface.tunnelIP }}</span>
                     <span class="w-20 text-right text-[11px] text-slate-500">{{ fmtHandshake(p.link.lastHandshakeSecAgo) }}</span>
                     <span class="w-24 text-right font-mono text-[11px] text-slate-500">↓{{ fmtMbps(p.link.rxMbps) }} ↑{{ fmtMbps(p.link.txMbps) }}</span>
+                    <span class="w-32 text-right font-mono text-[11px] text-slate-500" title="自接口启用以来累计流量">↓{{ fmtBytes(p.observed?.receiveBytes ?? 0) }} ↑{{ fmtBytes(p.observed?.transmitBytes ?? 0) }}</span>
                   </div>
                   <p v-if="!peersOf(iface).length" class="text-[11px] text-slate-600">暂无 Peer</p>
                 </div>
@@ -433,7 +443,7 @@ async function confirmDelete(a: Agent) {
             </tr>
           </template>
           <tr v-if="!filtered.length">
-            <td colspan="10" class="py-12 text-center text-sm text-slate-500">没有匹配的 Agent</td>
+            <td colspan="11" class="py-12 text-center text-sm text-slate-500">没有匹配的 Agent</td>
           </tr>
         </tbody>
       </table>
