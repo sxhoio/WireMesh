@@ -5,3 +5,5 @@ wiremesh-desired-config.json
 *.db
 *.db-shm
 *.db-wal
+.claude
+.reasonix
