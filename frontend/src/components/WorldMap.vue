@@ -240,10 +240,13 @@ function countryAtCoordinate(lng: number, lat: number) {
   })[0]
 }
 
+/** 中国地理中心（经度 104°E、纬度 35°N），作为默认地图中心 */
+const chinaCenter: [number, number] = [104, 35]
+
 function showGlobalView() {
   if (!map) return
   selectedCountryName.value = ''
-  map.getView().animate({ center: fromLonLat([12, 18]), zoom: 2, duration: 450 })
+  map.getView().animate({ center: toMapProjection(chinaCenter), zoom: 2, duration: 450 })
 }
 
 function zoomToCountry(lng: number, lat: number) {
@@ -280,7 +283,7 @@ onMounted(() => {
       new VectorLayer({ source: markerSource, zIndex: 3 }),
     ],
     view: new View({
-      center: fromLonLat([12, 18]),
+      center: toMapProjection(chinaCenter),
       zoom: 2,
       minZoom: 2,
       maxZoom: 12,
