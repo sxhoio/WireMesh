@@ -25,6 +25,7 @@ const form = reactive({
   interfaceSelector: props.agent.interfaceSelector || 'auto',
   enabled: props.agent.enabled,
   role: (props.agent.labels.find((value) => value.startsWith('wiremesh.role='))?.split('=')[1] || 'mesh') as 'mesh' | 'hub' | 'spoke',
+  relay: props.agent.labels.includes('wiremesh.relay=true'),
   manualLocation: props.agent.locationSource === 'manual',
   locationName: props.agent.city || '',
 })
@@ -48,6 +49,7 @@ async function save() {
     const index = value.indexOf('='); return index >= 0 ? [value.slice(0, index), value.slice(index + 1)] : [value, 'true']
   }))
   labels['wiremesh.role'] = form.role
+  labels['wiremesh.relay'] = form.relay ? 'true' : 'false'
   const ok = await mesh.updateNodeAndPublish(props.agent.id, {
     name: form.name.trim(), address: form.address.trim(), endpoint: form.endpoint.trim(),
     listen_port: Number(form.listenPort), mtu: Number(form.mtu), enabled: form.enabled,
@@ -76,6 +78,7 @@ async function save() {
         <label class="space-y-1.5"><span class="text-xs text-slate-400">MTU</span><input v-model.number="form.mtu" type="number" min="576" max="9000" required class="input w-full" /></label>
         <label class="space-y-1.5"><span class="text-xs text-slate-400">采集接口选择器</span><input v-model="form.interfaceSelector" class="input w-full font-mono" placeholder="auto 或 wg0,wg1" /></label>
         <label class="space-y-1.5"><span class="text-xs text-slate-400">拓扑角色</span><select v-model="form.role" class="input w-full"><option value="mesh">Mesh</option><option value="hub">Hub</option><option value="spoke">Spoke</option></select></label>
+        <label class="flex items-center justify-between rounded-xl border border-ink-700 bg-ink-900/60 px-4 py-3"><span><span class="block text-sm text-slate-300">中继模式（Relay）</span><span class="text-xs text-slate-600">NAT 下无法直连的节点对可经此节点转发互通</span></span><input v-model="form.relay" type="checkbox" class="h-4 w-4 accent-cyan-500" /></label>
 
         <section class="space-y-4 rounded-xl border border-cyan-500/20 bg-cyan-500/[0.04] p-4 sm:col-span-2">
           <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-ink-900/70 px-3 py-2.5 ring-1 ring-ink-700/80">

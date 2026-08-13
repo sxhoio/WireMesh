@@ -105,11 +105,11 @@ export const useAppStore = defineStore('app', {
         return false
       } finally { this.loading = false }
     },
-    async login(email: string, password: string) {
+    async login(email: string, password: string, otp?: string) {
       this.loading = true
       this.error = ''
       try {
-        const result = await api.login(email, password)
+        const result = await api.login(email, password, otp)
         session.token = result.token
         this.user = result.user
         this.settings = await api.settings()

@@ -8,6 +8,7 @@ export interface ApiWireGuardPeer { public_key: string; endpoint: string; allowe
 export interface ApiWireGuardInterface { name: string; public_key: string; listen_port: number; addresses: string[]; mtu: number; up: boolean; peers: ApiWireGuardPeer[] }
 export interface ApiNode { id: string; tenant_id: string; project_id: string; network_id: string; name: string; hostname?: string; interface_selector?: string; collection_error?: string; enabled: boolean; listen_port: number; mtu: number; address: string; endpoint: string; region: string; location_name: string; location_source: string; latitude: number; longitude: number; os: string; agent_version: string; labels: Record<string, string>; public_key: string; wireguard?: ApiWireGuardInterface[]; last_seen: string; created_at: string }
 export interface ApiAgentCommand { id: string; tenant_id: string; node_id: string; type: string; state: string; result?: string; created_at: string; started_at?: string; completed_at?: string }
+export interface ApiClientConfig { node_id: string; name: string; address: string; content: string }
 export interface ApiPeerConfigFile { interface: string; path?: string; content: string; updated_at?: string }
 export interface ApiPeerConfigResponse { node_id: string; files: ApiPeerConfigFile[]; pending_files?: ApiPeerConfigFile[]; has_pending: boolean }
 export interface ApiPeerConfigUpdateResult { node_id: string; files: ApiPeerConfigFile[]; command: ApiAgentCommand; offline: boolean; message: string }
@@ -64,6 +65,14 @@ export interface ApiNotificationChannel {
   config: ApiNotificationConfig; template: string; subjectTemplate?: string; enabled: boolean; agents: 'all' | string[]; createdAt: string; updatedAt: string
 }
 export interface ApiNotificationLog { id: string; channelId: string; channelName: string; channelType: ApiNotificationChannel['type']; agentName: string; message: string; status: 'sent' | 'failed' | 'test'; createdAt: string }
+export interface ApiAlertRule { id: string; name: string; type: 'node_offline' | 'link_down' | 'config_failed'; threshold_sec: number; channel_ids: string[]; enabled: boolean; quiet_sec: number; created_at: string; updated_at: string }
+export interface ApiAlertEvent { id: string; rule_id: string; rule_name: string; node_id: string; node_name: string; message: string; status: 'sent' | 'failed'; created_at: string }
+export interface ApiAccessResource { id: string; network_id: string; name: string; gateway_node_id: string; target: string; port?: number; protocol?: string; description?: string; created_at: string }
+export interface ApiAccessPolicy { id: string; network_id: string; name: string; source_label?: string; source_node_ids: string[]; resource_ids: string[]; enabled: boolean; created_at: string; updated_at: string }
+export interface ApiDNSRecord { id: string; network_id: string; name: string; address: string; description?: string; created_at: string }
+export interface ApiAPIToken { id: string; name: string; expires_at?: string | null; last_used_at?: string; created_at: string }
+export interface ApiEgressConfig { network_id: string; egress_node_id: string; cidrs: string[]; updated_at: string }
+export interface ApiUserSession { id: string; user_id: string; user_name: string; user_agent: string; created_at: string; last_seen_at: string; current: boolean }
 
 export type DatabaseDriver = 'sqlite' | 'mysql' | 'postgres'
 export interface DatabaseSetupConfig {
@@ -128,9 +137,16 @@ export const api = {
   testDatabase: (payload: DatabaseSetupConfig) => request<{ connected: boolean }>('/api/v1/setup/database/test', { method: 'POST', body: JSON.stringify(payload) }),
   configureDatabase: (payload: DatabaseSetupConfig) => request<{ configured: boolean; driver: DatabaseDriver; initialized: boolean }>('/api/v1/setup/database', { method: 'POST', body: JSON.stringify(payload) }),
   setup: (payload: { email: string; name: string; password: string }) => request<{ user: ApiUser }>('/api/v1/setup', { method: 'POST', body: JSON.stringify(payload) }),
-  login: (email: string, password: string) => request<{ token: string; user: ApiUser }>('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  login: (email: string, password: string, otp?: string) => request<{ token: string; user: ApiUser }>('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ email, password, otp }) }),
   logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
   me: () => request<ApiUser>('/api/v1/auth/me'),
+  mfaStatus: () => request<{ enabled: boolean }>('/api/v1/auth/mfa/status'),
+  mfaSetup: () => request<{ secret: string; uri: string }>('/api/v1/auth/mfa/setup', { method: 'POST' }),
+  mfaEnable: (otp: string) => request<{ enabled: boolean }>('/api/v1/auth/mfa/enable', { method: 'POST', body: JSON.stringify({ otp }) }),
+  mfaDisable: () => request<{ enabled: boolean }>('/api/v1/auth/mfa/disable', { method: 'POST' }),
+  ssoConfig: () => request<{ issuer: string; client_id: string; client_secret_configured: boolean; enabled: boolean }>('/api/v1/settings/sso'),
+  updateSSOConfig: (payload: { issuer: string; client_id: string; client_secret?: string; enabled: boolean }) => request<{ issuer: string; client_id: string; client_secret_configured: boolean; enabled: boolean }>('/api/v1/settings/sso', { method: 'PUT', body: JSON.stringify(payload) }),
+  ssoLogin: (tenant?: string) => request<{ url?: string; tenants?: string[] }>('/api/v1/auth/sso/login' + (tenant ? '?tenant=' + encodeURIComponent(tenant) : '')),
   projects: () => requestArray<ApiProject>('/api/v1/projects'),
   createProject: (payload: { name: string; description: string }) => request<ApiProject>('/api/v1/projects', { method: 'POST', body: JSON.stringify(payload) }),
   networks: (projectId?: string) => requestArray<ApiNetwork>('/api/v1/networks' + (projectId ? '?project_id=' + encodeURIComponent(projectId) : '')),
@@ -138,6 +154,8 @@ export const api = {
   createNetwork: (payload: { project_id: string; name: string; cidr: string; dns: string; topology: ApiNetwork['topology'] }) => request<ApiNetwork>('/api/v1/networks', { method: 'POST', body: JSON.stringify(payload) }),
   nodes: () => requestArray<ApiNode>('/api/v1/nodes'),
   node: (id: string) => request<ApiNode>('/api/v1/nodes/' + encodeURIComponent(id)),
+  createNode: (payload: { network_id: string; name: string; endpoint?: string; labels?: Record<string, string> }) => request<ApiNode>('/api/v1/nodes', { method: 'POST', body: JSON.stringify(payload) }),
+  nodeClientConfig: (id: string) => request<ApiClientConfig>('/api/v1/nodes/' + encodeURIComponent(id) + '/client-config'),
   updateNode: (id: string, payload: Partial<Pick<ApiNode, 'name' | 'address' | 'endpoint' | 'listen_port' | 'mtu' | 'enabled' | 'interface_selector' | 'labels' | 'location_name' | 'location_source' | 'latitude' | 'longitude'>>) => request<ApiNodeUpdateResult>('/api/v1/nodes/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteNode: (id: string) => request<void>('/api/v1/nodes/' + encodeURIComponent(id), { method: 'DELETE' }),
   nodePeerConfig: (id: string) => request<ApiPeerConfigResponse>('/api/v1/nodes/' + encodeURIComponent(id) + '/peer-config'),
@@ -147,6 +165,7 @@ export const api = {
   updateAgent: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/update-agent', { method: 'POST' }),
   updateAgents: (nodeIds?: string[]) => request<ApiAgentUpdateDispatchResult>('/api/v1/nodes/update-agent', { method: 'POST', body: JSON.stringify({ node_ids: nodeIds || [] }) }),
   checkNodeConnectivity: (id: string) => request<ApiAgentCommand>('/api/v1/nodes/' + encodeURIComponent(id) + '/connectivity-check', { method: 'POST' }),
+  rotateNodeKey: (id: string) => request<{ status: string }>('/api/v1/nodes/' + encodeURIComponent(id) + '/rotate-key', { method: 'POST' }),
   nodeLogs: (id: string, limit = 50, offset = 0, errorsOnly = false) => request<ApiNodeLogPage>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs?limit=' + limit + '&offset=' + offset + (errorsOnly ? '&level=error' : '')),
   clearNodeLogs: (id: string) => request<void>('/api/v1/nodes/' + encodeURIComponent(id) + '/logs', { method: 'DELETE' }),
   traffic: (id: string, interfaceName: string, range: ApiTrafficRange) => requestArray<ApiTrafficPoint>('/api/v1/nodes/' + encodeURIComponent(id) + '/traffic?interface=' + encodeURIComponent(interfaceName) + '&range=' + range),
@@ -169,6 +188,28 @@ export const api = {
   deleteNotificationChannel: (id: string) => request<void>('/api/v1/settings/notifications/' + encodeURIComponent(id), { method: 'DELETE' }),
   testNotificationChannel: (id: string) => request<ApiNotificationLog>('/api/v1/settings/notifications/' + encodeURIComponent(id) + '/test', { method: 'POST' }),
   notificationLogs: () => requestArray<ApiNotificationLog>('/api/v1/settings/notification-logs'),
+  alertRules: () => requestArray<ApiAlertRule>('/api/v1/settings/alert-rules'),
+  createAlertRule: (payload: Omit<ApiAlertRule, 'id' | 'created_at' | 'updated_at'>) => request<ApiAlertRule>('/api/v1/settings/alert-rules', { method: 'POST', body: JSON.stringify(payload) }),
+  updateAlertRule: (id: string, payload: Omit<ApiAlertRule, 'id' | 'created_at' | 'updated_at'>) => request<ApiAlertRule>('/api/v1/settings/alert-rules/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteAlertRule: (id: string) => request<void>('/api/v1/settings/alert-rules/' + encodeURIComponent(id), { method: 'DELETE' }),
+  alertEvents: () => requestArray<ApiAlertEvent>('/api/v1/settings/alert-events'),
+  accessResources: (networkId: string) => requestArray<ApiAccessResource>('/api/v1/networks/' + encodeURIComponent(networkId) + '/access-resources'),
+  createAccessResource: (networkId: string, payload: Omit<ApiAccessResource, 'id' | 'network_id' | 'created_at'>) => request<ApiAccessResource>('/api/v1/networks/' + encodeURIComponent(networkId) + '/access-resources', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteAccessResource: (networkId: string, resourceId: string) => request<void>('/api/v1/networks/' + encodeURIComponent(networkId) + '/access-resources/' + encodeURIComponent(resourceId), { method: 'DELETE' }),
+  accessPolicies: (networkId: string) => requestArray<ApiAccessPolicy>('/api/v1/networks/' + encodeURIComponent(networkId) + '/access-policies'),
+  createAccessPolicy: (networkId: string, payload: Omit<ApiAccessPolicy, 'id' | 'network_id' | 'created_at' | 'updated_at'>) => request<ApiAccessPolicy>('/api/v1/networks/' + encodeURIComponent(networkId) + '/access-policies', { method: 'POST', body: JSON.stringify(payload) }),
+  updateAccessPolicy: (networkId: string, policyId: string, payload: Omit<ApiAccessPolicy, 'id' | 'network_id' | 'created_at' | 'updated_at'>) => request<ApiAccessPolicy>('/api/v1/networks/' + encodeURIComponent(networkId) + '/access-policies/' + encodeURIComponent(policyId), { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteAccessPolicy: (networkId: string, policyId: string) => request<void>('/api/v1/networks/' + encodeURIComponent(networkId) + '/access-policies/' + encodeURIComponent(policyId), { method: 'DELETE' }),
+  dnsRecords: (networkId: string) => requestArray<ApiDNSRecord>('/api/v1/networks/' + encodeURIComponent(networkId) + '/dns-records'),
+  createDNSRecord: (networkId: string, payload: { name: string; address: string; description?: string }) => request<ApiDNSRecord>('/api/v1/networks/' + encodeURIComponent(networkId) + '/dns-records', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteDNSRecord: (networkId: string, recordId: string) => request<void>('/api/v1/networks/' + encodeURIComponent(networkId) + '/dns-records/' + encodeURIComponent(recordId), { method: 'DELETE' }),
+  apiTokens: () => requestArray<ApiAPIToken>('/api/v1/settings/api-tokens'),
+  createAPIToken: (payload: { name: string; ttl_days: number }) => request<{ token: string; api_token: ApiAPIToken }>('/api/v1/settings/api-tokens', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteAPIToken: (id: string) => request<void>('/api/v1/settings/api-tokens/' + encodeURIComponent(id), { method: 'DELETE' }),
+  egress: (networkId: string) => request<ApiEgressConfig>('/api/v1/networks/' + encodeURIComponent(networkId) + '/egress'),
+  updateEgress: (networkId: string, payload: { egress_node_id: string; cidrs: string[] }) => request<ApiEgressConfig>('/api/v1/networks/' + encodeURIComponent(networkId) + '/egress', { method: 'PUT', body: JSON.stringify(payload) }),
+  sessions: () => requestArray<ApiUserSession>('/api/v1/auth/sessions'),
+  revokeSession: (id: string) => request<void>('/api/v1/auth/sessions/' + encodeURIComponent(id), { method: 'DELETE' }),
   users: () => requestArray<ApiUser>('/api/v1/users'),
   createUser: (payload: { name: string; email: string; password: string; role: ApiUser['role'] }) => request<ApiUser>('/api/v1/users', { method: 'POST', body: JSON.stringify(payload) }),
 }

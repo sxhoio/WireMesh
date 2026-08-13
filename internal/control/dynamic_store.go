@@ -154,3 +154,89 @@ func (s *SwitchableStore) ListAuditPage(tenant string, limit, offset int) ([]Aud
 func (s *SwitchableStore) ClearAudit(tenant string) error {
 	return s.store().ClearAudit(tenant)
 }
+func (s *SwitchableStore) CreateAlertRule(v AlertRule) error {
+	return s.store().CreateAlertRule(v)
+}
+func (s *SwitchableStore) UpdateAlertRule(v AlertRule) error {
+	return s.store().UpdateAlertRule(v)
+}
+func (s *SwitchableStore) DeleteAlertRule(tenant, id string) error {
+	return s.store().DeleteAlertRule(tenant, id)
+}
+func (s *SwitchableStore) ListAlertRules(tenant string) ([]AlertRule, error) {
+	return s.store().ListAlertRules(tenant)
+}
+func (s *SwitchableStore) AllAlertRules() ([]AlertRule, error) {
+	return s.store().AllAlertRules()
+}
+func (s *SwitchableStore) AddAlertEvent(v AlertEvent) error {
+	return s.store().AddAlertEvent(v)
+}
+func (s *SwitchableStore) ListAlertEvents(tenant string) ([]AlertEvent, error) {
+	return s.store().ListAlertEvents(tenant)
+}
+func (s *SwitchableStore) CreateAccessResource(v AccessResource) error {
+	return s.store().CreateAccessResource(v)
+}
+func (s *SwitchableStore) DeleteAccessResource(tenant, id string) error {
+	return s.store().DeleteAccessResource(tenant, id)
+}
+func (s *SwitchableStore) ListAccessResources(tenant, network string) ([]AccessResource, error) {
+	return s.store().ListAccessResources(tenant, network)
+}
+func (s *SwitchableStore) CreateAccessPolicy(v AccessPolicy) error {
+	return s.store().CreateAccessPolicy(v)
+}
+func (s *SwitchableStore) UpdateAccessPolicy(v AccessPolicy) error {
+	return s.store().UpdateAccessPolicy(v)
+}
+func (s *SwitchableStore) DeleteAccessPolicy(tenant, id string) error {
+	return s.store().DeleteAccessPolicy(tenant, id)
+}
+func (s *SwitchableStore) ListAccessPolicies(tenant, network string) ([]AccessPolicy, error) {
+	return s.store().ListAccessPolicies(tenant, network)
+}
+func (s *SwitchableStore) CreateDNSRecord(v DNSRecord) error {
+	return s.store().CreateDNSRecord(v)
+}
+func (s *SwitchableStore) DeleteDNSRecord(tenant, id string) error {
+	return s.store().DeleteDNSRecord(tenant, id)
+}
+func (s *SwitchableStore) ListDNSRecords(tenant, network string) ([]DNSRecord, error) {
+	return s.store().ListDNSRecords(tenant, network)
+}
+func (s *SwitchableStore) CreateAPIToken(v APIToken) error {
+	return s.store().CreateAPIToken(v)
+}
+func (s *SwitchableStore) GetAPITokenByHash(hash string) (APIToken, error) {
+	return s.store().GetAPITokenByHash(hash)
+}
+func (s *SwitchableStore) DeleteAPIToken(tenant, id string) error {
+	return s.store().DeleteAPIToken(tenant, id)
+}
+func (s *SwitchableStore) ListAPITokens(tenant string) ([]APIToken, error) {
+	return s.store().ListAPITokens(tenant)
+}
+func (s *SwitchableStore) UpdateAPITokenLastUsed(id string, at time.Time) error {
+	return s.store().UpdateAPITokenLastUsed(id, at)
+}
+func (s *SwitchableStore) GetEgressConfig(tenant, network string) (EgressConfig, error) {
+	return s.store().GetEgressConfig(tenant, network)
+}
+func (s *SwitchableStore) UpsertEgressConfig(v EgressConfig) error {
+	return s.store().UpsertEgressConfig(v)
+}
+func (s *SwitchableStore) CountNodes() (int, error) { return s.store().CountNodes() }
+func (s *SwitchableStore) CountUsers() (int, error) { return s.store().CountUsers() }
+func (s *SwitchableStore) UpdateUserMFA(id string, secret EncryptedSecret, enabled bool) error {
+	return s.store().UpdateUserMFA(id, secret, enabled)
+}
+func (s *SwitchableStore) GetSSOConfig(tenant string) (SSOConfig, error) {
+	return s.store().GetSSOConfig(tenant)
+}
+func (s *SwitchableStore) UpsertSSOConfig(v SSOConfig) error {
+	return s.store().UpsertSSOConfig(v)
+}
+func (s *SwitchableStore) AllSSOConfigs() ([]SSOConfig, error) {
+	return s.store().AllSSOConfigs()
+}

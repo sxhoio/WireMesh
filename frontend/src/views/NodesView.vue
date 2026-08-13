@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
-import type { ApiTrafficRange } from '../api'
+import { api, type ApiTrafficRange } from '../api'
 import AddAgentDialog from '../components/AddAgentDialog.vue'
 import EditNodeConfigModal from '../components/EditNodeConfigModal.vue'
 import AgentLogsModal from '../components/AgentLogsModal.vue'
@@ -264,6 +264,23 @@ async function confirmDelete(a: Agent) {
   void mesh.removeAgent(a.id, app.username).finally(() => setAgentDeleting(a.id, false))
 }
 
+async function rotateKey(agent: Agent) {
+  const confirmed = await requestConfirm({
+    title: '轮换节点密钥',
+    message: `确定轮换节点“${agent.name}”的 WireGuard 密钥吗？\n轮换后旧配置立即失效，将自动重新发布配置。`,
+    confirmText: '轮换密钥',
+    variant: 'warning',
+  })
+  if (!confirmed) return
+  try {
+    await api.rotateNodeKey(agent.id)
+    mesh.notice = '节点密钥已轮换，新配置已发布'
+    await mesh.refresh()
+  } catch (reason) {
+    mesh.error = reason instanceof Error ? reason.message : '轮换密钥失败'
+  }
+}
+
 </script>
 
 <template>
@@ -493,6 +510,11 @@ async function confirmDelete(a: Agent) {
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.publicIP, 'ep-' + a.id)">{{ copiedKey === 'ep-' + a.id ? '已复制 ✓' : '复制 Endpoint' }}</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.interfaces[0]?.publicKey || a.publicKey, 'pk-' + a.id)">{{ copiedKey === 'pk-' + a.id ? '已复制 ✓' : '复制 Public Key' }}</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="logsAgent = a; closeMenu()">查看日志</button>
+            <button
+              v-if="app.isAdmin"
+              class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-amber-300 hover:bg-ink-700"
+              @click="rotateKey(a); closeMenu()"
+            >轮换密钥</button>
             <div class="my-1 border-t border-ink-700"></div>
             <button
               v-if="app.isAdmin"

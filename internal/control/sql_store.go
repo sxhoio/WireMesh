@@ -91,6 +91,9 @@ func (s *SQLStore) migrate(ctx context.Context) error {
 	if err := s.ensureUserLastLoginColumn(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureUserMFAColumns(ctx); err != nil {
+		return err
+	}
 	if err := s.ensureSystemSettingsGeoIPColumn(ctx); err != nil {
 		return err
 	}
@@ -111,6 +114,13 @@ func (s *SQLStore) ensureUserLastLoginColumn(ctx context.Context) error {
 		"inspect users schema",
 		"add users last login column",
 	)
+}
+
+func (s *SQLStore) ensureUserMFAColumns(ctx context.Context) error {
+	if err := s.ensureSchemaColumn(ctx, "users", schemaColumn{name: "totp_secret_json", definition: "TEXT NOT NULL DEFAULT ''", mysqlDefinition: "LONGTEXT NULL"}, "inspect users schema", "add users totp secret column"); err != nil {
+		return err
+	}
+	return s.ensureSchemaColumn(ctx, "users", schemaColumn{name: "totp_enabled", definition: "BOOLEAN NOT NULL DEFAULT FALSE", mysqlDefinition: "BOOLEAN NOT NULL DEFAULT FALSE"}, "inspect users schema", "add users totp enabled column")
 }
 
 func (s *SQLStore) ensureSystemSettingsGeoIPColumn(ctx context.Context) error {
@@ -228,11 +238,13 @@ func (s *SQLStore) CreateInitialAdmin(v User) error {
 	}
 	return tx.Commit()
 }
+const userSelect = `SELECT id, tenant_id, email, password_hash, name, role, COALESCE(last_login_at, ''), COALESCE(totp_secret_json, ''), COALESCE(totp_enabled, FALSE), created_at FROM users`
+
 func (s *SQLStore) GetUserByEmail(email string) (User, error) {
-	return scanUser(s.db.QueryRow(s.query(`SELECT id, tenant_id, email, password_hash, name, role, last_login_at, created_at FROM users WHERE email = ?`), strings.ToLower(email)))
+	return scanUser(s.db.QueryRow(s.query(userSelect+` WHERE email = ?`), strings.ToLower(email)))
 }
 func (s *SQLStore) GetUser(id string) (User, error) {
-	return scanUser(s.db.QueryRow(s.query(`SELECT id, tenant_id, email, password_hash, name, role, last_login_at, created_at FROM users WHERE id = ?`), id))
+	return scanUser(s.db.QueryRow(s.query(userSelect+` WHERE id = ?`), id))
 }
 func (s *SQLStore) UpdateUserLastLogin(id string, at time.Time) error {
 	return changed(s.db.Exec(s.query(`UPDATE users SET last_login_at = ? WHERE id = ?`), timeText(at), id))
@@ -678,7 +690,7 @@ func (s *SQLStore) pruneKeepingNewest(table, tenant, node string, keep int) erro
 }
 
 func (s *SQLStore) ListUsers(tenant string) ([]User, error) {
-	return queryList(s, `SELECT id, tenant_id, email, password_hash, name, role, last_login_at, created_at FROM users WHERE tenant_id = ? ORDER BY created_at`, scanUser, tenant)
+	return queryList(s, userSelect+` WHERE tenant_id = ? ORDER BY created_at`, scanUser, tenant)
 }
 func (s *SQLStore) ensureNodeWireGuardColumn(ctx context.Context) error {
 	return s.ensureSchemaColumn(
@@ -878,12 +890,16 @@ func scanUser(row scanner) (User, error) {
 	var v User
 	var role, created string
 	var lastLogin sql.NullString
-	if err := row.Scan(&v.ID, &v.TenantID, &v.Email, &v.PasswordHash, &v.Name, &role, &lastLogin, &created); err != nil {
+	var totpSecret sql.NullString
+	if err := row.Scan(&v.ID, &v.TenantID, &v.Email, &v.PasswordHash, &v.Name, &role, &lastLogin, &totpSecret, &v.TotpEnabled, &created); err != nil {
 		return User{}, notFound(err)
 	}
 	v.Role = Role(role)
 	if lastLogin.Valid {
 		v.LastLoginAt = parseTime(lastLogin.String)
+	}
+	if totpSecret.Valid && strings.TrimSpace(totpSecret.String) != "" {
+		_ = json.Unmarshal([]byte(totpSecret.String), &v.TotpSecret)
 	}
 	v.CreatedAt = parseTime(created)
 	return v, nil
@@ -964,6 +980,280 @@ func scanNodeRef(row scanner) (Node, error) {
 	}
 	v.LastSeen = parseTime(lastSeen)
 	v.CreatedAt = parseTime(created)
+	return v, nil
+}
+
+func (s *SQLStore) CreateAlertRule(v AlertRule) error {
+	channels, err := marshalColumn(v.ChannelIDs)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(s.query(`INSERT INTO alert_rules (id, tenant_id, name, type, threshold_sec, channel_ids_json, enabled, quiet_sec, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.Name, v.Type, v.ThresholdSec, channels, v.Enabled, v.QuietSec, timeText(v.CreatedAt), timeText(v.UpdatedAt))
+	return err
+}
+func (s *SQLStore) UpdateAlertRule(v AlertRule) error {
+	channels, err := marshalColumn(v.ChannelIDs)
+	if err != nil {
+		return err
+	}
+	return changed(s.db.Exec(s.query(`UPDATE alert_rules SET name=?, type=?, threshold_sec=?, channel_ids_json=?, enabled=?, quiet_sec=?, updated_at=? WHERE tenant_id=? AND id=?`), v.Name, v.Type, v.ThresholdSec, channels, v.Enabled, v.QuietSec, timeText(v.UpdatedAt), v.TenantID, v.ID))
+}
+func (s *SQLStore) DeleteAlertRule(tenant, id string) error {
+	return changed(s.db.Exec(s.query(`DELETE FROM alert_rules WHERE tenant_id=? AND id=?`), tenant, id))
+}
+func (s *SQLStore) ListAlertRules(tenant string) ([]AlertRule, error) {
+	return queryList(s, `SELECT id, tenant_id, name, type, threshold_sec, channel_ids_json, enabled, quiet_sec, created_at, updated_at FROM alert_rules WHERE tenant_id = ? ORDER BY created_at`, scanAlertRule, tenant)
+}
+func (s *SQLStore) AllAlertRules() ([]AlertRule, error) {
+	return queryList(s, `SELECT id, tenant_id, name, type, threshold_sec, channel_ids_json, enabled, quiet_sec, created_at, updated_at FROM alert_rules ORDER BY created_at`, scanAlertRule)
+}
+func (s *SQLStore) AddAlertEvent(v AlertEvent) error {
+	_, err := s.db.Exec(s.query(`INSERT INTO alert_events (id, tenant_id, rule_id, rule_name, node_id, node_name, message, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.RuleID, v.RuleName, v.NodeID, v.NodeName, v.Message, v.Status, timeText(v.CreatedAt))
+	return err
+}
+func (s *SQLStore) ListAlertEvents(tenant string) ([]AlertEvent, error) {
+	return queryList(s, `SELECT id, tenant_id, rule_id, rule_name, node_id, node_name, message, status, created_at FROM alert_events WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200`, scanAlertEvent, tenant)
+}
+
+func scanAlertRule(row scanner) (AlertRule, error) {
+	var v AlertRule
+	var channels, created, updated string
+	if err := row.Scan(&v.ID, &v.TenantID, &v.Name, &v.Type, &v.ThresholdSec, &channels, &v.Enabled, &v.QuietSec, &created, &updated); err != nil {
+		return AlertRule{}, notFound(err)
+	}
+	if err := json.Unmarshal([]byte(channels), &v.ChannelIDs); err != nil {
+		return AlertRule{}, err
+	}
+	if v.ChannelIDs == nil {
+		v.ChannelIDs = []string{}
+	}
+	v.CreatedAt = parseTime(created)
+	v.UpdatedAt = parseTime(updated)
+	return v, nil
+}
+
+func scanAlertEvent(row scanner) (AlertEvent, error) {
+	var v AlertEvent
+	var created string
+	if err := row.Scan(&v.ID, &v.TenantID, &v.RuleID, &v.RuleName, &v.NodeID, &v.NodeName, &v.Message, &v.Status, &created); err != nil {
+		return AlertEvent{}, notFound(err)
+	}
+	v.CreatedAt = parseTime(created)
+	return v, nil
+}
+
+func (s *SQLStore) CreateAccessResource(v AccessResource) error {
+	_, err := s.db.Exec(s.query(`INSERT INTO access_resources (id, tenant_id, network_id, name, gateway_node_id, target, port, protocol, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.NetworkID, v.Name, v.GatewayNodeID, v.Target, v.Port, v.Protocol, v.Description, timeText(v.CreatedAt))
+	return err
+}
+func (s *SQLStore) DeleteAccessResource(tenant, id string) error {
+	return changed(s.db.Exec(s.query(`DELETE FROM access_resources WHERE tenant_id=? AND id=?`), tenant, id))
+}
+func (s *SQLStore) ListAccessResources(tenant, network string) ([]AccessResource, error) {
+	return queryList(s, `SELECT id, tenant_id, network_id, name, gateway_node_id, target, port, protocol, description, created_at FROM access_resources WHERE tenant_id=? AND network_id=? ORDER BY created_at`, scanAccessResource, tenant, network)
+}
+func (s *SQLStore) CreateAccessPolicy(v AccessPolicy) error {
+	sources, err := marshalColumn(v.SourceNodeIDs)
+	if err != nil {
+		return err
+	}
+	resources, err := marshalColumn(v.ResourceIDs)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(s.query(`INSERT INTO access_policies (id, tenant_id, network_id, name, source_label, source_node_ids_json, resource_ids_json, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.NetworkID, v.Name, v.SourceLabel, sources, resources, v.Enabled, timeText(v.CreatedAt), timeText(v.UpdatedAt))
+	return err
+}
+func (s *SQLStore) UpdateAccessPolicy(v AccessPolicy) error {
+	sources, err := marshalColumn(v.SourceNodeIDs)
+	if err != nil {
+		return err
+	}
+	resources, err := marshalColumn(v.ResourceIDs)
+	if err != nil {
+		return err
+	}
+	return changed(s.db.Exec(s.query(`UPDATE access_policies SET name=?, source_label=?, source_node_ids_json=?, resource_ids_json=?, enabled=?, updated_at=? WHERE tenant_id=? AND id=?`), v.Name, v.SourceLabel, sources, resources, v.Enabled, timeText(v.UpdatedAt), v.TenantID, v.ID))
+}
+func (s *SQLStore) DeleteAccessPolicy(tenant, id string) error {
+	return changed(s.db.Exec(s.query(`DELETE FROM access_policies WHERE tenant_id=? AND id=?`), tenant, id))
+}
+func (s *SQLStore) ListAccessPolicies(tenant, network string) ([]AccessPolicy, error) {
+	return queryList(s, `SELECT id, tenant_id, network_id, name, source_label, source_node_ids_json, resource_ids_json, enabled, created_at, updated_at FROM access_policies WHERE tenant_id=? AND network_id=? ORDER BY created_at`, scanAccessPolicy, tenant, network)
+}
+
+func (s *SQLStore) CreateDNSRecord(v DNSRecord) error {
+	_, err := s.db.Exec(s.query(`INSERT INTO dns_records (id, tenant_id, network_id, name, address, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.NetworkID, v.Name, v.Address, v.Description, timeText(v.CreatedAt))
+	return err
+}
+func (s *SQLStore) DeleteDNSRecord(tenant, id string) error {
+	return changed(s.db.Exec(s.query(`DELETE FROM dns_records WHERE tenant_id=? AND id=?`), tenant, id))
+}
+func (s *SQLStore) ListDNSRecords(tenant, network string) ([]DNSRecord, error) {
+	return queryList(s, `SELECT id, tenant_id, network_id, name, address, description, created_at FROM dns_records WHERE tenant_id=? AND network_id=? ORDER BY name`, scanDNSRecord, tenant, network)
+}
+
+func (s *SQLStore) CreateAPIToken(v APIToken) error {
+	_, err := s.db.Exec(s.query(`INSERT INTO api_tokens (id, tenant_id, name, token_hash, expires_at, last_used_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.Name, v.TokenHash, optionalTimeText(v.ExpiresAt), timeText(v.LastUsedAt), timeText(v.CreatedAt))
+	return err
+}
+func (s *SQLStore) GetAPITokenByHash(hash string) (APIToken, error) {
+	return scanAPIToken(s.db.QueryRow(s.query(`SELECT id, tenant_id, name, token_hash, expires_at, last_used_at, created_at FROM api_tokens WHERE token_hash = ?`), hash))
+}
+func (s *SQLStore) DeleteAPIToken(tenant, id string) error {
+	return changed(s.db.Exec(s.query(`DELETE FROM api_tokens WHERE tenant_id=? AND id=?`), tenant, id))
+}
+func (s *SQLStore) ListAPITokens(tenant string) ([]APIToken, error) {
+	return queryList(s, `SELECT id, tenant_id, name, token_hash, expires_at, last_used_at, created_at FROM api_tokens WHERE tenant_id = ? ORDER BY created_at`, scanAPIToken, tenant)
+}
+func (s *SQLStore) UpdateAPITokenLastUsed(id string, at time.Time) error {
+	return changed(s.db.Exec(s.query(`UPDATE api_tokens SET last_used_at=? WHERE id=?`), timeText(at), id))
+}
+
+func (s *SQLStore) GetEgressConfig(tenant, network string) (EgressConfig, error) {
+	return scanEgressConfig(s.db.QueryRow(s.query(`SELECT tenant_id, network_id, egress_node_id, cidrs_json, updated_at FROM egress_configs WHERE tenant_id=? AND network_id=?`), tenant, network))
+}
+func (s *SQLStore) UpsertEgressConfig(v EgressConfig) error {
+	cidrs, err := marshalColumn(v.CIDRs)
+	if err != nil {
+		return err
+	}
+	query := `INSERT INTO egress_configs (network_id, tenant_id, egress_node_id, cidrs_json, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (network_id) DO UPDATE SET egress_node_id=excluded.egress_node_id, cidrs_json=excluded.cidrs_json, updated_at=excluded.updated_at`
+	if s.driver == "mysql" {
+		query = `INSERT INTO egress_configs (network_id, tenant_id, egress_node_id, cidrs_json, updated_at) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE egress_node_id=VALUES(egress_node_id), cidrs_json=VALUES(cidrs_json), updated_at=VALUES(updated_at)`
+	}
+	_, err = s.db.Exec(s.query(query), v.NetworkID, v.TenantID, v.EgressNodeID, cidrs, timeText(v.UpdatedAt))
+	return err
+}
+
+func (s *SQLStore) CountNodes() (int, error) {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM nodes`).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+func (s *SQLStore) CountUsers() (int, error) {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (s *SQLStore) UpdateUserMFA(id string, secret EncryptedSecret, enabled bool) error {
+	raw, err := marshalColumn(secret)
+	if err != nil {
+		return err
+	}
+	return changed(s.db.Exec(s.query(`UPDATE users SET totp_secret_json=?, totp_enabled=? WHERE id=?`), raw, enabled, id))
+}
+
+func (s *SQLStore) GetSSOConfig(tenant string) (SSOConfig, error) {
+	return scanSSOConfig(s.db.QueryRow(s.query(`SELECT tenant_id, issuer, client_id, client_secret_json, enabled, updated_at FROM sso_configs WHERE tenant_id = ?`), tenant))
+}
+func (s *SQLStore) UpsertSSOConfig(v SSOConfig) error {
+	secret, err := marshalColumn(v.ClientSecret)
+	if err != nil {
+		return err
+	}
+	query := `INSERT INTO sso_configs (tenant_id, issuer, client_id, client_secret_json, enabled, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (tenant_id) DO UPDATE SET issuer=excluded.issuer, client_id=excluded.client_id, client_secret_json=excluded.client_secret_json, enabled=excluded.enabled, updated_at=excluded.updated_at`
+	if s.driver == "mysql" {
+		query = `INSERT INTO sso_configs (tenant_id, issuer, client_id, client_secret_json, enabled, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE issuer=VALUES(issuer), client_id=VALUES(client_id), client_secret_json=VALUES(client_secret_json), enabled=VALUES(enabled), updated_at=VALUES(updated_at)`
+	}
+	_, err = s.db.Exec(s.query(query), v.TenantID, v.Issuer, v.ClientID, secret, v.Enabled, timeText(v.UpdatedAt))
+	return err
+}
+
+func (s *SQLStore) AllSSOConfigs() ([]SSOConfig, error) {
+	return queryList(s, `SELECT tenant_id, issuer, client_id, client_secret_json, enabled, updated_at FROM sso_configs ORDER BY tenant_id`, scanSSOConfig)
+}
+
+func scanSSOConfig(row scanner) (SSOConfig, error) {
+	var v SSOConfig
+	var secret, updated string
+	if err := row.Scan(&v.TenantID, &v.Issuer, &v.ClientID, &secret, &v.Enabled, &updated); err != nil {
+		return SSOConfig{}, notFound(err)
+	}
+	if strings.TrimSpace(secret) != "" {
+		_ = json.Unmarshal([]byte(secret), &v.ClientSecret)
+	}
+	v.UpdatedAt = parseTime(updated)
+	return v, nil
+}
+
+func scanEgressConfig(row scanner) (EgressConfig, error) {
+	var v EgressConfig
+	var cidrs, updated string
+	if err := row.Scan(&v.TenantID, &v.NetworkID, &v.EgressNodeID, &cidrs, &updated); err != nil {
+		return EgressConfig{}, notFound(err)
+	}
+	if err := json.Unmarshal([]byte(cidrs), &v.CIDRs); err != nil {
+		return EgressConfig{}, err
+	}
+	if v.CIDRs == nil {
+		v.CIDRs = []string{}
+	}
+	v.UpdatedAt = parseTime(updated)
+	return v, nil
+}
+
+func scanAPIToken(row scanner) (APIToken, error) {
+	var v APIToken
+	var expires sql.NullString
+	var lastUsed, created string
+	if err := row.Scan(&v.ID, &v.TenantID, &v.Name, &v.TokenHash, &expires, &lastUsed, &created); err != nil {
+		return APIToken{}, notFound(err)
+	}
+	if expires.Valid && strings.TrimSpace(expires.String) != "" {
+		value := parseTime(expires.String)
+		v.ExpiresAt = &value
+	}
+	v.LastUsedAt = parseTime(lastUsed)
+	v.CreatedAt = parseTime(created)
+	return v, nil
+}
+
+func scanDNSRecord(row scanner) (DNSRecord, error) {
+	var v DNSRecord
+	var created string
+	if err := row.Scan(&v.ID, &v.TenantID, &v.NetworkID, &v.Name, &v.Address, &v.Description, &created); err != nil {
+		return DNSRecord{}, notFound(err)
+	}
+	v.CreatedAt = parseTime(created)
+	return v, nil
+}
+
+func scanAccessResource(row scanner) (AccessResource, error) {
+	var v AccessResource
+	var created string
+	if err := row.Scan(&v.ID, &v.TenantID, &v.NetworkID, &v.Name, &v.GatewayNodeID, &v.Target, &v.Port, &v.Protocol, &v.Description, &created); err != nil {
+		return AccessResource{}, notFound(err)
+	}
+	v.CreatedAt = parseTime(created)
+	return v, nil
+}
+
+func scanAccessPolicy(row scanner) (AccessPolicy, error) {
+	var v AccessPolicy
+	var sources, resources, created, updated string
+	if err := row.Scan(&v.ID, &v.TenantID, &v.NetworkID, &v.Name, &v.SourceLabel, &sources, &resources, &v.Enabled, &created, &updated); err != nil {
+		return AccessPolicy{}, notFound(err)
+	}
+	if err := json.Unmarshal([]byte(sources), &v.SourceNodeIDs); err != nil {
+		return AccessPolicy{}, err
+	}
+	if v.SourceNodeIDs == nil {
+		v.SourceNodeIDs = []string{}
+	}
+	if err := json.Unmarshal([]byte(resources), &v.ResourceIDs); err != nil {
+		return AccessPolicy{}, err
+	}
+	if v.ResourceIDs == nil {
+		v.ResourceIDs = []string{}
+	}
+	v.CreatedAt = parseTime(created)
+	v.UpdatedAt = parseTime(updated)
 	return v, nil
 }
 

@@ -12,6 +12,10 @@ const router = createRouter({
       children: [
         { path: '', name: 'home', component: () => import('../views/HomeView.vue') },
         { path: 'nodes', name: 'nodes', component: () => import('../views/NodesView.vue') },
+        { path: 'clients', name: 'clients', component: () => import('../views/ClientAccessView.vue') },
+        { path: 'alerts', name: 'alerts', component: () => import('../views/AlertCenterView.vue') },
+        { path: 'access', name: 'access', component: () => import('../views/AccessControlView.vue') },
+        { path: 'dns', name: 'dns', component: () => import('../views/DNSView.vue') },
         { path: 'settings', name: 'settings', component: () => import('../views/SettingsView.vue') },
       ],
     },

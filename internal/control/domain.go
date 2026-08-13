@@ -38,6 +38,8 @@ type User struct {
 	Role         Role      `json:"role"`
 	LastLoginAt  time.Time `json:"last_login_at"`
 	CreatedAt    time.Time `json:"created_at"`
+	TotpSecret   EncryptedSecret `json:"-"`
+	TotpEnabled  bool            `json:"-"`
 }
 type Network struct {
 	ID        string    `json:"id"`
@@ -280,4 +282,93 @@ type NotificationLog struct {
 	Message     string    `json:"message"`
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"createdAt"`
+}
+
+type AlertRule struct {
+	ID           string    `json:"id"`
+	TenantID     string    `json:"-"`
+	Name         string    `json:"name"`
+	Type         string    `json:"type"`
+	ThresholdSec int       `json:"threshold_sec"`
+	ChannelIDs   []string  `json:"channel_ids"`
+	Enabled      bool      `json:"enabled"`
+	QuietSec     int       `json:"quiet_sec"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type AlertEvent struct {
+	ID        string    `json:"id"`
+	TenantID  string    `json:"-"`
+	RuleID    string    `json:"rule_id"`
+	RuleName  string    `json:"rule_name"`
+	NodeID    string    `json:"node_id"`
+	NodeName  string    `json:"node_name"`
+	Message   string    `json:"message"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// AccessResource 定义一个可访问资源：某个节点上的服务（目标 CIDR + 可选端口）。
+// 策略允许后，源节点到网关节点的 AllowedIPs 会包含该资源的目标 CIDR（IP 级）；
+// 端口作为元数据保存，供后续 Agent 防火墙规则使用。
+type AccessResource struct {
+	ID            string    `json:"id"`
+	TenantID      string    `json:"-"`
+	NetworkID     string    `json:"network_id"`
+	Name          string    `json:"name"`
+	GatewayNodeID string    `json:"gateway_node_id"`
+	Target        string    `json:"target"`
+	Port          int       `json:"port,omitempty"`
+	Protocol      string    `json:"protocol,omitempty"`
+	Description   string    `json:"description,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// AccessPolicy 定义哪些源节点（按标签或显式 ID 列表）可以访问哪些资源。
+type AccessPolicy struct {
+	ID            string    `json:"id"`
+	TenantID      string    `json:"-"`
+	NetworkID     string    `json:"network_id"`
+	Name          string    `json:"name"`
+	SourceLabel   string    `json:"source_label,omitempty"`
+	SourceNodeIDs []string  `json:"source_node_ids"`
+	ResourceIDs   []string  `json:"resource_ids"`
+	Enabled       bool      `json:"enabled"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// DNSRecord 定义网络内的私有 DNS 映射（名称 → 隧道 IP）。节点自身的
+// name → address 映射由前端自动展示，手动记录用于额外的主机名/服务名。
+type DNSRecord struct {
+	ID          string    `json:"id"`
+	TenantID    string    `json:"-"`
+	NetworkID   string    `json:"network_id"`
+	Name        string    `json:"name"`
+	Address     string    `json:"address"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// APIToken 是供脚本/CI 调用控制平面 API 的长期凭据。只保存 SHA-256 哈希，
+// 明文仅在创建时返回一次。
+type APIToken struct {
+	ID         string     `json:"id"`
+	TenantID   string     `json:"-"`
+	Name       string     `json:"name"`
+	TokenHash  string     `json:"-"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	LastUsedAt time.Time  `json:"last_used_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+}
+
+// EgressConfig 定义网络的出口网关：其他节点到出口节点的 AllowedIPs 会加入
+// CIDRs（如 0.0.0.0/0），使这些节点的对外流量经出口网关转发。
+type EgressConfig struct {
+	TenantID     string    `json:"-"`
+	NetworkID    string    `json:"network_id"`
+	EgressNodeID string    `json:"egress_node_id"`
+	CIDRs        []string  `json:"cidrs"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }

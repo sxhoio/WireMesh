@@ -49,6 +49,13 @@ type App struct {
 	geoLookup       func(string, string) (geoIPLocation, error)
 	commandMu       sync.Mutex
 	commandWakeups  map[string]chan struct{}
+	alertMu         sync.Mutex
+	alertFiredAt    map[string]time.Time
+	sessionMu       sync.Mutex
+	sessions        map[string]UserSession
+	revokedTokens   map[string]time.Time
+	ssoMu           sync.Mutex
+	ssoStates       map[string]ssoState
 	agentBinaryPath string
 	agentVersion    string
 }
@@ -70,6 +77,10 @@ func NewApp(cfg Config) (*App, error) {
 		geoReaders:      map[string]*geoReaderState{},
 		geoFailures:     map[string]time.Time{},
 		commandWakeups:  map[string]chan struct{}{},
+		alertFiredAt:    map[string]time.Time{},
+		sessions:        map[string]UserSession{},
+		revokedTokens:   map[string]time.Time{},
+		ssoStates:       map[string]ssoState{},
 		agentBinaryPath: cfg.AgentBinaryPath,
 		agentVersion:    strings.TrimSpace(cfg.AgentVersion),
 	}
@@ -84,6 +95,7 @@ func NewApp(cfg Config) (*App, error) {
 func (a *App) Router() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", a.health)
+	mux.HandleFunc("GET /metrics", a.metrics)
 	mux.HandleFunc("GET /api/v1/setup/status", a.setupStatus)
 	mux.HandleFunc("GET /api/v1/setup/database", a.databaseStatus)
 	mux.HandleFunc("POST /api/v1/setup/database/test", a.testDatabase)
@@ -91,6 +103,16 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /api/v1/setup", a.setup)
 	mux.HandleFunc("POST /api/v1/auth/login", a.login)
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logout)
+	mux.HandleFunc("GET /api/v1/auth/sessions", a.withUser(RoleAdmin, a.userSessions))
+	mux.HandleFunc("DELETE /api/v1/auth/sessions/{id}", a.withUser(RoleAdmin, a.userSessions))
+	mux.HandleFunc("GET /api/v1/auth/mfa/status", a.withUser(RoleViewer, a.mfaStatus))
+	mux.HandleFunc("POST /api/v1/auth/mfa/setup", a.withUser(RoleViewer, a.mfaSetup))
+	mux.HandleFunc("POST /api/v1/auth/mfa/enable", a.withUser(RoleViewer, a.mfaEnable))
+	mux.HandleFunc("POST /api/v1/auth/mfa/disable", a.withUser(RoleViewer, a.mfaDisable))
+	mux.HandleFunc("GET /api/v1/settings/sso", a.withUser(RoleAdmin, a.ssoConfig))
+	mux.HandleFunc("PUT /api/v1/settings/sso", a.withUser(RoleAdmin, a.ssoConfig))
+	mux.HandleFunc("GET /api/v1/auth/sso/login", a.ssoLogin)
+	mux.HandleFunc("GET /api/v1/auth/sso/callback", a.ssoCallback)
 	mux.HandleFunc("GET /api/v1/auth/me", a.withUser(RoleViewer, a.me))
 	mux.HandleFunc("GET /api/v1/projects", a.withUser(RoleViewer, a.projects))
 	mux.HandleFunc("POST /api/v1/projects", a.withUser(RoleAdmin, a.projects))
@@ -102,17 +124,31 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/nodes/{id}", a.withUser(RoleOperator, a.updateNode))
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}", a.withUser(RoleAdmin, a.deleteNode))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/peer-config", a.withUser(RoleViewer, a.nodePeerConfig))
+	mux.HandleFunc("GET /api/v1/nodes/{id}/client-config", a.withUser(RoleViewer, a.nodeClientConfig))
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/peer-config", a.withUser(RoleOperator, a.updateNodePeerConfig))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/collect", a.withUser(RoleOperator, a.createNodeCommand(agentCommandTypeCollect)))
 	mux.HandleFunc("POST /api/v1/nodes/collect", a.withUser(RoleOperator, a.collectNodes))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/update-agent", a.withUser(RoleOperator, a.updateAgent))
 	mux.HandleFunc("POST /api/v1/nodes/update-agent", a.withUser(RoleOperator, a.updateAgents))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/connectivity-check", a.withUser(RoleOperator, a.createNodeCommand(agentCommandTypeConnectivityCheck)))
+	mux.HandleFunc("POST /api/v1/nodes/{id}/rotate-key", a.withUser(RoleAdmin, a.rotateNodeKey))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/logs", a.withUser(RoleViewer, a.nodeLogs))
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}/logs", a.withUser(RoleOperator, a.clearNodeLogs))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/traffic", a.withUser(RoleViewer, a.nodeTraffic))
 	mux.HandleFunc("GET /api/v1/networks/{id}/peers", a.withUser(RoleViewer, a.networkPeers))
 	mux.HandleFunc("POST /api/v1/networks/{id}/peers", a.withUser(RoleOperator, a.addPeer))
+	mux.HandleFunc("GET /api/v1/networks/{id}/access-resources", a.withUser(RoleViewer, a.accessResources))
+	mux.HandleFunc("POST /api/v1/networks/{id}/access-resources", a.withUser(RoleOperator, a.accessResources))
+	mux.HandleFunc("DELETE /api/v1/networks/{id}/access-resources/{resource_id}", a.withUser(RoleOperator, a.deleteAccessResource))
+	mux.HandleFunc("GET /api/v1/networks/{id}/access-policies", a.withUser(RoleViewer, a.accessPolicies))
+	mux.HandleFunc("POST /api/v1/networks/{id}/access-policies", a.withUser(RoleOperator, a.accessPolicies))
+	mux.HandleFunc("PUT /api/v1/networks/{id}/access-policies/{policy_id}", a.withUser(RoleOperator, a.updateAccessPolicy))
+	mux.HandleFunc("DELETE /api/v1/networks/{id}/access-policies/{policy_id}", a.withUser(RoleOperator, a.deleteAccessPolicy))
+	mux.HandleFunc("GET /api/v1/networks/{id}/dns-records", a.withUser(RoleViewer, a.dnsRecords))
+	mux.HandleFunc("POST /api/v1/networks/{id}/dns-records", a.withUser(RoleOperator, a.dnsRecords))
+	mux.HandleFunc("DELETE /api/v1/networks/{id}/dns-records/{record_id}", a.withUser(RoleOperator, a.deleteDNSRecord))
+	mux.HandleFunc("GET /api/v1/networks/{id}/egress", a.withUser(RoleViewer, a.networkEgress))
+	mux.HandleFunc("PUT /api/v1/networks/{id}/egress", a.withUser(RoleOperator, a.networkEgress))
 	mux.HandleFunc("POST /api/v1/networks/{id}/publish", a.withUser(RoleOperator, a.publish))
 	mux.HandleFunc("GET /api/v1/deliveries", a.withUser(RoleViewer, a.deliveries))
 	mux.HandleFunc("GET /api/v1/audit", a.withUser(RoleAdmin, a.audit))
@@ -129,6 +165,16 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/settings/notifications/{id}", a.withUser(RoleAdmin, a.deleteNotificationChannel))
 	mux.HandleFunc("POST /api/v1/settings/notifications/{id}/test", a.withUser(RoleAdmin, a.testNotificationChannel))
 	mux.HandleFunc("GET /api/v1/settings/notification-logs", a.withUser(RoleViewer, a.notificationLogs))
+	mux.HandleFunc("GET /api/v1/settings/alert-rules", a.withUser(RoleViewer, a.alertRules))
+	mux.HandleFunc("POST /api/v1/settings/alert-rules", a.withUser(RoleAdmin, a.alertRules))
+	mux.HandleFunc("PUT /api/v1/settings/alert-rules/{id}", a.withUser(RoleAdmin, a.updateAlertRule))
+	mux.HandleFunc("DELETE /api/v1/settings/alert-rules/{id}", a.withUser(RoleAdmin, a.deleteAlertRule))
+	mux.HandleFunc("GET /api/v1/settings/alert-events", a.withUser(RoleViewer, a.alertEvents))
+	mux.HandleFunc("GET /api/v1/settings/api-tokens", a.withUser(RoleAdmin, a.apiTokens))
+	mux.HandleFunc("POST /api/v1/settings/api-tokens", a.withUser(RoleAdmin, a.apiTokens))
+	mux.HandleFunc("DELETE /api/v1/settings/api-tokens/{id}", a.withUser(RoleAdmin, a.deleteAPIToken))
+	mux.HandleFunc("GET /api/v1/settings/backup", a.withUser(RoleAdmin, a.backupDatabase))
+	mux.HandleFunc("POST /api/v1/settings/backup/restore", a.withUser(RoleAdmin, a.restoreDatabase))
 	mux.HandleFunc("GET /api/v1/users", a.withUser(RoleAdmin, a.users))
 	mux.HandleFunc("POST /api/v1/users", a.withUser(RoleAdmin, a.users))
 	mux.HandleFunc("GET /api/v1/agent/update", a.withUser(RoleViewer, a.agentUpdateInfo))
@@ -236,7 +282,22 @@ func (a *App) withUser(required Role, next func(http.ResponseWriter, *http.Reque
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := requestToken(r)
 		c, err := a.auth.Parse(token)
-		if err != nil || !allowed(c.Role, required) {
+		if err != nil {
+			// 用户令牌校验失败时尝试 API 令牌（长期凭据，供脚本/CI 使用）。
+			apiToken, ok := a.lookupAPIToken(token)
+			if !ok {
+				writeError(w, http.StatusUnauthorized, "身份验证或权限不足")
+				return
+			}
+			_ = a.store.UpdateAPITokenLastUsed(apiToken.ID, time.Now().UTC())
+			c = claims{Subject: "api_token:" + apiToken.ID, TenantID: apiToken.TenantID, Role: RoleAdmin}
+		} else if a.isRevokedToken(token) {
+			writeError(w, http.StatusUnauthorized, "身份验证或权限不足")
+			return
+		} else {
+			a.touchSession(token)
+		}
+		if !allowed(c.Role, required) {
 			writeError(w, http.StatusUnauthorized, "身份验证或权限不足")
 			return
 		}
@@ -253,7 +314,7 @@ func requestToken(r *http.Request) string {
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
 func (a *App) login(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Email, Password string }
+	var in struct{ Email, Password, OTP string }
 	if !decode(w, r, &in) {
 		return
 	}
@@ -266,13 +327,22 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if user.TotpEnabled {
+		secretBytes, decryptErr := a.box.Decrypt(user.TotpSecret)
+		if decryptErr != nil || !verifyTOTP(string(secretBytes), in.OTP, time.Now()) {
+			writeError(w, http.StatusUnauthorized, "otp_required")
+			return
+		}
+	}
 	a.auditEvent(user.TenantID, user.ID, "auth.login", "user", user.ID, nil)
+	a.recordSession(user, token, r.UserAgent())
 	// 设置 HttpOnly + SameSite cookie，浏览器后续请求自动携带；Authorization 头仍作为非浏览器客户端的回退。
 	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int((12 * time.Hour).Seconds())})
 	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": publicUser(user)})
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
+	a.revokeCurrentSession(requestToken(r))
 	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -499,7 +569,19 @@ func (a *App) publishNetwork(tenantID string, network Network) (ConfigPublishRes
 	if err != nil {
 		return ConfigPublishResult{}, fmt.Errorf("list network peers: %w", err)
 	}
-	configs, err := CompileTopology(network, nodes, peers, a.box)
+	resources, err := a.store.ListAccessResources(tenantID, network.ID)
+	if err != nil {
+		return ConfigPublishResult{}, fmt.Errorf("list access resources: %w", err)
+	}
+	policies, err := a.store.ListAccessPolicies(tenantID, network.ID)
+	if err != nil {
+		return ConfigPublishResult{}, fmt.Errorf("list access policies: %w", err)
+	}
+	var egress *EgressConfig
+	if egressConfig, egressErr := a.store.GetEgressConfig(tenantID, network.ID); egressErr == nil {
+		egress = &egressConfig
+	}
+	configs, err := CompileTopology(network, nodes, peers, CompileOptions{Resources: resources, Policies: policies, Egress: egress}, a.box)
 	if err != nil {
 		return ConfigPublishResult{}, err
 	}

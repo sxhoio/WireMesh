@@ -72,6 +72,36 @@ type Store interface {
 	ListNotificationLogs(string) ([]NotificationLog, error)
 	ListAuditPage(string, int, int) ([]AuditEvent, error)
 	ClearAudit(string) error
+	CreateAlertRule(AlertRule) error
+	UpdateAlertRule(AlertRule) error
+	DeleteAlertRule(string, string) error
+	ListAlertRules(string) ([]AlertRule, error)
+	AllAlertRules() ([]AlertRule, error)
+	AddAlertEvent(AlertEvent) error
+	ListAlertEvents(string) ([]AlertEvent, error)
+	CreateAccessResource(AccessResource) error
+	DeleteAccessResource(string, string) error
+	ListAccessResources(string, string) ([]AccessResource, error)
+	CreateAccessPolicy(AccessPolicy) error
+	UpdateAccessPolicy(AccessPolicy) error
+	DeleteAccessPolicy(string, string) error
+	ListAccessPolicies(string, string) ([]AccessPolicy, error)
+	CreateDNSRecord(DNSRecord) error
+	DeleteDNSRecord(string, string) error
+	ListDNSRecords(string, string) ([]DNSRecord, error)
+	CreateAPIToken(APIToken) error
+	GetAPITokenByHash(string) (APIToken, error)
+	DeleteAPIToken(string, string) error
+	ListAPITokens(string) ([]APIToken, error)
+	UpdateAPITokenLastUsed(string, time.Time) error
+	GetEgressConfig(string, string) (EgressConfig, error)
+	UpsertEgressConfig(EgressConfig) error
+	CountNodes() (int, error)
+	CountUsers() (int, error)
+	UpdateUserMFA(string, EncryptedSecret, bool) error
+	GetSSOConfig(string) (SSOConfig, error)
+	UpsertSSOConfig(SSOConfig) error
+	AllSSOConfigs() ([]SSOConfig, error)
 }
 
 type MemoryStore struct {
@@ -91,11 +121,20 @@ type MemoryStore struct {
 	notifications    map[string]NotificationChannel
 	notificationLogs []NotificationLog
 	trafficSamples   []TrafficSample
+	alertRules       map[string]AlertRule
+	alertEvents      []AlertEvent
+	accessResources  map[string]AccessResource
+	accessPolicies   map[string]AccessPolicy
+	dnsRecords       map[string]DNSRecord
+	apiTokens        map[string]APIToken
+	apiTokenByHash   map[string]string
+	egressConfigs    map[string]EgressConfig
+	ssoConfigs       map[string]SSOConfig
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		projects: map[string]Project{}, networks: map[string]Network{}, nodes: map[string]Node{}, peers: map[string]PeerRelation{}, revisions: map[string][]ConfigRevision{}, deliveries: map[string]ConfigDelivery{}, commands: map[string]AgentCommand{}, enrollments: map[string]EnrollmentToken{}, identities: map[string]AgentIdentity{}, users: map[string]User{}, settings: map[string]SystemSettings{}, notifications: map[string]NotificationChannel{},
+		projects: map[string]Project{}, networks: map[string]Network{}, nodes: map[string]Node{}, peers: map[string]PeerRelation{}, revisions: map[string][]ConfigRevision{}, deliveries: map[string]ConfigDelivery{}, commands: map[string]AgentCommand{}, enrollments: map[string]EnrollmentToken{}, identities: map[string]AgentIdentity{}, users: map[string]User{}, settings: map[string]SystemSettings{}, notifications: map[string]NotificationChannel{}, alertRules: map[string]AlertRule{}, accessResources: map[string]AccessResource{}, accessPolicies: map[string]AccessPolicy{}, dnsRecords: map[string]DNSRecord{}, apiTokens: map[string]APIToken{}, apiTokenByHash: map[string]string{}, egressConfigs: map[string]EgressConfig{}, ssoConfigs: map[string]SSOConfig{},
 	}
 }
 func (s *MemoryStore) CreateProject(v Project) error {
@@ -506,6 +545,284 @@ func (s *MemoryStore) ClearAudit(tenant string) error {
 		return event.TenantID == tenant
 	})
 	return nil
+}
+
+func (s *MemoryStore) CreateAlertRule(v AlertRule) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.alertRules[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) UpdateAlertRule(v AlertRule) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.alertRules[v.ID]
+	if !ok || current.TenantID != v.TenantID {
+		return errNotFound
+	}
+	s.alertRules[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) DeleteAlertRule(tenant, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.alertRules[id]
+	if !ok || v.TenantID != tenant {
+		return errNotFound
+	}
+	delete(s.alertRules, id)
+	return nil
+}
+func (s *MemoryStore) ListAlertRules(tenant string) ([]AlertRule, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]AlertRule, 0)
+	for _, v := range s.alertRules {
+		if v.TenantID == tenant {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+func (s *MemoryStore) AllAlertRules() ([]AlertRule, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]AlertRule, 0, len(s.alertRules))
+	for _, v := range s.alertRules {
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+func (s *MemoryStore) AddAlertEvent(v AlertEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.alertEvents = append(s.alertEvents, v)
+	return nil
+}
+func (s *MemoryStore) ListAlertEvents(tenant string) ([]AlertEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]AlertEvent, 0)
+	for _, v := range s.alertEvents {
+		if v.TenantID == tenant {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (s *MemoryStore) CreateAccessResource(v AccessResource) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accessResources[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) DeleteAccessResource(tenant, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.accessResources[id]
+	if !ok || v.TenantID != tenant {
+		return errNotFound
+	}
+	delete(s.accessResources, id)
+	return nil
+}
+func (s *MemoryStore) ListAccessResources(tenant, network string) ([]AccessResource, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]AccessResource, 0)
+	for _, v := range s.accessResources {
+		if v.TenantID == tenant && v.NetworkID == network {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+func (s *MemoryStore) CreateAccessPolicy(v AccessPolicy) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accessPolicies[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) UpdateAccessPolicy(v AccessPolicy) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.accessPolicies[v.ID]
+	if !ok || current.TenantID != v.TenantID {
+		return errNotFound
+	}
+	s.accessPolicies[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) DeleteAccessPolicy(tenant, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.accessPolicies[id]
+	if !ok || v.TenantID != tenant {
+		return errNotFound
+	}
+	delete(s.accessPolicies, id)
+	return nil
+}
+func (s *MemoryStore) ListAccessPolicies(tenant, network string) ([]AccessPolicy, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]AccessPolicy, 0)
+	for _, v := range s.accessPolicies {
+		if v.TenantID == tenant && v.NetworkID == network {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (s *MemoryStore) CreateDNSRecord(v DNSRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dnsRecords[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) DeleteDNSRecord(tenant, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.dnsRecords[id]
+	if !ok || v.TenantID != tenant {
+		return errNotFound
+	}
+	delete(s.dnsRecords, id)
+	return nil
+}
+func (s *MemoryStore) ListDNSRecords(tenant, network string) ([]DNSRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]DNSRecord, 0)
+	for _, v := range s.dnsRecords {
+		if v.TenantID == tenant && v.NetworkID == network {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (s *MemoryStore) CreateAPIToken(v APIToken) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.apiTokens[v.ID] = v
+	s.apiTokenByHash[v.TokenHash] = v.ID
+	return nil
+}
+func (s *MemoryStore) GetAPITokenByHash(hash string) (APIToken, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	id, ok := s.apiTokenByHash[hash]
+	if !ok {
+		return APIToken{}, errNotFound
+	}
+	return s.apiTokens[id], nil
+}
+func (s *MemoryStore) DeleteAPIToken(tenant, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.apiTokens[id]
+	if !ok || v.TenantID != tenant {
+		return errNotFound
+	}
+	delete(s.apiTokens, id)
+	delete(s.apiTokenByHash, v.TokenHash)
+	return nil
+}
+func (s *MemoryStore) ListAPITokens(tenant string) ([]APIToken, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]APIToken, 0)
+	for _, v := range s.apiTokens {
+		if v.TenantID == tenant {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+func (s *MemoryStore) UpdateAPITokenLastUsed(id string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.apiTokens[id]
+	if !ok {
+		return errNotFound
+	}
+	v.LastUsedAt = at.UTC()
+	s.apiTokens[id] = v
+	return nil
+}
+
+func (s *MemoryStore) GetEgressConfig(tenant, network string) (EgressConfig, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.egressConfigs[network]
+	if !ok || v.TenantID != tenant {
+		return EgressConfig{}, errNotFound
+	}
+	return v, nil
+}
+func (s *MemoryStore) UpsertEgressConfig(v EgressConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.egressConfigs[v.NetworkID] = v
+	return nil
+}
+func (s *MemoryStore) CountNodes() (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.nodes), nil
+}
+func (s *MemoryStore) CountUsers() (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.users), nil
+}
+
+func (s *MemoryStore) UpdateUserMFA(id string, secret EncryptedSecret, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[id]
+	if !ok {
+		return errNotFound
+	}
+	u.TotpSecret = secret
+	u.TotpEnabled = enabled
+	s.users[id] = u
+	return nil
+}
+
+func (s *MemoryStore) GetSSOConfig(tenant string) (SSOConfig, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.ssoConfigs[tenant]
+	if !ok {
+		return SSOConfig{}, errNotFound
+	}
+	return v, nil
+}
+func (s *MemoryStore) UpsertSSOConfig(v SSOConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ssoConfigs[v.TenantID] = v
+	return nil
+}
+func (s *MemoryStore) AllSSOConfigs() ([]SSOConfig, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]SSOConfig, 0, len(s.ssoConfigs))
+	for _, v := range s.ssoConfigs {
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 func (s *MemoryStore) pruneCommandsLocked(tenant, node string) {

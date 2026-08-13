@@ -53,6 +53,7 @@ type DatabaseManager struct {
 	configPath string
 	configured bool
 	driver     string
+	sqlitePath string
 	active     *SQLStore
 	retired    []*SQLStore
 }
@@ -127,6 +128,9 @@ func (m *DatabaseManager) Configure(ctx context.Context, cfg DatabaseConfig) (Da
 	m.store.Switch(store)
 	m.configured = true
 	m.driver = normalized.Driver
+	if normalized.Driver == "sqlite" {
+		m.sqlitePath = normalized.SQLitePath
+	}
 	return DatabaseStatus{Configured: true, Driver: normalized.Driver}, initialized, nil
 }
 
@@ -187,6 +191,45 @@ func (m *DatabaseManager) load() error {
 	m.store.Switch(store)
 	m.configured = true
 	m.driver = normalized.Driver
+	if normalized.Driver == "sqlite" {
+		m.sqlitePath = normalized.SQLitePath
+	}
+	return nil
+}
+
+// BackupSQLite 使用 VACUUM INTO 生成当前 SQLite 数据库的一致性在线备份。
+func (m *DatabaseManager) BackupSQLite(targetPath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.driver != "sqlite" || m.active == nil {
+		return errors.New("backup is only supported for a configured SQLite database")
+	}
+	escaped := strings.ReplaceAll(targetPath, "'", "''")
+	_, err := m.active.db.Exec(`VACUUM INTO '` + escaped + `'`)
+	return err
+}
+
+// RestoreSQLite 用上传的 SQLite 备份文件替换当前数据库并热切换。
+func (m *DatabaseManager) RestoreSQLite(ctx context.Context, replacementPath string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.driver != "sqlite" || m.active == nil || m.sqlitePath == "" {
+		return errors.New("restore is only supported for a configured SQLite database")
+	}
+	store, err := OpenSQLStore("sqlite", "file:"+strings.ReplaceAll(filepath.ToSlash(replacementPath), "#", "%23"))
+	if err != nil {
+		return fmt.Errorf("invalid SQLite backup: %w", err)
+	}
+	hasUsers, err := store.HasUsers()
+	if err != nil || !hasUsers {
+		store.Close()
+		return errors.New("backup file contains no users")
+	}
+	previous := m.active
+	m.active = store
+	m.retired = append(m.retired, previous)
+	m.store.Switch(store)
+	_ = previous.Close()
 	return nil
 }
 

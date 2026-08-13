@@ -1,6 +1,9 @@
 package control
 
 import (
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"math"
 	"net/http"
@@ -745,4 +748,36 @@ func (a *App) findAgentCommand(tenant, node, id string) (AgentCommand, bool) {
 		return AgentCommand{}, false
 	}
 	return command, true
+}
+
+// rotateNodeKey 重新生成节点 WireGuard 密钥对并自动发布配置。
+func (a *App) rotateNodeKey(w http.ResponseWriter, r *http.Request, c claims) {
+	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "node not found")
+		return
+	}
+	curve := ecdh.X25519()
+	private, err := curve.GenerateKey(rand.Reader)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to generate key")
+		return
+	}
+	privateText := base64.StdEncoding.EncodeToString(private.Bytes())
+	secret, err := a.box.Encrypt([]byte(privateText))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to protect key")
+		return
+	}
+	node.PrivateKey = secret
+	node.PublicKey = base64.StdEncoding.EncodeToString(private.PublicKey().Bytes())
+	if err := a.store.UpdateNode(node); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to rotate node key")
+		return
+	}
+	a.auditEvent(c.TenantID, c.Subject, "node.key_rotate", "node", node.ID, nil)
+	if network, networkErr := a.store.GetNetwork(c.TenantID, node.NetworkID); networkErr == nil {
+		_, _ = a.publishAndAudit(c.TenantID, c.Subject, network, "config.publish.auto", map[string]string{"node_id": node.ID, "reason": "key_rotation"})
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "rotated"})
 }

@@ -2,9 +2,9 @@
   "version": 1,
   "driver": "sqlite",
   "secret": {
-    "WrappedDEK": "fu0n/JG0Zidz2deLltD77+UvyqFyMlhgTGR7VnK0xZRv3T13baGepcv+WOaLnXeN",
-    "DEKNonce": "FoqKRLcL0pftXD+6",
-    "Ciphertext": "Xcd7cUNpcwLZr7g9tRPfmigzMaefFulZLRyX4jlWGinFdVGIHsflEZQ/rkysB5o9V+QA2i/I8z3XmXFI14TB",
-    "DataNonce": "jRCl/2R+6geC6ZVm"
+    "WrappedDEK": "PZBxLePnP95ymLNhvKQcNG5WQl+HOjhMjGigb1y4oQRYXZAsFUdBH+X6usjgwud/",
+    "DEKNonce": "EiuvLxpUHVj2Yemb",
+    "Ciphertext": "kTc+z0zoADTOw0KvrJ3S+ouOAP0d6CdMA2O7CC0h4UP3DLz0GOobP25vxcvcDzbq5nQCWhFeAu93UNoekkW0",
+    "DataNonce": "Jb+r/U+bYD/3Oexv"
   }
 }

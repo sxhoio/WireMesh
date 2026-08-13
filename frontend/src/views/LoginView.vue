@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { api } from '../api'
 import { useAppStore } from '../stores/app'
 
 const router = useRouter()
 const app = useAppStore()
 
-const form = reactive({ username: '', password: '' })
+const form = reactive({ username: '', password: '', otp: '' })
 const error = ref('')
 const loading = ref(false)
 const showPwd = ref(false)
+const needsOtp = ref(false)
 
 async function submit() {
   if (!form.username || !form.password) {
@@ -18,11 +20,33 @@ async function submit() {
   }
   loading.value = true
   error.value = ''
-  if (await app.login(form.username, form.password)) {
+  if (await app.login(form.username, form.password, needsOtp.value ? form.otp : undefined)) {
     router.push({ name: 'home' })
   } else {
-    error.value = app.error || '邮箱或密码错误'
+    if (app.error?.includes('otp_required')) {
+      needsOtp.value = true
+      error.value = '该账号已启用多因素认证，请输入动态验证码'
+    } else {
+      error.value = app.error || '邮箱或密码错误'
+    }
     loading.value = false
+  }
+}
+
+async function ssoLogin() {
+  try {
+    const result = await api.ssoLogin()
+    if (result.url) {
+      window.location.href = result.url
+    } else if (result.tenants?.length) {
+      const first = await api.ssoLogin(result.tenants[0])
+      if (first.url) window.location.href = first.url
+      else error.value = '单点登录暂不可用'
+    } else {
+      error.value = '单点登录尚未配置'
+    }
+  } catch {
+    error.value = '单点登录暂不可用'
   }
 }
 </script>
@@ -59,6 +83,11 @@ async function submit() {
           </div>
         </div>
 
+        <div v-if="needsOtp">
+          <label class="label">动态验证码</label>
+          <input v-model="form.otp" class="input font-mono" inputmode="numeric" maxlength="6" placeholder="6 位验证码" autocomplete="one-time-code" />
+        </div>
+
         <p v-if="error" class="flex items-center gap-1.5 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400 ring-1 ring-red-500/30">
           <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4 shrink-0" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
           {{ error }}
@@ -68,6 +97,13 @@ async function submit() {
           <svg v-if="loading" class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
           {{ loading ? '登录中…' : '登 录' }}
         </button>
+
+        <div class="flex items-center gap-3">
+          <span class="h-px flex-1 bg-ink-700"></span>
+          <span class="text-[11px] text-slate-600">或</span>
+          <span class="h-px flex-1 bg-ink-700"></span>
+        </div>
+        <button type="button" class="btn-secondary w-full" @click="ssoLogin">使用单点登录（SSO）</button>
       </form>
     </div>
   </div>

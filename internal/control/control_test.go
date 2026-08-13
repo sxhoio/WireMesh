@@ -222,15 +222,15 @@ func TestTopologyCompiler(t *testing.T) {
 		return Node{ID: id, Address: "10.0.0." + id, PublicKey: id + "-public", Labels: map[string]string{"wiremesh.role": role}, PrivateKey: secret}
 	}
 	nodes := []Node{makeNode("1", "hub"), makeNode("2", "spoke"), makeNode("3", "spoke")}
-	full, err := CompileTopology(Network{ID: "n", Topology: TopologyFullMesh}, nodes, nil, box)
+	full, err := CompileTopology(Network{ID: "n", Topology: TopologyFullMesh}, nodes, nil, CompileOptions{}, box)
 	if err != nil || len(full["1"].Peers) != 2 {
 		t.Fatalf("full mesh %#v %v", full, err)
 	}
-	hub, err := CompileTopology(Network{ID: "n", Topology: TopologyHubSpoke}, nodes, nil, box)
+	hub, err := CompileTopology(Network{ID: "n", Topology: TopologyHubSpoke}, nodes, nil, CompileOptions{}, box)
 	if err != nil || len(hub["2"].Peers) != 1 || hub["2"].Peers[0].NodeID != "1" {
 		t.Fatalf("hub spoke %#v %v", hub, err)
 	}
-	custom, err := CompileTopology(Network{ID: "n", Topology: TopologyCustom}, nodes, []PeerRelation{{SourceNodeID: "2", TargetNodeID: "3"}}, box)
+	custom, err := CompileTopology(Network{ID: "n", Topology: TopologyCustom}, nodes, []PeerRelation{{SourceNodeID: "2", TargetNodeID: "3"}}, CompileOptions{}, box)
 	if err != nil || len(custom["1"].Peers) != 0 || len(custom["2"].Peers) != 1 {
 		t.Fatalf("custom %#v %v", custom, err)
 	}

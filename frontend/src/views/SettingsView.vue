@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import QRCode from 'qrcode'
 import CustomPeerModal from '../components/CustomPeerModal.vue'
+import { api, apiBase, type ApiAPIToken, type ApiUserSession } from '../api'
 import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
 import type { NotificationConfig, NotifyChannel, NotifyChannelType } from '../types'
@@ -24,6 +26,11 @@ const tabs = [
   { k: 'users', l: '用户与权限' },
   { k: 'audit', l: '审计日志' },
   { k: 'publish', l: '发布记录' },
+  { k: 'apitoken', l: 'API 令牌' },
+  { k: 'backup', l: '备份与恢复' },
+  { k: 'sessions', l: '登录会话' },
+  { k: 'mfa', l: '多因素认证' },
+  { k: 'sso', l: '单点登录' },
 ] as const
 
 const tab = ref<string>('net')
@@ -303,6 +310,232 @@ function channelConfigSummary(c: NotifyChannel) {
   if (c.type === 'telegram') return 'Bot ' + (config.botTokenConfigured ? '已配置' : '未配置') + ' · Chat ' + (config.chatIdConfigured ? '已配置' : '未配置') + ' · ' + (config.parseMode || '纯文本') + ' · ' + (config.useProxy ? (config.proxyUrlConfigured ? '代理已配置' : '代理未配置') : '直连')
   if (c.type === 'email') return (config.smtpHost || 'SMTP 未配置') + ':' + (config.smtpPort || '-') + ' · ' + (config.recipientCount || 0) + ' 个收件人 · ' + (config.encryption || 'none')
   return (config.messageType || 'text') + ' · ' + (config.urlConfigured ? 'Webhook 已配置' : 'Webhook 未配置') + (config.secretConfigured ? ' · 签名已配置' : '')
+}
+
+// ---- API 令牌 ----
+const apiTokens = ref<ApiAPIToken[]>([])
+const newTokenName = ref('')
+const newTokenTTL = ref(0)
+const createdToken = ref<string | null>(null)
+const tokenSaving = ref(false)
+
+async function loadAPITokens() {
+  try {
+    apiTokens.value = await api.apiTokens()
+  } catch {
+    apiTokens.value = []
+  }
+}
+
+watch(() => tab.value, (value) => {
+  if (value === 'apitoken') void loadAPITokens()
+})
+
+async function createAPIToken() {
+  if (!newTokenName.value.trim() || tokenSaving.value) return
+  tokenSaving.value = true
+  try {
+    const result = await api.createAPIToken({ name: newTokenName.value.trim(), ttl_days: newTokenTTL.value })
+    createdToken.value = result.token
+    newTokenName.value = ''
+    await loadAPITokens()
+  } catch (reason) {
+    mesh.error = reason instanceof Error ? reason.message : '创建 API 令牌失败'
+  } finally {
+    tokenSaving.value = false
+  }
+}
+
+async function removeAPIToken(id: string) {
+  try {
+    await api.deleteAPIToken(id)
+    await loadAPITokens()
+  } catch (reason) {
+    mesh.error = reason instanceof Error ? reason.message : '撤销令牌失败'
+  }
+}
+
+// ---- 备份与恢复 ----
+const backingUp = ref(false)
+const restoring = ref(false)
+const restoreFile = ref<File | null>(null)
+
+async function downloadBackup() {
+  if (backingUp.value) return
+  backingUp.value = true
+  try {
+    const response = await fetch(apiBase + '/api/v1/settings/backup', { credentials: 'include' })
+    if (!response.ok) throw new Error('备份下载失败（' + response.status + '）')
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = 'wiremesh-backup.db'
+    anchor.click()
+    URL.revokeObjectURL(url)
+    mesh.notice = '数据库备份已下载'
+  } catch (reason) {
+    mesh.error = reason instanceof Error ? reason.message : '备份下载失败'
+  } finally {
+    backingUp.value = false
+  }
+}
+
+function pickRestoreFile(event: Event) {
+  restoreFile.value = (event.target as HTMLInputElement).files?.[0] || null
+}
+
+async function restoreBackup() {
+  if (!restoreFile.value || restoring.value) return
+  restoring.value = true
+  try {
+    const response = await fetch(apiBase + '/api/v1/settings/backup/restore', { method: 'POST', credentials: 'include', body: restoreFile.value })
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { error?: string }
+      throw new Error(payload.error || '恢复失败（' + response.status + '）')
+    }
+    restoreFile.value = null
+    mesh.notice = '数据库已恢复；请重新登录以继续'
+    app.logout()
+    router.push({ name: 'login' })
+  } catch (reason) {
+    mesh.error = reason instanceof Error ? reason.message : '恢复失败'
+  } finally {
+    restoring.value = false
+  }
+}
+
+// ---- 登录会话 ----
+const sessions = ref<ApiUserSession[]>([])
+
+async function loadSessions() {
+  try {
+    sessions.value = await api.sessions()
+  } catch {
+    sessions.value = []
+  }
+}
+
+watch(() => tab.value, (value) => {
+  if (value === 'apitoken') void loadAPITokens()
+  if (value === 'sessions') void loadSessions()
+  if (value === 'mfa') void loadMFA()
+  if (value === 'sso') void loadSSO()
+})
+
+async function revokeSession(id: string) {
+  const confirmed = await requestConfirm({
+    title: '强制下线',
+    message: '确定强制下线该会话吗？对应令牌将立即失效。',
+    confirmText: '强制下线',
+    variant: 'danger',
+  })
+  if (!confirmed) return
+  try {
+    await api.revokeSession(id)
+    await loadSessions()
+  } catch (reason) {
+    mesh.error = reason instanceof Error ? reason.message : '强制下线失败'
+  }
+}
+
+// ---- 多因素认证 ----
+const mfaEnabled = ref(false)
+const mfaSecret = ref('')
+const mfaUri = ref('')
+const mfaQr = ref('')
+const mfaOtp = ref('')
+
+async function loadMFA() {
+  try {
+    mfaEnabled.value = (await api.mfaStatus()).enabled
+  } catch {
+    mfaEnabled.value = false
+  }
+}
+
+async function setupMFA() {
+  try {
+    const result = await api.mfaSetup()
+    mfaSecret.value = result.secret
+    mfaUri.value = result.uri
+    mfaQr.value = await QRCode.toDataURL(result.uri, { width: 240, margin: 1 })
+    mfaOtp.value = ''
+  } catch (reason) {
+    mesh.error = reason instanceof Error ? reason.message : 'MFA 初始化失败'
+  }
+}
+
+async function enableMFA() {
+  try {
+    await api.mfaEnable(mfaOtp.value.trim())
+    mfaEnabled.value = true
+    mfaSecret.value = ''
+    mfaUri.value = ''
+    mfaQr.value = ''
+    mfaOtp.value = ''
+    mesh.notice = '多因素认证已启用'
+  } catch (reason) {
+    mesh.error = reason instanceof Error ? reason.message : '验证码校验失败'
+  }
+}
+
+async function disableMFA() {
+  const confirmed = await requestConfirm({
+    title: '关闭多因素认证',
+    message: '确定关闭多因素认证吗？登录将不再要求动态验证码。',
+    confirmText: '关闭 MFA',
+    variant: 'warning',
+  })
+  if (!confirmed) return
+  try {
+    await api.mfaDisable()
+    mfaEnabled.value = false
+    mesh.notice = '多因素认证已关闭'
+  } catch (reason) {
+    mesh.error = reason instanceof Error ? reason.message : '关闭 MFA 失败'
+  }
+}
+
+// ---- 单点登录（SSO / OIDC） ----
+const ssoForm = reactive({ issuer: '', client_id: '', client_secret: '', enabled: false })
+const ssoSecretConfigured = ref(false)
+const ssoSaving = ref(false)
+
+async function loadSSO() {
+  try {
+    const config = await api.ssoConfig()
+    ssoForm.issuer = config.issuer
+    ssoForm.client_id = config.client_id
+    ssoForm.enabled = config.enabled
+    ssoSecretConfigured.value = config.client_secret_configured
+    ssoForm.client_secret = ''
+  } catch {
+    ssoForm.issuer = ''
+    ssoForm.client_id = ''
+    ssoForm.enabled = false
+    ssoSecretConfigured.value = false
+  }
+}
+
+async function saveSSO() {
+  if (ssoSaving.value) return
+  ssoSaving.value = true
+  try {
+    const result = await api.updateSSOConfig({
+      issuer: ssoForm.issuer.trim(),
+      client_id: ssoForm.client_id.trim(),
+      client_secret: ssoForm.client_secret,
+      enabled: ssoForm.enabled,
+    })
+    ssoSecretConfigured.value = result.client_secret_configured
+    ssoForm.client_secret = ''
+    mesh.notice = '单点登录配置已保存'
+  } catch (reason) {
+    mesh.error = reason instanceof Error ? reason.message : '保存 SSO 配置失败'
+  } finally {
+    ssoSaving.value = false
+  }
 }
 
 </script>
@@ -739,6 +972,122 @@ function channelConfigSummary(c: NotifyChannel) {
             </span>
           </div>
         </div>
+      </section>
+
+      <!-- API 令牌 -->
+      <section v-else-if="tab === 'apitoken'" class="panel p-4 sm:p-6 2xl:p-7">
+        <h2 class="text-sm font-semibold text-white">API 令牌</h2>
+        <p class="mt-0.5 text-xs text-slate-500">供脚本 / CI 调用控制平面 API 的长期凭据；明文仅在创建时显示一次，服务端只保存哈希。</p>
+        <div v-if="createdToken" class="mt-4 rounded-xl bg-emerald-500/10 p-4 ring-1 ring-emerald-500/40">
+          <p class="text-xs font-semibold text-emerald-300">新令牌已创建（仅显示一次，请立即保存）</p>
+          <pre class="mt-2 overflow-x-auto rounded-lg bg-ink-950 p-3 font-mono text-xs text-emerald-200">{{ createdToken }}</pre>
+          <p class="mt-1.5 text-[11px] text-slate-500">使用方式：<code class="text-cyan-300">Authorization: Bearer &lt;令牌&gt;</code></p>
+        </div>
+        <div class="mt-4 space-y-2">
+          <div v-for="token in apiTokens" :key="token.id" class="flex items-center gap-3 rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600">
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-sm font-medium text-slate-200">{{ token.name }}</p>
+              <p class="text-[11px] text-slate-500">创建于 {{ fmtDateTime(Date.parse(token.created_at)) }}<span v-if="token.last_used_at"> · 最近使用 {{ ago(Date.parse(token.last_used_at)) }}</span><span v-else> · 从未使用</span><span v-if="token.expires_at" class="text-amber-400"> · 有效期至 {{ fmtDateTime(Date.parse(token.expires_at)) }}</span></p>
+            </div>
+            <button class="chip bg-red-500/10 text-red-300 ring-1 ring-red-500/30" :disabled="!app.isAdmin" @click="removeAPIToken(token.id)">撤销</button>
+          </div>
+          <p v-if="!apiTokens.length" class="rounded-xl bg-ink-800/40 py-6 text-center text-xs text-slate-500 ring-1 ring-ink-700">暂无 API 令牌</p>
+        </div>
+        <div class="mt-4 flex flex-wrap items-end gap-3 border-t border-ink-700 pt-4">
+          <div class="flex-1"><label class="label">令牌名称</label><input v-model="newTokenName" class="input" placeholder="如：CI 部署脚本" /></div>
+          <div>
+            <label class="label">有效期</label>
+            <select v-model.number="newTokenTTL" class="input">
+              <option :value="0">永久有效</option>
+              <option :value="30">30 天</option>
+              <option :value="90">90 天</option>
+              <option :value="365">1 年</option>
+            </select>
+          </div>
+          <button class="btn-primary" :disabled="!app.isAdmin || tokenSaving || !newTokenName.trim()" @click="createAPIToken">{{ tokenSaving ? '创建中…' : '生成令牌' }}</button>
+        </div>
+      </section>
+
+      <!-- 备份与恢复 -->
+      <section v-else-if="tab === 'backup'" class="panel p-4 sm:p-6 2xl:p-7">
+        <h2 class="text-sm font-semibold text-white">备份与恢复</h2>
+        <p class="mt-0.5 text-xs text-slate-500">使用 VACUUM INTO 生成一致性在线备份；恢复会立即切换到备份中的数据库（仅 SQLite 部署支持）。</p>
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          <div class="rounded-xl bg-ink-800/60 p-5 ring-1 ring-ink-600">
+            <p class="text-sm font-semibold text-slate-200">下载备份</p>
+            <p class="mt-1 text-[11px] leading-relaxed text-slate-500">导出当前 SQLite 数据库的完整快照，可离线保存。</p>
+            <button class="btn-secondary mt-4" :disabled="!app.isAdmin || backingUp" @click="downloadBackup">{{ backingUp ? '备份中…' : '下载备份文件' }}</button>
+          </div>
+          <div class="rounded-xl bg-ink-800/60 p-5 ring-1 ring-ink-600">
+            <p class="text-sm font-semibold text-slate-200">恢复备份</p>
+            <p class="mt-1 text-[11px] leading-relaxed text-slate-500">上传 wiremesh-backup.db，恢复完成后将自动重新登录。</p>
+            <div class="mt-4 flex items-center gap-3">
+              <input type="file" accept=".db" class="min-w-0 flex-1 text-xs text-slate-400" @change="pickRestoreFile" />
+              <button class="btn-secondary shrink-0 text-red-300" :disabled="!app.isAdmin || restoring || !restoreFile" @click="restoreBackup">{{ restoring ? '恢复中…' : '恢复数据库' }}</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 登录会话 -->
+      <section v-else-if="tab === 'sessions'" class="panel p-4 sm:p-6 2xl:p-7">
+        <h2 class="text-sm font-semibold text-white">登录会话</h2>
+        <p class="mt-0.5 text-xs text-slate-500">查看当前活跃的登录会话并强制下线；会话记录保存在内存中，服务重启后清空。</p>
+        <div class="mt-4 space-y-2">
+          <div v-for="session in sessions" :key="session.id" class="flex items-center gap-3 rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600">
+            <div class="min-w-0 flex-1">
+              <p class="text-sm font-medium text-slate-200">{{ session.user_name }} <span class="ml-1 text-xs text-slate-500">{{ session.user_agent || '未知设备' }}</span></p>
+              <p class="text-[11px] text-slate-500">登录于 {{ fmtDateTime(Date.parse(session.created_at)) }} · 最近活动 {{ ago(Date.parse(session.last_seen_at)) }}</p>
+            </div>
+            <span v-if="session.current" class="chip bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30">当前会话</span>
+            <button v-else class="chip bg-red-500/10 text-red-300 ring-1 ring-red-500/30" :disabled="!app.isAdmin" @click="revokeSession(session.id)">强制下线</button>
+          </div>
+          <p v-if="!sessions.length" class="rounded-xl bg-ink-800/40 py-6 text-center text-xs text-slate-500 ring-1 ring-ink-700">暂无活跃会话</p>
+        </div>
+      </section>
+
+      <!-- 多因素认证 -->
+      <section v-else-if="tab === 'mfa'" class="panel p-4 sm:p-6 2xl:p-7">
+        <h2 class="text-sm font-semibold text-white">多因素认证（MFA / TOTP）</h2>
+        <p class="mt-0.5 text-xs text-slate-500">使用 Google Authenticator / 1Password 等认证器扫码，登录时额外要求 6 位动态验证码。</p>
+        <div class="mt-4 flex items-center gap-3 rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600">
+          <span class="chip ring-1" :class="mfaEnabled ? 'bg-emerald-500/10 text-emerald-300 ring-emerald-500/30' : 'bg-slate-500/10 text-slate-400 ring-slate-500/30'">{{ mfaEnabled ? '已启用' : '未启用' }}</span>
+          <p class="text-xs text-slate-400">{{ mfaEnabled ? '登录时需要输入认证器中的动态验证码' : '启用后为账号增加第二道登录验证' }}</p>
+          <button v-if="mfaEnabled" class="btn-ghost ml-auto !py-1.5 text-xs text-red-300" @click="disableMFA">关闭 MFA</button>
+        </div>
+
+        <template v-if="!mfaEnabled">
+          <div v-if="!mfaSecret" class="mt-4">
+            <button class="btn-secondary" @click="setupMFA">开始设置认证器</button>
+          </div>
+          <div v-else class="mt-4 grid gap-5 sm:grid-cols-[15rem_1fr]">
+            <div class="flex flex-col items-center gap-3 rounded-xl bg-ink-950/50 p-4 ring-1 ring-ink-600">
+              <img v-if="mfaQr" :src="mfaQr" alt="MFA 二维码" class="w-48 max-w-full rounded-lg" />
+              <p class="break-all font-mono text-[11px] text-slate-400">{{ mfaSecret }}</p>
+            </div>
+            <div>
+              <p class="text-xs leading-relaxed text-slate-400">1. 使用认证器 App 扫描左侧二维码，或手动输入密钥。</p>
+              <p class="mt-1 text-xs leading-relaxed text-slate-400">2. 输入认证器显示的 6 位验证码完成启用。</p>
+              <div class="mt-4 flex items-end gap-3">
+                <div><label class="label">动态验证码</label><input v-model="mfaOtp" class="input font-mono" inputmode="numeric" maxlength="6" placeholder="6 位验证码" /></div>
+                <button class="btn-primary" :disabled="!mfaOtp.trim()" @click="enableMFA">验证并启用</button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </section>
+
+      <!-- 单点登录（SSO / OIDC） -->
+      <section v-else-if="tab === 'sso'" class="panel p-4 sm:p-6 2xl:p-7">
+        <h2 class="text-sm font-semibold text-white">单点登录（SSO / OIDC）</h2>
+        <p class="mt-0.5 text-xs text-slate-500">对接 Keycloak、Google Workspace 等 OIDC 提供商；登录页显示「单点登录」入口，按邮箱匹配现有 WireMesh 用户。</p>
+        <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div class="sm:col-span-2"><label class="label">Issuer（提供商根地址）</label><input v-model="ssoForm.issuer" class="input font-mono" placeholder="https://accounts.google.com" /></div>
+          <div><label class="label">Client ID</label><input v-model="ssoForm.client_id" class="input font-mono" /></div>
+          <div><label class="label">Client Secret</label><input v-model="ssoForm.client_secret" type="password" autocomplete="new-password" class="input font-mono" :placeholder="ssoSecretConfigured ? '已安全保存，留空保持不变' : 'OIDC 客户端密钥'" /></div>
+        </div>
+        <label class="mt-4 flex items-center gap-2 text-xs text-slate-400"><input v-model="ssoForm.enabled" type="checkbox" class="accent-emerald-500" />启用单点登录</label>
+        <div class="mt-4 flex justify-end"><button class="btn-primary" :disabled="!app.isAdmin || ssoSaving" @click="saveSSO">{{ ssoSaving ? '保存中…' : '保存配置' }}</button></div>
       </section>
 
       <!-- 保存栏（设置类分组显示） -->
