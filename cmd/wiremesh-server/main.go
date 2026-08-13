@@ -20,6 +20,9 @@ func main() {
 	}
 
 	masterKey := os.Getenv("WIREMESH_MASTER_KEY")
+	if strings.TrimSpace(masterKey) == "" {
+		log.Fatal("WIREMESH_MASTER_KEY is required: set it to a long random secret (used to encrypt private keys and sign session tokens). Generate one with: openssl rand -base64 32")
+	}
 	databaseDriver := strings.TrimSpace(os.Getenv("WIREMESH_DATABASE_DRIVER"))
 	databaseDSN := strings.TrimSpace(os.Getenv("WIREMESH_DATABASE_DSN"))
 	var store control.Store
@@ -69,6 +72,7 @@ func main() {
 		}
 	}
 
+	certFile, keyFile := os.Getenv("WIREMESH_TLS_CERT_FILE"), os.Getenv("WIREMESH_TLS_KEY_FILE")
 	app, err := control.NewApp(control.Config{
 		MasterKey:       masterKey,
 		Store:           store,
@@ -76,6 +80,10 @@ func main() {
 		DatabaseDriver:  databaseDriver,
 		AgentBinaryPath: strings.TrimSpace(os.Getenv("WIREMESH_AGENT_BINARY")),
 		AgentVersion:    strings.TrimSpace(os.Getenv("WIREMESH_AGENT_VERSION")),
+		CAFile:          envOrDefault("WIREMESH_CA_FILE", "wiremesh-ca.json"),
+		// 直接 TLS 监听时要求 Agent 携带有效客户端证书；仅当流量经过
+		// 可信反向代理（由代理注入 X-Agent-ID）时设置 WIREMESH_TRUST_PROXY_AGENT_ID=true
+		RequireAgentClientCert: certFile != "" && keyFile != "" && os.Getenv("WIREMESH_TRUST_PROXY_AGENT_ID") != "true",
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -86,7 +94,6 @@ func main() {
 	log.Printf("WireMesh control plane listening on %s", address)
 	log.Printf("database driver: %s", databaseDriver)
 	handler := withFrontend(app.Router(), os.Getenv("WIREMESH_WEB_DIR"))
-	certFile, keyFile := os.Getenv("WIREMESH_TLS_CERT_FILE"), os.Getenv("WIREMESH_TLS_KEY_FILE")
 	if certFile != "" && keyFile != "" {
 		server := &http.Server{Addr: address, Handler: handler, TLSConfig: app.AgentTLSConfig()}
 		log.Printf("agent mTLS verification enabled")

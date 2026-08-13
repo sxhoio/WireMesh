@@ -86,16 +86,22 @@ function validateAddress() {
   return '请输入合法的 IPv4 或 IPv6 地址'
 }
 
+let loadRequestID = 0
+
 async function load(silent = false) {
   if (!selectedNetworkId.value) return
+  const current = ++loadRequestID
   if (!silent) loading.value = true
   if (!silent) error.value = ''
   try {
-    records.value = await api.dnsRecords(selectedNetworkId.value)
+    const result = await api.dnsRecords(selectedNetworkId.value)
+    if (current !== loadRequestID) return
+    records.value = result
   } catch (reason) {
+    if (current !== loadRequestID) return
     error.value = reason instanceof Error ? reason.message : '加载 DNS 记录失败'
   } finally {
-    if (!silent) loading.value = false
+    if (current === loadRequestID && !silent) loading.value = false
   }
 }
 

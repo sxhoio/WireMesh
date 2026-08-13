@@ -20,7 +20,7 @@ type SecretBox struct{ masterKey []byte }
 
 func NewSecretBox(masterKey string) (*SecretBox, error) {
 	if masterKey == "" {
-		masterKey = "wiremesh-development-master-key-not-for-production"
+		return nil, errors.New("master key is required: set WIREMESH_MASTER_KEY to a long random secret")
 	}
 	sum := sha256.Sum256([]byte(masterKey))
 	return &SecretBox{masterKey: sum[:]}, nil

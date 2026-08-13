@@ -59,20 +59,26 @@ function friendlyConfigError(message: string) {
   return message
 }
 
+let configRequestID = 0
+
 async function loadConfig() {
   if (!selectedNodeId.value) return
+  const current = ++configRequestID
+  const guard = () => current === configRequestID
   loading.value = true
   error.value = ''
   try {
     const result = await api.nodeClientConfig(selectedNodeId.value)
+    if (!guard()) return
     config.value = result
     qrDataUrl.value = await QRCode.toDataURL(result.content, { width: 480, margin: 1, errorCorrectionLevel: 'M' })
   } catch (reason) {
+    if (!guard()) return
     config.value = null
     qrDataUrl.value = ''
     error.value = friendlyConfigError(reason instanceof Error ? reason.message : '配置导出失败')
   } finally {
-    loading.value = false
+    if (guard()) loading.value = false
   }
 }
 

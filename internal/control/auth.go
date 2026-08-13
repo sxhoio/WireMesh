@@ -14,6 +14,9 @@ import (
 
 var errLoginPersistence = errors.New("failed to record login time")
 
+// defaultSessionTTL 是未配置会话超时（或设置读取失败）时的回退有效期。
+const defaultSessionTTL = 12 * time.Hour
+
 // authCookieName is the HttpOnly cookie used to carry the session token in
 // browser requests. The Authorization header remains supported as a fallback
 // for the Agent protocol, tests, and non-browser clients.
@@ -40,6 +43,14 @@ func hashPassword(password string) (string, error) {
 	return string(hash), err
 }
 
+// sessionTTL 读取租户配置的会话超时（分钟），未配置或异常时回退 12 小时。
+func (a *Authenticator) sessionTTL(tenant string) time.Duration {
+	if settings, err := a.store.GetSettings(tenant); err == nil && settings.SessionTimeoutMin >= 5 && settings.SessionTimeoutMin <= 1440 {
+		return time.Duration(settings.SessionTimeoutMin) * time.Minute
+	}
+	return defaultSessionTTL
+}
+
 func (a *Authenticator) Login(email, password string) (string, User, error) {
 	user, err := a.store.GetUserByEmail(strings.ToLower(email))
 	if err != nil {
@@ -55,11 +66,15 @@ func (a *Authenticator) Login(email, password string) (string, User, error) {
 	if err := a.store.UpdateUserLastLogin(user.ID, user.LastLoginAt); err != nil {
 		return "", User{}, errLoginPersistence
 	}
-	return a.issue(user), user, nil
+	return a.issueTTL(user, a.sessionTTL(user.TenantID)), user, nil
 }
 
 func (a *Authenticator) issue(user User) string {
-	payload, _ := json.Marshal(claims{Subject: user.ID, TenantID: user.TenantID, Role: user.Role, Exp: time.Now().Add(12 * time.Hour).Unix()})
+	return a.issueTTL(user, defaultSessionTTL)
+}
+
+func (a *Authenticator) issueTTL(user User, ttl time.Duration) string {
+	payload, _ := json.Marshal(claims{Subject: user.ID, TenantID: user.TenantID, Role: user.Role, Exp: time.Now().Add(ttl).Unix()})
 	body := base64.RawURLEncoding.EncodeToString(payload)
 	sig := a.sign(body)
 	return body + "." + base64.RawURLEncoding.EncodeToString(sig)

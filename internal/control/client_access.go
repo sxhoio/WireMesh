@@ -34,6 +34,11 @@ func (a *App) nodeClientConfig(w http.ResponseWriter, r *http.Request, c claims)
 		writeError(w, http.StatusNotFound, "node not included in published configuration")
 		return
 	}
+	config, err = a.openRevisionConfig(config)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to decrypt node configuration")
+		return
+	}
 	network, err := a.store.GetNetwork(node.TenantID, node.NetworkID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "network not found")

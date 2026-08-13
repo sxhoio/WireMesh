@@ -155,8 +155,12 @@ function friendlyReferenceError(message: string) {
   return message
 }
 
+let loadRequestID = 0
+
 async function load(silent = false) {
   if (!selectedNetworkId.value) return
+  const current = ++loadRequestID
+  const guard = () => current === loadRequestID
   if (!silent) {
     loading.value = true
     // 静默自动刷新不清空用户正在查看的错误提示，只有显式加载才重置
@@ -168,6 +172,7 @@ async function load(silent = false) {
       api.accessPolicies(selectedNetworkId.value),
       api.egress(selectedNetworkId.value),
     ])
+    if (!guard()) return
     if (resourceResult.status === 'fulfilled') resources.value = resourceResult.value
     else error.value = resourceResult.reason instanceof Error ? resourceResult.reason.message : '加载资源失败'
     if (policyResult.status === 'fulfilled') policies.value = policyResult.value
@@ -183,10 +188,11 @@ async function load(silent = false) {
       api.accessResources(selectedNetworkId.value),
       api.accessPolicies(selectedNetworkId.value),
     ])
+    if (!guard()) return
     if (resourceResult.status === 'fulfilled') resources.value = resourceResult.value
     if (policyResult.status === 'fulfilled') policies.value = policyResult.value
   }
-  if (!silent) loading.value = false
+  if (guard() && !silent) loading.value = false
 }
 
 function markDirty() {

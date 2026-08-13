@@ -181,11 +181,17 @@ func (a *App) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "SSO account is disabled")
 		return
 	}
-	sessionToken := a.auth.issue(user)
+	// 回调必须回到发起登录的同一租户，防止跨租户会话签发
+	if user.TenantID != stateInfo.TenantID {
+		writeError(w, http.StatusUnauthorized, "SSO account does not belong to this tenant")
+		return
+	}
+	ttl := a.auth.sessionTTL(user.TenantID)
+	sessionToken := a.auth.issueTTL(user, ttl)
 	_ = a.store.UpdateUserLastLogin(user.ID, time.Now().UTC())
 	a.recordSession(user, sessionToken, r.UserAgent())
 	a.auditEvent(user.TenantID, user.ID, "auth.login.sso", "user", user.ID, nil)
-	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: sessionToken, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int((12 * time.Hour).Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: sessionToken, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int(ttl.Seconds())})
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 

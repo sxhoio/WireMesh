@@ -7,6 +7,16 @@ import type {
 import { pollUntil } from '../utils/pollUntil'
 import { useAppStore } from './app'
 
+let nodeLoadQueue: Promise<unknown> = Promise.resolve()
+
+/** 串行化节点数据加载：refresh 与 refreshNodeTelemetry 都写 agents/links，
+ * 并发执行会让旧响应覆盖新数据；入队后按发起顺序执行。 */
+function enqueueNodeLoad(task: () => Promise<unknown>) {
+  const run = nodeLoadQueue.then(task, task)
+  nodeLoadQueue = run.then(() => undefined, () => undefined)
+  return run
+}
+
 let pollingTimer: number | undefined
 const trafficSamples = new Map<string, { time: number; receiveBytes: number; transmitBytes: number; rxMbps: number; txMbps: number }>()
 const deletingNodeIDs = new Set<string>()
@@ -433,6 +443,7 @@ export const useMeshStore = defineStore('mesh', {
     setProject(id: string) { this.selectedProjectId = id; this.selectedNetworkId = 'all' },
     clearMessage() { this.error = ''; this.notice = '' },
     async refresh() {
+      return enqueueNodeLoad(async () => {
       const app = useAppStore()
       if (!app.authed || this.loading) return
       this.loading = true
@@ -526,8 +537,10 @@ export const useMeshStore = defineStore('mesh', {
         if (reason instanceof ApiError && reason.status === 401) app.logout()
         this.error = reason instanceof Error ? reason.message : '同步失败'
       } finally { this.loading = false }
+      })
     },
     async refreshNodeTelemetry(silent = false) {
+      return enqueueNodeLoad(async () => {
       const app = useAppStore()
       if (!app.authed) return false
       try {
@@ -547,6 +560,7 @@ export const useMeshStore = defineStore('mesh', {
         else if (!silent) this.error = reason instanceof Error ? reason.message : '刷新节点状态失败'
         return false
       }
+      })
     },
     async waitForCollectedTelemetry(nodeIDs: string[], previousLastSeen: Map<string, number>) {
       const onlineIDs = nodeIDs.filter((id) => {

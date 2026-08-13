@@ -28,37 +28,43 @@ import (
 )
 
 type Config struct {
-	MasterKey       string
-	Store           Store
-	Database        *DatabaseManager
-	DatabaseDriver  string
-	AgentBinaryPath string
-	AgentVersion    string
+	MasterKey              string
+	Store                  Store
+	Database               *DatabaseManager
+	DatabaseDriver         string
+	AgentBinaryPath        string
+	AgentVersion           string
+	CAFile                 string
+	RequireAgentClientCert bool
 }
 type App struct {
-	store           Store
-	database        *DatabaseManager
-	databaseDriver  string
-	box             *SecretBox
-	auth            *Authenticator
-	ca              *x509.Certificate
-	caKey           any
-	geoMu           sync.RWMutex
-	geoReaders      map[string]*geoReaderState
-	geoFailures     map[string]time.Time
-	geoLookup       func(string, string) (geoIPLocation, error)
-	commandMu       sync.Mutex
-	commandWakeups  map[string]chan struct{}
-	sessionMu       sync.Mutex
-	sessions        map[string]UserSession
-	revokedTokens   map[string]time.Time
-	ssoMu           sync.Mutex
-	ssoStates       map[string]ssoState
-	agentBinaryPath string
-	agentVersion    string
+	store                  Store
+	database               *DatabaseManager
+	databaseDriver         string
+	box                    *SecretBox
+	auth                   *Authenticator
+	ca                     *x509.Certificate
+	caKey                  any
+	geoMu                  sync.RWMutex
+	geoReaders             map[string]*geoReaderState
+	geoFailures            map[string]time.Time
+	geoLookup              func(string, string) (geoIPLocation, error)
+	commandMu              sync.Mutex
+	commandWakeups         map[string]chan struct{}
+	sessionMu              sync.Mutex
+	sessions               map[string]UserSession
+	revokedTokens          map[string]time.Time
+	ssoMu                  sync.Mutex
+	ssoStates              map[string]ssoState
+	agentBinaryPath        string
+	agentVersion           string
+	requireAgentClientCert bool
 }
 
 func NewApp(cfg Config) (*App, error) {
+	if strings.TrimSpace(cfg.MasterKey) == "" {
+		return nil, errors.New("master key is required: set WIREMESH_MASTER_KEY to a long random secret")
+	}
 	box, err := NewSecretBox(cfg.MasterKey)
 	if err != nil {
 		return nil, err
@@ -68,22 +74,28 @@ func NewApp(cfg Config) (*App, error) {
 		store = NewMemoryStore()
 	}
 	app := &App{
-		store:           store,
-		database:        cfg.Database,
-		databaseDriver:  cfg.DatabaseDriver,
-		box:             box,
-		geoReaders:      map[string]*geoReaderState{},
-		geoFailures:     map[string]time.Time{},
-		commandWakeups:  map[string]chan struct{}{},
-		sessions:        map[string]UserSession{},
-		revokedTokens:   map[string]time.Time{},
-		ssoStates:       map[string]ssoState{},
-		agentBinaryPath: cfg.AgentBinaryPath,
-		agentVersion:    strings.TrimSpace(cfg.AgentVersion),
+		store:                  store,
+		database:               cfg.Database,
+		databaseDriver:         cfg.DatabaseDriver,
+		box:                    box,
+		geoReaders:             map[string]*geoReaderState{},
+		geoFailures:            map[string]time.Time{},
+		commandWakeups:         map[string]chan struct{}{},
+		sessions:               map[string]UserSession{},
+		revokedTokens:          map[string]time.Time{},
+		ssoStates:              map[string]ssoState{},
+		agentBinaryPath:        cfg.AgentBinaryPath,
+		agentVersion:           strings.TrimSpace(cfg.AgentVersion),
+		requireAgentClientCert: cfg.RequireAgentClientCert,
 	}
 	app.geoLookup = app.lookupGeoIPLocation
 	app.auth = newAuthenticator(store, cfg.MasterKey+"-auth")
-	if err := app.newCertificateAuthority(); err != nil {
+	if cfg.CAFile != "" {
+		// 生产部署：CA 私钥用 master key 加密持久化，重启后复用，避免吊销全部 Agent 证书
+		if err := app.loadOrCreateCA(cfg.CAFile); err != nil {
+			return nil, err
+		}
+	} else if err := app.newCertificateAuthority(); err != nil {
 		return nil, err
 	}
 	return app, nil
@@ -341,7 +353,8 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	a.auditEvent(user.TenantID, user.ID, "auth.login", "user", user.ID, nil)
 	a.recordSession(user, token, r.UserAgent())
 	// 设置 HttpOnly + SameSite cookie，浏览器后续请求自动携带；Authorization 头仍作为非浏览器客户端的回退。
-	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int((12 * time.Hour).Seconds())})
+	ttl := a.auth.sessionTTL(user.TenantID)
+	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int(ttl.Seconds())})
 	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": publicUser(user)})
 }
 
@@ -589,6 +602,12 @@ func (a *App) publishNetwork(tenantID string, network Network) (ConfigPublishRes
 	if err != nil {
 		return ConfigPublishResult{}, err
 	}
+	// 私钥在修订中必须加密持久化（AGENTS.md：Persist only through EncryptedSecret），
+	// 与历史明文格式兼容：读取方通过 openRevisionConfig 解密。
+	sealedConfigs, err := a.sealRevisionConfigs(configs)
+	if err != nil {
+		return ConfigPublishResult{}, fmt.Errorf("encrypt revision private keys: %w", err)
+	}
 	previous, previousErr := a.store.LatestRevision(tenantID, network.ID)
 	if previousErr != nil && !errors.Is(previousErr, errNotFound) {
 		return ConfigPublishResult{}, fmt.Errorf("read latest configuration revision: %w", previousErr)
@@ -597,7 +616,14 @@ func (a *App) publishNetwork(tenantID string, network Network) (ConfigPublishRes
 	changedNodeIDs := make([]string, 0, len(nodes))
 	queuedNodeIDs := make([]string, 0, len(nodes))
 	for _, node := range nodes {
-		if errors.Is(previousErr, errNotFound) || !reflect.DeepEqual(previous.Configs[node.ID], configs[node.ID]) {
+		// 加密后的私钥是随机化产物，不能直接比较；解密旧修订后与本次明文编译结果比较
+		sameConfig := false
+		if !errors.Is(previousErr, errNotFound) {
+			if previousConfig, openErr := a.openRevisionConfig(previous.Configs[node.ID]); openErr == nil {
+				sameConfig = reflect.DeepEqual(previousConfig, configs[node.ID])
+			}
+		}
+		if !sameConfig {
 			deliveryTargets[node.ID] = true
 			changedNodeIDs = append(changedNodeIDs, node.ID)
 			queuedNodeIDs = append(queuedNodeIDs, node.ID)
@@ -615,7 +641,7 @@ func (a *App) publishNetwork(tenantID string, network Network) (ConfigPublishRes
 
 	revision := previous
 	if len(changedNodeIDs) > 0 {
-		revision = ConfigRevision{ID: newID("rev"), TenantID: tenantID, ProjectID: network.ProjectID, NetworkID: network.ID, Version: previous.Version + 1, Configs: configs, CreatedAt: time.Now()}
+		revision = ConfigRevision{ID: newID("rev"), TenantID: tenantID, ProjectID: network.ProjectID, NetworkID: network.ID, Version: previous.Version + 1, Configs: sealedConfigs, CreatedAt: time.Now()}
 		if errors.Is(previousErr, errNotFound) {
 			revision.Version = 1
 		}
@@ -804,6 +830,12 @@ func (a *App) enroll(w http.ResponseWriter, r *http.Request) {
 // the server directly. X-Agent-ID also supports local HTTP and TLS-terminating
 // reverse proxies; proxy deployments must keep the backend listener private.
 func (a *App) agentNode(w http.ResponseWriter, r *http.Request) (Node, bool) {
+	// 严格模式（RequireAgentClientCert）：直连 TLS 必须携带有效客户端证书，
+	// 不允许仅凭 X-Agent-ID 头冒充节点。
+	if a.requireAgentClientCert && (r.TLS == nil || len(r.TLS.PeerCertificates) == 0) {
+		writeError(w, http.StatusUnauthorized, "agent client certificate required")
+		return Node{}, false
+	}
 	nodeID := r.Header.Get("X-Agent-ID")
 	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 		certificateNodeID := r.TLS.PeerCertificates[0].Subject.CommonName
@@ -826,10 +858,15 @@ func (a *App) agentNode(w http.ResponseWriter, r *http.Request) (Node, bool) {
 
 // AgentTLSConfig verifies enrolled client certificates while allowing browsers
 // to call the user-facing API on the same HTTPS listener without a certificate.
+// 严格模式下（RequireAgentClientCert）则要求所有 agent 端点请求携带有效证书。
 func (a *App) AgentTLSConfig() *tls.Config {
 	pool := x509.NewCertPool()
 	pool.AddCert(a.ca)
-	return &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.VerifyClientCertIfGiven, ClientCAs: pool}
+	clientAuth := tls.VerifyClientCertIfGiven
+	if a.requireAgentClientCert {
+		clientAuth = tls.RequireAndVerifyClientCert
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: clientAuth, ClientCAs: pool}
 }
 func (a *App) agentConfig(w http.ResponseWriter, r *http.Request) {
 	node, ok := a.agentNode(w, r)
@@ -848,6 +885,11 @@ func (a *App) agentConfig(w http.ResponseWriter, r *http.Request) {
 	config, ok := revision.Configs[node.ID]
 	if !ok {
 		writeError(w, 404, "node not included in published configuration")
+		return
+	}
+	config, err = a.openRevisionConfig(config)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to decrypt node configuration")
 		return
 	}
 	hasOpen, err := a.nodeHasOpenConfigDelivery(node.TenantID, node.ID, revision.Version)
@@ -1039,6 +1081,110 @@ func (a *App) issueAgentCertificate(nodeID string) (string, string, string, time
 func (a *App) caPEM() string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: a.ca.Raw}))
 }
+
+// persistedCA 是落盘的 Agent CA 表示：私钥用 master key 加密，证书明文。
+type persistedCA struct {
+	Version int             `json:"version"`
+	CertPEM string          `json:"cert_pem"`
+	Key     EncryptedSecret `json:"key_secret"`
+}
+
+// loadOrCreateCA 加载持久化的 Agent CA；文件不存在时生成并加密落盘。
+// 服务重启后复用同一 CA，避免已接入 Agent 的证书全部失效。
+func (a *App) loadOrCreateCA(path string) error {
+	raw, err := os.ReadFile(path)
+	if err == nil {
+		var stored persistedCA
+		if jsonErr := json.Unmarshal(raw, &stored); jsonErr != nil {
+			return fmt.Errorf("load agent CA %s: %w", path, jsonErr)
+		}
+		der, decryptErr := a.box.Decrypt(stored.Key)
+		if decryptErr != nil {
+			return fmt.Errorf("decrypt agent CA %s: %w", path, decryptErr)
+		}
+		key, parseErr := x509.ParseECPrivateKey(der)
+		if parseErr != nil {
+			return fmt.Errorf("parse agent CA key %s: %w", path, parseErr)
+		}
+		block, _ := pem.Decode([]byte(stored.CertPEM))
+		if block == nil {
+			return fmt.Errorf("parse agent CA cert %s: invalid PEM", path)
+		}
+		cert, parseErr := x509.ParseCertificate(block.Bytes)
+		if parseErr != nil {
+			return fmt.Errorf("parse agent CA cert %s: %w", path, parseErr)
+		}
+		a.ca = cert
+		a.caKey = key
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read agent CA %s: %w", path, err)
+	}
+	if err := a.newCertificateAuthority(); err != nil {
+		return err
+	}
+	return a.persistCA(path)
+}
+
+// persistCA 把当前 CA 加密写入磁盘（0600），供下次启动复用。
+func (a *App) persistCA(path string) error {
+	key, ok := a.caKey.(*ecdsa.PrivateKey)
+	if !ok {
+		return errors.New("agent CA key is not an ECDSA private key")
+	}
+	der, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return err
+	}
+	secret, err := a.box.Encrypt(der)
+	if err != nil {
+		return err
+	}
+	stored := persistedCA{Version: 1, CertPEM: a.caPEM(), Key: secret}
+	raw, err := json.Marshal(stored)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o600)
+}
+
+// sealRevisionConfigs 加密修订中每个节点的私钥（明文仅存在于内存编译阶段）。
+func (a *App) sealRevisionConfigs(configs map[string]NodeConfig) (map[string]NodeConfig, error) {
+	sealed := make(map[string]NodeConfig, len(configs))
+	for id, config := range configs {
+		secret, err := a.box.Encrypt([]byte(config.PrivateKey))
+		if err != nil {
+			return nil, err
+		}
+		raw, err := json.Marshal(secret)
+		if err != nil {
+			return nil, err
+		}
+		config.PrivateKey = string(raw)
+		sealed[id] = config
+	}
+	return sealed, nil
+}
+
+// openRevisionConfig 解出修订中节点的明文配置；兼容历史明文私钥格式（Base64 WG 密钥）。
+func (a *App) openRevisionConfig(config NodeConfig) (NodeConfig, error) {
+	key := config.PrivateKey
+	if !strings.HasPrefix(key, "{") {
+		return config, nil
+	}
+	var secret EncryptedSecret
+	if err := json.Unmarshal([]byte(key), &secret); err != nil {
+		return NodeConfig{}, fmt.Errorf("parse encrypted private key: %w", err)
+	}
+	plaintext, err := a.box.Decrypt(secret)
+	if err != nil {
+		return NodeConfig{}, fmt.Errorf("decrypt node private key: %w", err)
+	}
+	config.PrivateKey = string(plaintext)
+	return config, nil
+}
+
 func (a *App) auditEvent(tenant, actor, action, resourceType, resourceID string, metadata map[string]string) {
 	a.store.AddAudit(AuditEvent{ID: newID("audit"), TenantID: tenant, ActorID: actor, Action: action, ResourceType: resourceType, ResourceID: resourceID, Metadata: metadata, CreatedAt: time.Now()})
 }
