@@ -1150,6 +1150,9 @@ func (s *SQLStore) CreateDNSRecord(v DNSRecord) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO dns_records (id, tenant_id, network_id, name, address, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.NetworkID, v.Name, v.Address, v.Description, timeText(v.CreatedAt))
 	return err
 }
+func (s *SQLStore) UpdateDNSRecord(v DNSRecord) error {
+	return changed(s.db.Exec(s.query(`UPDATE dns_records SET name=?, address=?, description=? WHERE tenant_id=? AND id=?`), v.Name, v.Address, v.Description, v.TenantID, v.ID))
+}
 func (s *SQLStore) DeleteDNSRecord(tenant, id string) error {
 	return changed(s.db.Exec(s.query(`DELETE FROM dns_records WHERE tenant_id=? AND id=?`), tenant, id))
 }

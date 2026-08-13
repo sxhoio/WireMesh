@@ -91,6 +91,7 @@ type Store interface {
 	DeleteAccessPolicy(string, string) error
 	ListAccessPolicies(string, string) ([]AccessPolicy, error)
 	CreateDNSRecord(DNSRecord) error
+	UpdateDNSRecord(DNSRecord) error
 	DeleteDNSRecord(string, string) error
 	ListDNSRecords(string, string) ([]DNSRecord, error)
 	CreateAPIToken(APIToken) error
@@ -725,6 +726,26 @@ func (s *MemoryStore) ListAccessPolicies(tenant, network string) ([]AccessPolicy
 func (s *MemoryStore) CreateDNSRecord(v DNSRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, existing := range s.dnsRecords {
+		if existing.TenantID == v.TenantID && existing.NetworkID == v.NetworkID && existing.Name == v.Name && existing.ID != v.ID {
+			return errors.New("duplicate dns record name")
+		}
+	}
+	s.dnsRecords[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) UpdateDNSRecord(v DNSRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.dnsRecords[v.ID]
+	if !ok || current.TenantID != v.TenantID {
+		return errNotFound
+	}
+	for _, existing := range s.dnsRecords {
+		if existing.TenantID == v.TenantID && existing.NetworkID == v.NetworkID && existing.Name == v.Name && existing.ID != v.ID {
+			return errors.New("duplicate dns record name")
+		}
+	}
 	s.dnsRecords[v.ID] = v
 	return nil
 }

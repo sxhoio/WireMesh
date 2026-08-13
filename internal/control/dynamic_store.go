@@ -215,6 +215,9 @@ func (s *SwitchableStore) ListAccessPolicies(tenant, network string) ([]AccessPo
 func (s *SwitchableStore) CreateDNSRecord(v DNSRecord) error {
 	return s.store().CreateDNSRecord(v)
 }
+func (s *SwitchableStore) UpdateDNSRecord(v DNSRecord) error {
+	return s.store().UpdateDNSRecord(v)
+}
 func (s *SwitchableStore) DeleteDNSRecord(tenant, id string) error {
 	return s.store().DeleteDNSRecord(tenant, id)
 }

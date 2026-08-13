@@ -205,6 +205,7 @@ export const api = {
   deleteAccessPolicy: (networkId: string, policyId: string) => request<void>('/api/v1/networks/' + encodeURIComponent(networkId) + '/access-policies/' + encodeURIComponent(policyId), { method: 'DELETE' }),
   dnsRecords: (networkId: string) => requestArray<ApiDNSRecord>('/api/v1/networks/' + encodeURIComponent(networkId) + '/dns-records'),
   createDNSRecord: (networkId: string, payload: { name: string; address: string; description?: string }) => request<ApiDNSRecord>('/api/v1/networks/' + encodeURIComponent(networkId) + '/dns-records', { method: 'POST', body: JSON.stringify(payload) }),
+  updateDNSRecord: (networkId: string, recordId: string, payload: { name: string; address: string; description?: string }) => request<ApiDNSRecord>('/api/v1/networks/' + encodeURIComponent(networkId) + '/dns-records/' + encodeURIComponent(recordId), { method: 'PUT', body: JSON.stringify(payload) }),
   deleteDNSRecord: (networkId: string, recordId: string) => request<void>('/api/v1/networks/' + encodeURIComponent(networkId) + '/dns-records/' + encodeURIComponent(recordId), { method: 'DELETE' }),
   apiTokens: () => requestArray<ApiAPIToken>('/api/v1/settings/api-tokens'),
   createAPIToken: (payload: { name: string; ttl_days: number }) => request<{ token: string; api_token: ApiAPIToken }>('/api/v1/settings/api-tokens', { method: 'POST', body: JSON.stringify(payload) }),

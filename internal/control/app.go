@@ -144,6 +144,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/networks/{id}/access-policies/{policy_id}", a.withUser(RoleOperator, a.deleteAccessPolicy))
 	mux.HandleFunc("GET /api/v1/networks/{id}/dns-records", a.withUser(RoleViewer, a.dnsRecords))
 	mux.HandleFunc("POST /api/v1/networks/{id}/dns-records", a.withUser(RoleOperator, a.dnsRecords))
+	mux.HandleFunc("PUT /api/v1/networks/{id}/dns-records/{record_id}", a.withUser(RoleOperator, a.updateDNSRecord))
 	mux.HandleFunc("DELETE /api/v1/networks/{id}/dns-records/{record_id}", a.withUser(RoleOperator, a.deleteDNSRecord))
 	mux.HandleFunc("GET /api/v1/networks/{id}/egress", a.withUser(RoleViewer, a.networkEgress))
 	mux.HandleFunc("PUT /api/v1/networks/{id}/egress", a.withUser(RoleOperator, a.networkEgress))

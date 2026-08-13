@@ -456,7 +456,7 @@ export const useMeshStore = defineStore('mesh', {
           this.projects = projects.map((project) => ({ id: project.id, name: project.name, desc: project.description || '' }))
           try {
             const networks = await api.networks()
-            this.networks = networks.map((network) => ({ id: network.id, projectId: network.project_id, name: network.name, cidr: network.cidr, topology: topology(network.topology), customPairs: [] as [string, string][] }))
+            this.networks = networks.map((network) => ({ id: network.id, projectId: network.project_id, name: network.name, cidr: network.cidr, dns: network.dns || '', topology: topology(network.topology), customPairs: [] as [string, string][] }))
             const customNetworks = networks.filter((network) => network.topology === 'custom')
             if (customNetworks.length) {
               const peerResults = await Promise.allSettled(customNetworks.map((network) => api.networkPeers(network.id)))

@@ -17,6 +17,8 @@ export interface Network {
   projectId: string
   name: string
   cidr: string
+  /** 网络级上游 DNS 服务器（用于客户端配置 [Interface] DNS） */
+  dns: string
   topology: Topology
   /** custom 拓扑下手动选择的节点对（Agent id 对） */
   customPairs: [string, string][]
