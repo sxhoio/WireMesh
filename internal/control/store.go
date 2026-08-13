@@ -83,6 +83,7 @@ type Store interface {
 	GetAlertFired(string, string) (AlertFired, error)
 	PutAlertFired(AlertFired) error
 	CreateAccessResource(AccessResource) error
+	UpdateAccessResource(AccessResource) error
 	DeleteAccessResource(string, string) error
 	ListAccessResources(string, string) ([]AccessResource, error)
 	CreateAccessPolicy(AccessPolicy) error
@@ -647,6 +648,16 @@ func (s *MemoryStore) PutAlertFired(v AlertFired) error {
 func (s *MemoryStore) CreateAccessResource(v AccessResource) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.accessResources[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) UpdateAccessResource(v AccessResource) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.accessResources[v.ID]
+	if !ok || current.TenantID != v.TenantID {
+		return errNotFound
+	}
 	s.accessResources[v.ID] = v
 	return nil
 }

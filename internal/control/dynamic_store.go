@@ -191,6 +191,9 @@ func (s *SwitchableStore) PutAlertFired(v AlertFired) error {
 func (s *SwitchableStore) CreateAccessResource(v AccessResource) error {
 	return s.store().CreateAccessResource(v)
 }
+func (s *SwitchableStore) UpdateAccessResource(v AccessResource) error {
+	return s.store().UpdateAccessResource(v)
+}
 func (s *SwitchableStore) DeleteAccessResource(tenant, id string) error {
 	return s.store().DeleteAccessResource(tenant, id)
 }

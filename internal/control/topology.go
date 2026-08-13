@@ -155,6 +155,14 @@ func policySourceNodeIDs(policy AccessPolicy, nodes []Node) []string {
 		}
 		return out
 	}
+	// 未指定源节点且无标签时，策略作用于网络内全部节点。
+	if len(policy.SourceNodeIDs) == 0 {
+		out := make([]string, 0, len(nodes))
+		for _, node := range nodes {
+			out = append(out, node.ID)
+		}
+		return out
+	}
 	return policy.SourceNodeIDs
 }
 

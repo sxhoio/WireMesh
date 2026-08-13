@@ -136,6 +136,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /api/v1/networks/{id}/peers", a.withUser(RoleOperator, a.addPeer))
 	mux.HandleFunc("GET /api/v1/networks/{id}/access-resources", a.withUser(RoleViewer, a.accessResources))
 	mux.HandleFunc("POST /api/v1/networks/{id}/access-resources", a.withUser(RoleOperator, a.accessResources))
+	mux.HandleFunc("PUT /api/v1/networks/{id}/access-resources/{resource_id}", a.withUser(RoleOperator, a.updateAccessResource))
 	mux.HandleFunc("DELETE /api/v1/networks/{id}/access-resources/{resource_id}", a.withUser(RoleOperator, a.deleteAccessResource))
 	mux.HandleFunc("GET /api/v1/networks/{id}/access-policies", a.withUser(RoleViewer, a.accessPolicies))
 	mux.HandleFunc("POST /api/v1/networks/{id}/access-policies", a.withUser(RoleOperator, a.accessPolicies))

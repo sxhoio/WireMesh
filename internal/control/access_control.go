@@ -120,7 +120,67 @@ func (a *App) accessResources(w http.ResponseWriter, r *http.Request, c claims) 
 	writeJSON(w, http.StatusCreated, resource)
 }
 
+func (a *App) updateAccessResource(w http.ResponseWriter, r *http.Request, c claims) {
+	network, err := a.store.GetNetwork(c.TenantID, r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "network not found")
+		return
+	}
+	items, err := a.store.ListAccessResources(c.TenantID, network.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list access resources")
+		return
+	}
+	var current AccessResource
+	found := false
+	for _, item := range items {
+		if item.ID == r.PathValue("resource_id") {
+			current, found = item, true
+			break
+		}
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "access resource not found")
+		return
+	}
+	var in AccessResource
+	if !decode(w, r, &in) {
+		return
+	}
+	resource, err := a.accessResourceFromInput(c.TenantID, network, in)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	resource.ID, resource.NetworkID, resource.CreatedAt = current.ID, network.ID, current.CreatedAt
+	if err := a.store.UpdateAccessResource(resource); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update access resource")
+		return
+	}
+	a.auditEvent(c.TenantID, c.Subject, "access.resource.update", "network", network.ID, nil)
+	writeJSON(w, http.StatusOK, resource)
+}
+
 func (a *App) deleteAccessResource(w http.ResponseWriter, r *http.Request, c claims) {
+	// 被策略引用的资源不允许直接删除，避免策略静默失效。
+	policies, err := a.store.ListAccessPolicies(c.TenantID, r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list access policies")
+		return
+	}
+	referenced := make([]string, 0)
+	for _, policy := range policies {
+		for _, resourceID := range policy.ResourceIDs {
+			if resourceID == r.PathValue("resource_id") {
+				referenced = append(referenced, policy.Name)
+				break
+			}
+		}
+	}
+	if len(referenced) > 0 {
+		writeError(w, http.StatusConflict, "resource is referenced by policies: "+strings.Join(referenced, ", "))
+		return
+	}
 	if err := a.store.DeleteAccessResource(c.TenantID, r.PathValue("resource_id")); err != nil {
 		writeError(w, http.StatusNotFound, "access resource not found")
 		return

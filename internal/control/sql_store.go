@@ -1107,6 +1107,9 @@ func (s *SQLStore) CreateAccessResource(v AccessResource) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO access_resources (id, tenant_id, network_id, name, gateway_node_id, target, port, protocol, description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.NetworkID, v.Name, v.GatewayNodeID, v.Target, v.Port, v.Protocol, v.Description, timeText(v.CreatedAt))
 	return err
 }
+func (s *SQLStore) UpdateAccessResource(v AccessResource) error {
+	return changed(s.db.Exec(s.query(`UPDATE access_resources SET name=?, gateway_node_id=?, target=?, port=?, protocol=?, description=? WHERE tenant_id=? AND id=?`), v.Name, v.GatewayNodeID, v.Target, v.Port, v.Protocol, v.Description, v.TenantID, v.ID))
+}
 func (s *SQLStore) DeleteAccessResource(tenant, id string) error {
 	return changed(s.db.Exec(s.query(`DELETE FROM access_resources WHERE tenant_id=? AND id=?`), tenant, id))
 }
