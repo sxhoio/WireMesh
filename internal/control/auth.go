@@ -45,6 +45,9 @@ func (a *Authenticator) Login(email, password string) (string, User, error) {
 	if err != nil {
 		return "", User{}, errors.New("invalid credentials")
 	}
+	if !user.Active {
+		return "", User{}, errors.New("invalid credentials")
+	}
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
 		return "", User{}, errors.New("invalid credentials")
 	}

@@ -127,6 +127,10 @@ func (s *SwitchableStore) ListUsers(tenant string) ([]User, error) {
 	return s.store().ListUsers(tenant)
 }
 func (s *SwitchableStore) CreateUser(v User) error { return s.store().CreateUser(v) }
+func (s *SwitchableStore) UpdateUser(v User) error { return s.store().UpdateUser(v) }
+func (s *SwitchableStore) DeleteUser(tenant, id string) error {
+	return s.store().DeleteUser(tenant, id)
+}
 func (s *SwitchableStore) GetSettings(tenant string) (SystemSettings, error) {
 	return s.store().GetSettings(tenant)
 }

@@ -17,13 +17,13 @@ import (
 // SSOConfig 是租户级的 OIDC 单点登录配置。客户端密钥加密存储，响应中只回传
 // 是否已配置的布尔值。
 type SSOConfig struct {
-	TenantID              string          `json:"-"`
-	Issuer                string          `json:"issuer"`
-	ClientID              string          `json:"client_id"`
-	ClientSecret          EncryptedSecret `json:"-"`
+	TenantID               string          `json:"-"`
+	Issuer                 string          `json:"issuer"`
+	ClientID               string          `json:"client_id"`
+	ClientSecret           EncryptedSecret `json:"-"`
 	ClientSecretConfigured bool            `json:"client_secret_configured"`
-	Enabled               bool            `json:"enabled"`
-	UpdatedAt             time.Time       `json:"updated_at"`
+	Enabled                bool            `json:"enabled"`
+	UpdatedAt              time.Time       `json:"updated_at"`
 }
 
 type ssoState struct {
@@ -175,6 +175,10 @@ func (a *App) ssoCallback(w http.ResponseWriter, r *http.Request) {
 	user, err := a.store.GetUserByEmail(email)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "SSO account has no matching WireMesh user")
+		return
+	}
+	if !user.Active {
+		writeError(w, http.StatusUnauthorized, "SSO account is disabled")
 		return
 	}
 	sessionToken := a.auth.issue(user)

@@ -489,7 +489,7 @@ export const useMeshStore = defineStore('mesh', {
 
         const deliveries = deliveriesResult.status === 'fulfilled' ? deliveriesResult.value : []
         const users = usersResult.status === 'fulfilled'
-          ? usersResult.value.map((user) => ({ id: user.id, name: user.name, email: user.email, role: user.role, active: true, lastLogin: timestamp(user.last_login_at) }))
+          ? usersResult.value.map((user) => ({ id: user.id, name: user.name, email: user.email, role: user.role, active: user.active !== false, lastLogin: timestamp(user.last_login_at) }))
           : this.users
         const notifyChannels = channelsResult.status === 'fulfilled'
           ? channelsResult.value.map((channel) => ({ id: channel.id, name: channel.name, type: channel.type, config: channel.config, template: channel.template, subjectTemplate: channel.subjectTemplate, enabled: channel.enabled, agents: channel.agents, createdAt: timestamp(channel.createdAt) }))
@@ -907,6 +907,16 @@ export const useMeshStore = defineStore('mesh', {
       this.error = ''
       try { await api.createUser(payload); await this.refresh(); this.notice = '用户已创建'; return true }
       catch (reason) { this.error = reason instanceof Error ? reason.message : '创建用户失败'; return false }
+    },
+    async updateUserAccount(id: string, patch: { name?: string; role?: UserAccount['role']; active?: boolean }) {
+      this.error = ''
+      try { await api.updateUser(id, patch); await this.refresh(); this.notice = '用户已更新'; return true }
+      catch (reason) { this.error = reason instanceof Error ? reason.message : '更新用户失败'; return false }
+    },
+    async removeUserAccount(id: string) {
+      this.error = ''
+      try { await api.deleteUser(id); await this.refresh(); this.notice = '用户已删除'; return true }
+      catch (reason) { this.error = reason instanceof Error ? reason.message : '删除用户失败'; return false }
     },
   },
 })

@@ -335,7 +335,7 @@ func (a *App) users(w http.ResponseWriter, r *http.Request, c claims) {
 		writeError(w, http.StatusInternalServerError, "密码加密失败")
 		return
 	}
-	user := User{ID: newID("usr"), TenantID: c.TenantID, Email: in.Email, Name: in.Name, Role: in.Role, PasswordHash: passwordHash, CreatedAt: time.Now().UTC()}
+	user := User{ID: newID("usr"), TenantID: c.TenantID, Email: in.Email, Name: in.Name, Role: in.Role, Active: true, PasswordHash: passwordHash, CreatedAt: time.Now().UTC()}
 	if err := a.store.CreateUser(user); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return

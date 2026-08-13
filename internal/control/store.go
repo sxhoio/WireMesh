@@ -61,6 +61,8 @@ type Store interface {
 	CreateInitialAdmin(User) error
 	ListUsers(string) ([]User, error)
 	CreateUser(User) error
+	UpdateUser(User) error
+	DeleteUser(string, string) error
 	GetSettings(string) (SystemSettings, error)
 	UpsertSettings(SystemSettings) error
 	ListNotificationChannels(string) ([]NotificationChannel, error)
@@ -1002,6 +1004,26 @@ func (s *MemoryStore) CreateUser(v User) error {
 		}
 	}
 	s.users[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) UpdateUser(v User) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.users[v.ID]
+	if !ok || current.TenantID != v.TenantID {
+		return errNotFound
+	}
+	s.users[v.ID] = v
+	return nil
+}
+func (s *MemoryStore) DeleteUser(tenant, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.users[id]
+	if !ok || v.TenantID != tenant {
+		return errNotFound
+	}
+	delete(s.users, id)
 	return nil
 }
 func (s *MemoryStore) GetSettings(tenant string) (SystemSettings, error) {

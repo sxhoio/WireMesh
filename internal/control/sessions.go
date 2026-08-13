@@ -87,6 +87,19 @@ func (a *App) revokeCurrentSession(token string) {
 	a.revokedTokens[hash] = time.Now()
 }
 
+// revokeUserSessions 吊销某用户的全部会话令牌（停用或删除用户时调用）。
+func (a *App) revokeUserSessions(tenant, userID string) {
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	for hash, session := range a.sessions {
+		if session.TenantID != tenant || session.UserID != userID {
+			continue
+		}
+		delete(a.sessions, hash)
+		a.revokedTokens[hash] = time.Now()
+	}
+}
+
 func (a *App) listSessions(tenant string, currentToken string) []UserSession {
 	a.sessionMu.Lock()
 	defer a.sessionMu.Unlock()

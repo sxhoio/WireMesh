@@ -6,7 +6,7 @@ import CustomPeerModal from '../components/CustomPeerModal.vue'
 import { api, apiBase, type ApiAPIToken, type ApiUserSession } from '../api'
 import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
-import type { NotificationConfig, NotifyChannel, NotifyChannelType } from '../types'
+import type { NotificationConfig, NotifyChannel, NotifyChannelType, UserAccount } from '../types'
 import { requestConfirm } from '../utils/confirm'
 import { ago, fmtDateTime } from '../utils/format'
 
@@ -197,6 +197,36 @@ async function addUser() {
   }
 }
 
+// ---- 用户管理（角色 / 启停 / 删除）----
+async function changeUserRole(user: UserAccount, role: UserAccount['role']) {
+  if (user.role === role) return
+  await mesh.updateUserAccount(user.id, { role })
+}
+
+async function toggleUserActive(user: UserAccount) {
+  if (user.active) {
+    const confirmed = await requestConfirm({
+      title: '停用用户',
+      message: `确定停用“${user.name}”吗？其现有登录会话将立即失效。`,
+      confirmText: '停用用户',
+      variant: 'warning',
+    })
+    if (!confirmed) return
+  }
+  await mesh.updateUserAccount(user.id, { active: !user.active })
+}
+
+async function deleteUser(user: UserAccount) {
+  const confirmed = await requestConfirm({
+    title: '删除用户',
+    message: `确定删除用户“${user.name}”（${user.email}）吗？此操作无法恢复。`,
+    confirmText: '删除用户',
+    variant: 'danger',
+  })
+  if (!confirmed) return
+  await mesh.removeUserAccount(user.id)
+}
+
 function doReset() {
   app.resetAll()
   confirmReset.value = false
@@ -234,6 +264,32 @@ function auditActionClass(action: string) {
   return 'text-slate-300'
 }
 
+// ---- 审计日志筛选 ----
+const auditKeyword = ref('')
+const auditCategory = ref<'all' | 'danger' | 'change' | 'login'>('all')
+
+function auditCategoryOf(action: string) {
+  const normalized = action.toLowerCase()
+  if (normalized.includes('failed') || normalized.includes('fail') || normalized.includes('error') || normalized.includes('delete') || normalized.includes('clear') || normalized.includes('revoke') || normalized.includes('回滚') || normalized.includes('删除') || normalized.includes('清空') || normalized.includes('失败')) return 'danger' as const
+  if (normalized.includes('login') || normalized.includes('登录')) return 'login' as const
+  return 'change' as const
+}
+
+const filteredAudit = computed(() => {
+  let list = mesh.audit
+  if (auditCategory.value !== 'all') list = list.filter((entry) => auditCategoryOf(entry.action) === auditCategory.value)
+  const keyword = auditKeyword.value.trim().toLowerCase()
+  if (keyword) list = list.filter((entry) => `${entry.user} ${entry.action} ${entry.detail}`.toLowerCase().includes(keyword))
+  return list
+})
+
+// ---- 通知记录筛选 ----
+const notifyLogFilter = ref<'all' | 'sent' | 'failed' | 'test'>('all')
+const filteredNotifyLogs = computed(() => {
+  if (notifyLogFilter.value === 'all') return mesh.notifyLogs
+  return mesh.notifyLogs.filter((log) => log.status === notifyLogFilter.value)
+})
+
 // ---- 通知配置 ----
 const channelTypeMeta: Record<NotifyChannelType, { l: string; c: string; description: string }> = {
   webhook: { l: 'Webhook', c: 'bg-cyan-500/10 text-cyan-300 ring-cyan-500/30', description: '自定义 HTTP 请求、请求头和签名' },
@@ -270,7 +326,6 @@ const channelForm = reactive({
   atMobilesText: '', atUserIdsText: '', recipientsText: '', ccText: '', scope: 'all' as 'all' | 'custom', agents: [] as string[],
 })
 const channelFormError = ref('')
-const confirmDelChannel = ref<NotifyChannel | null>(null)
 function splitConfigList(value: string) { return [...new Set(value.split(/[\n,，;；]+/).map((item) => item.trim()).filter(Boolean))] }
 function resetChannelForm() {
   editingChannelId.value = null; channelForm.name = ''; channelForm.type = 'dingtalk'; channelForm.config = defaultChannelConfig('dingtalk')
@@ -356,7 +411,16 @@ async function saveChannel() {
   const ok = editingChannelId.value ? await mesh.updateNotifyChannel(editingChannelId.value, payload, app.username) : await mesh.addNotifyChannel(payload, app.username)
   if (ok) resetChannelForm(); else channelFormError.value = mesh.error || '保存通知渠道失败'
 }
-async function deleteChannel() { if (!confirmDelChannel.value) return; if (await mesh.removeNotifyChannel(confirmDelChannel.value.id, app.username)) confirmDelChannel.value = null }
+async function confirmDeleteChannel(c: NotifyChannel) {
+  const confirmed = await requestConfirm({
+    title: '删除通知渠道',
+    message: `确定删除「${c.name}」吗？删除后其绑定节点的断开告警将不再推送。`,
+    confirmText: '删除渠道',
+    variant: 'danger',
+  })
+  if (!confirmed) return
+  await mesh.removeNotifyChannel(c.id, app.username)
+}
 function channelAgentsLabel(c: NotifyChannel) { if (c.agents === 'all') return '全部节点'; return c.agents.map((id) => mesh.agentById(id)?.name ?? id).join('、') }
 function channelConfigSummary(c: NotifyChannel) {
   const config = c.config || {}
@@ -401,6 +465,13 @@ async function createAPIToken() {
 }
 
 async function removeAPIToken(id: string) {
+  const confirmed = await requestConfirm({
+    title: '撤销 API 令牌',
+    message: '确定撤销该令牌吗？使用它的脚本将立即失去访问权限，此操作无法恢复。',
+    confirmText: '撤销令牌',
+    variant: 'danger',
+  })
+  if (!confirmed) return
   try {
     await api.deleteAPIToken(id)
     await loadAPITokens()
@@ -441,6 +512,13 @@ function pickRestoreFile(event: Event) {
 
 async function restoreBackup() {
   if (!restoreFile.value || restoring.value) return
+  const confirmed = await requestConfirm({
+    title: '恢复数据库备份',
+    message: '恢复将立即用备份文件替换当前数据库：未保存的变更将丢失，所有用户需要重新登录。确定继续吗？',
+    confirmText: '恢复数据库',
+    variant: 'danger',
+  })
+  if (!confirmed) return
   restoring.value = true
   try {
     const response = await fetch(apiBase + '/api/v1/settings/backup/restore', { method: 'POST', credentials: 'include', body: restoreFile.value })
@@ -767,7 +845,7 @@ async function saveSSO() {
                 <div class="mt-3 flex flex-wrap gap-2">
                   <button class="chip bg-slate-500/10 text-slate-300 ring-1 ring-slate-500/30 hover:bg-ink-700" :disabled="!app.isAdmin" @click="editChannel(c)">编辑配置</button>
                   <button class="chip bg-cyan-500/10 text-cyan-300 ring-1 ring-cyan-500/30 hover:bg-cyan-500/20" :disabled="!app.isAdmin" @click="mesh.testNotifyChannel(c.id, app.username)">发送测试</button>
-                  <button class="chip bg-red-500/10 text-red-300 ring-1 ring-red-500/30 hover:bg-red-500/20" :disabled="!app.isAdmin" @click="confirmDelChannel = c">删除</button>
+                  <button class="chip bg-red-500/10 text-red-300 ring-1 ring-red-500/30 hover:bg-red-500/20" :disabled="!app.isAdmin" @click="confirmDeleteChannel(c)">删除</button>
                 </div>
               </div>
               <p v-if="!mesh.notifyChannels.length" class="rounded-xl bg-ink-800/40 py-8 text-center text-xs text-slate-500 ring-1 ring-ink-700">暂无通知渠道，请在右侧创建第一个渠道。</p>
@@ -775,14 +853,22 @@ async function saveSSO() {
           </div>
 
           <div class="panel p-5">
-            <div class="flex items-center justify-between"><div><h2 class="text-sm font-semibold text-white">通知记录</h2><p class="mt-1 text-xs text-slate-500">测试和实际发送结果均由后端记录。</p></div></div>
+            <div class="flex flex-wrap items-center justify-between gap-2"><div><h2 class="text-sm font-semibold text-white">通知记录 <span class="ml-1 text-xs font-normal text-slate-500">{{ filteredNotifyLogs.length }}/{{ mesh.notifyLogs.length }} 条</span></h2><p class="mt-1 text-xs text-slate-500">测试和实际发送结果均由后端记录。</p></div>
+              <select v-model="notifyLogFilter" class="input !w-28 !py-1.5 !text-xs">
+                <option value="all">全部状态</option>
+                <option value="sent">已送达</option>
+                <option value="failed">失败</option>
+                <option value="test">测试</option>
+              </select>
+            </div>
             <div class="mt-4 max-h-[32rem] space-y-2 overflow-y-auto pr-1">
-              <div v-for="log in mesh.notifyLogs" :key="log.id" class="flex items-start gap-3 rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600">
+              <div v-for="log in filteredNotifyLogs" :key="log.id" class="flex items-start gap-3 rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600">
                 <span class="chip mt-0.5 shrink-0 ring-1" :class="channelTypeMeta[log.channelType]?.c ?? 'bg-slate-500/10 text-slate-400 ring-slate-500/30'">{{ channelTypeMeta[log.channelType]?.l ?? log.channelType }}</span>
                 <div class="min-w-0 flex-1"><p class="text-xs text-slate-200">{{ log.message }}</p><p class="mt-1 text-[11px] text-slate-500">{{ log.channelName }} · {{ fmtDateTime(log.time) }}</p></div>
                 <span class="chip shrink-0" :class="log.status === 'failed' ? 'bg-red-500/10 text-red-300 ring-1 ring-red-500/30' : log.status === 'test' ? 'bg-cyan-500/10 text-cyan-300 ring-1 ring-cyan-500/30' : 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30'">{{ log.status === 'failed' ? '失败' : log.status === 'test' ? '测试' : '已送达' }}</span>
               </div>
               <p v-if="!mesh.notifyLogs.length" class="py-6 text-center text-xs text-slate-500">暂无通知记录</p>
+              <p v-else-if="!filteredNotifyLogs.length" class="py-6 text-center text-xs text-slate-500">当前筛选条件下没有记录</p>
             </div>
           </div>
           </div>
@@ -969,13 +1055,24 @@ async function saveSSO() {
         <h2 class="text-sm font-semibold text-white">用户与权限</h2>
         <p class="mt-0.5 text-xs text-slate-500">Viewer 只读 · Operator 可调整节点与 Peer · Admin 管理系统设置、用户与 IP 库</p>
         <div class="mt-4 space-y-2">
-          <div v-for="u in mesh.users" :key="u.id" class="flex items-center gap-3 rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600">
-            <div class="flex h-8 w-8 items-center justify-center rounded-full bg-cyan-500/15 text-xs font-bold text-cyan-300 ring-1 ring-cyan-500/40">{{ u.name.slice(0, 1).toUpperCase() }}</div>
+          <div v-for="u in mesh.users" :key="u.id" class="flex flex-wrap items-center gap-3 rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600" :class="{ 'opacity-70': !u.active }">
+            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ring-1" :class="roleMeta[u.role].c">{{ u.name.slice(0, 1).toUpperCase() }}</div>
             <div class="min-w-0 flex-1">
-              <p class="text-sm font-medium text-slate-200">{{ u.name }} <span class="ml-1 text-xs text-slate-500">{{ u.email }}</span></p>
-              <p class="text-[11px] text-slate-500">{{ u.active ? '已激活' : '已禁用' }} · {{ u.lastLogin ? '最近登录 ' + ago(u.lastLogin) : '从未登录' }}</p>
+              <p class="text-sm font-medium text-slate-200">{{ u.name }} <span class="ml-1 text-xs text-slate-500">{{ u.email }}</span><span v-if="app.user?.id === u.id" class="chip ml-1.5 bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30">当前账号</span></p>
+              <p class="text-[11px]" :class="u.active ? 'text-slate-500' : 'text-amber-400'">{{ u.active ? '已激活' : '已禁用' }} · {{ u.lastLogin ? '最近登录 ' + ago(u.lastLogin) : '从未登录' }}</p>
             </div>
-            <span class="chip ring-1" :class="roleMeta[u.role].c">{{ roleMeta[u.role].l }}</span>
+            <template v-if="app.isAdmin && app.user?.id !== u.id">
+              <select class="input !w-28 !py-1.5 !text-xs" :value="u.role" @change="changeUserRole(u, ($event.target as HTMLSelectElement).value as UserAccount['role'])">
+                <option value="viewer">Viewer</option>
+                <option value="operator">Operator</option>
+                <option value="admin">Admin</option>
+              </select>
+              <button class="relative h-5 w-9 shrink-0 rounded-full transition" :class="u.active ? 'bg-emerald-500' : 'bg-ink-600'" :title="u.active ? '点击停用' : '点击启用'" @click="toggleUserActive(u)">
+                <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" :class="u.active ? 'left-[18px]' : 'left-0.5'"></span>
+              </button>
+              <button class="chip shrink-0 bg-red-500/10 text-red-300 ring-1 ring-red-500/30" @click="deleteUser(u)">删除</button>
+            </template>
+            <span v-else class="chip shrink-0 ring-1" :class="roleMeta[u.role].c">{{ roleMeta[u.role].l }}</span>
           </div>
         </div>
         <div class="mt-4 grid grid-cols-1 items-end gap-2.5 border-t border-ink-700 pt-4 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_8rem_auto]">
@@ -1000,13 +1097,25 @@ async function saveSSO() {
             <h2 class="text-sm font-semibold text-white">审计日志</h2>
             <p class="mt-0.5 text-xs text-slate-500">每次仅加载 50 条；每个租户最多自动保留 10,000 条最新记录。</p>
           </div>
-          <div class="flex gap-2">
+          <div class="flex flex-wrap gap-2">
+            <div class="relative">
+              <svg viewBox="0 0 24 24" fill="none" class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+              <input v-model="auditKeyword" class="input !w-52 !py-1.5 !pl-8 !text-xs" placeholder="搜索操作者 / 操作 / 详情…" />
+            </div>
+            <select v-model="auditCategory" class="input !w-32 !py-1.5 !text-xs">
+              <option value="all">全部类别</option>
+              <option value="change">变更</option>
+              <option value="danger">删除 / 失败</option>
+              <option value="login">登录</option>
+            </select>
             <button class="btn-secondary !py-2 text-xs" :disabled="mesh.auditLoading" @click="refreshAudit">{{ mesh.auditLoading ? '加载中…' : '刷新' }}</button>
             <button v-if="app.isAdmin" class="btn-secondary !py-2 text-xs text-red-300" :disabled="mesh.auditLoading || !mesh.audit.length" @click="clearAuditLogs">清空日志</button>
           </div>
         </div>
+        <p v-if="auditCategory !== 'all' || auditKeyword" class="mt-2 text-[11px] text-slate-600">当前显示 {{ filteredAudit.length }} / {{ mesh.audit.length }} 条</p>
         <div class="mt-4">
           <p v-if="!mesh.audit.length" class="py-8 text-center text-xs text-slate-500">后端未返回审计记录</p>
+          <p v-else-if="!filteredAudit.length" class="py-8 text-center text-xs text-slate-500">当前筛选条件下没有记录</p>
           <div v-else class="max-h-[56vh] overflow-auto border-y border-ink-700 bg-[#05070a] font-mono text-[11px] leading-5 text-slate-400">
             <div class="sticky top-0 z-10 grid min-w-[68rem] grid-cols-[10rem_13rem_15rem_minmax(30rem,1fr)] border-b border-ink-800 bg-[#05070a] px-3 py-1 text-[10px] uppercase tracking-wide text-slate-600">
               <span>时间</span>
@@ -1015,7 +1124,7 @@ async function saveSSO() {
               <span>详情</span>
             </div>
             <div>
-              <div v-for="e in mesh.audit" :key="e.id" class="grid min-w-[68rem] grid-cols-[10rem_13rem_15rem_minmax(30rem,1fr)] items-start border-b border-white/[0.025] px-3 py-0.5 last:border-b-0 hover:bg-white/[0.035]">
+              <div v-for="e in filteredAudit" :key="e.id" class="grid min-w-[68rem] grid-cols-[10rem_13rem_15rem_minmax(30rem,1fr)] items-start border-b border-white/[0.025] px-3 py-0.5 last:border-b-0 hover:bg-white/[0.035]">
                 <span class="select-none text-slate-600">{{ fmtDateTime(e.time) }}</span>
                 <span class="truncate text-cyan-300" :title="e.user">{{ e.user || '系统' }}</span>
                 <span class="truncate" :class="auditActionClass(e.action)" :title="e.action">{{ e.action }}</span>
@@ -1169,18 +1278,6 @@ async function saveSSO() {
     </div>
 
     <CustomPeerModal v-if="customPeerNetwork" :network-id="customPeerNetwork" @close="customPeerNetwork = null" />
-
-    <!-- 删除渠道确认 -->
-    <div v-if="confirmDelChannel" class="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/70 p-4 backdrop-blur-sm" @click.self="confirmDelChannel = null">
-      <div class="panel w-full max-w-sm p-6">
-        <h3 class="text-base font-semibold text-white">删除通知渠道</h3>
-        <p class="mt-2 text-sm text-slate-400">确定删除「{{ confirmDelChannel.name }}」吗？删除后其绑定节点的断开告警将不再推送。</p>
-        <div class="mt-5 flex justify-end gap-2.5">
-          <button class="btn-ghost" @click="confirmDelChannel = null">取消</button>
-          <button class="inline-flex items-center justify-center gap-2 rounded-xl bg-red-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-red-400 active:scale-[0.98]" @click="deleteChannel">删除</button>
-        </div>
-      </div>
-    </div>
 
     <!-- 重置确认 -->
     <div v-if="confirmReset" class="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/70 p-4 backdrop-blur-sm" @click.self="confirmReset = false">

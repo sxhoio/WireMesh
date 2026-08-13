@@ -106,7 +106,20 @@ func (s *SQLStore) migrate(ctx context.Context) error {
 	if err := s.ensureNodeConfigColumns(ctx); err != nil {
 		return err
 	}
-	return s.ensureAlertRuleScopeColumns(ctx)
+	if err := s.ensureAlertRuleScopeColumns(ctx); err != nil {
+		return err
+	}
+	return s.ensureUserActiveColumn(ctx)
+}
+
+func (s *SQLStore) ensureUserActiveColumn(ctx context.Context) error {
+	return s.ensureSchemaColumn(
+		ctx,
+		"users",
+		schemaColumn{name: "active", definition: "BOOLEAN NOT NULL DEFAULT TRUE", mysqlDefinition: "BOOLEAN NOT NULL DEFAULT TRUE"},
+		"inspect users schema",
+		"add users active column",
+	)
 }
 
 func (s *SQLStore) ensureAlertRuleScopeColumns(ctx context.Context) error {
@@ -255,13 +268,13 @@ func (s *SQLStore) CreateInitialAdmin(v User) error {
 	if count != 0 {
 		return errAlreadyInitialized
 	}
-	if _, err := tx.Exec(s.query(`INSERT INTO users (id, tenant_id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, strings.ToLower(v.Email), v.PasswordHash, v.Name, string(v.Role), timeText(v.CreatedAt)); err != nil {
+	if _, err := tx.Exec(s.query(`INSERT INTO users (id, tenant_id, email, password_hash, name, role, active, created_at) VALUES (?, ?, ?, ?, ?, ?, TRUE, ?)`), v.ID, v.TenantID, strings.ToLower(v.Email), v.PasswordHash, v.Name, string(v.Role), timeText(v.CreatedAt)); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-const userSelect = `SELECT id, tenant_id, email, password_hash, name, role, COALESCE(last_login_at, ''), COALESCE(totp_secret_json, ''), COALESCE(totp_enabled, FALSE), created_at FROM users`
+const userSelect = `SELECT id, tenant_id, email, password_hash, name, role, active, COALESCE(last_login_at, ''), COALESCE(totp_secret_json, ''), COALESCE(totp_enabled, FALSE), created_at FROM users`
 
 func (s *SQLStore) GetUserByEmail(email string) (User, error) {
 	return scanUser(s.db.QueryRow(s.query(userSelect+` WHERE email = ?`), strings.ToLower(email)))
@@ -741,8 +754,14 @@ func (s *SQLStore) ensureNodeAgentStatusColumns(ctx context.Context) error {
 }
 
 func (s *SQLStore) CreateUser(v User) error {
-	_, err := s.db.Exec(s.query(`INSERT INTO users (id, tenant_id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, strings.ToLower(v.Email), v.PasswordHash, v.Name, string(v.Role), timeText(v.CreatedAt))
+	_, err := s.db.Exec(s.query(`INSERT INTO users (id, tenant_id, email, password_hash, name, role, active, created_at) VALUES (?, ?, ?, ?, ?, ?, TRUE, ?)`), v.ID, v.TenantID, strings.ToLower(v.Email), v.PasswordHash, v.Name, string(v.Role), timeText(v.CreatedAt))
 	return err
+}
+func (s *SQLStore) UpdateUser(v User) error {
+	return changed(s.db.Exec(s.query(`UPDATE users SET name=?, role=?, active=? WHERE tenant_id=? AND id=?`), v.Name, string(v.Role), v.Active, v.TenantID, v.ID))
+}
+func (s *SQLStore) DeleteUser(tenant, id string) error {
+	return changed(s.db.Exec(s.query(`DELETE FROM users WHERE tenant_id=? AND id=?`), tenant, id))
 }
 func (s *SQLStore) GetSettings(tenant string) (SystemSettings, error) {
 	var raw, geoPath, updated string
@@ -914,7 +933,7 @@ func scanUser(row scanner) (User, error) {
 	var role, created string
 	var lastLogin sql.NullString
 	var totpSecret sql.NullString
-	if err := row.Scan(&v.ID, &v.TenantID, &v.Email, &v.PasswordHash, &v.Name, &role, &lastLogin, &totpSecret, &v.TotpEnabled, &created); err != nil {
+	if err := row.Scan(&v.ID, &v.TenantID, &v.Email, &v.PasswordHash, &v.Name, &role, &v.Active, &lastLogin, &totpSecret, &v.TotpEnabled, &created); err != nil {
 		return User{}, notFound(err)
 	}
 	v.Role = Role(role)

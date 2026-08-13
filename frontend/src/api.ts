@@ -1,6 +1,6 @@
 export const apiBase = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8080' : '')
 
-export interface ApiUser { id: string; tenant_id: string; email: string; name: string; role: 'admin' | 'operator' | 'viewer'; last_login_at?: string | null; created_at?: string }
+export interface ApiUser { id: string; tenant_id: string; email: string; name: string; role: 'admin' | 'operator' | 'viewer'; active: boolean; last_login_at?: string | null; created_at?: string }
 export interface ApiProject { id: string; tenant_id: string; name: string; description: string; created_at: string }
 export interface ApiNetwork { id: string; tenant_id: string; project_id: string; name: string; cidr: string; dns: string; topology: 'full_mesh' | 'hub_spoke' | 'custom'; created_at: string }
 export interface ApiPeerRelation { id: string; network_id: string; source_node_id: string; target_node_id: string }
@@ -216,4 +216,6 @@ export const api = {
   revokeSession: (id: string) => request<void>('/api/v1/auth/sessions/' + encodeURIComponent(id), { method: 'DELETE' }),
   users: () => requestArray<ApiUser>('/api/v1/users'),
   createUser: (payload: { name: string; email: string; password: string; role: ApiUser['role'] }) => request<ApiUser>('/api/v1/users', { method: 'POST', body: JSON.stringify(payload) }),
+  updateUser: (id: string, payload: { name?: string; role?: ApiUser['role']; active?: boolean }) => request<ApiUser>('/api/v1/users/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteUser: (id: string) => request<void>('/api/v1/users/' + encodeURIComponent(id), { method: 'DELETE' }),
 }

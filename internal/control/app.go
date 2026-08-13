@@ -178,6 +178,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/backup/restore", a.withUser(RoleAdmin, a.restoreDatabase))
 	mux.HandleFunc("GET /api/v1/users", a.withUser(RoleAdmin, a.users))
 	mux.HandleFunc("POST /api/v1/users", a.withUser(RoleAdmin, a.users))
+	mux.HandleFunc("PATCH /api/v1/users/{id}", a.withUser(RoleAdmin, a.updateUser))
+	mux.HandleFunc("DELETE /api/v1/users/{id}", a.withUser(RoleAdmin, a.deleteUser))
 	mux.HandleFunc("GET /api/v1/agent/update", a.withUser(RoleViewer, a.agentUpdateInfo))
 	mux.HandleFunc("POST /api/v1/agent/enrollment-tokens", a.withUser(RoleAdmin, a.createEnrollment))
 	mux.HandleFunc("GET /agent/install.sh", a.agentInstallScript)
@@ -257,6 +259,7 @@ func (a *App) setup(w http.ResponseWriter, r *http.Request) {
 		Email:        in.Email,
 		Name:         in.Name,
 		Role:         RoleAdmin,
+		Active:       true,
 		PasswordHash: passwordHash,
 		CreatedAt:    time.Now().UTC(),
 	}
@@ -356,7 +359,7 @@ func publicUser(u User) map[string]any {
 	if !u.LastLoginAt.IsZero() {
 		lastLoginAt = u.LastLoginAt
 	}
-	return map[string]any{"id": u.ID, "tenant_id": u.TenantID, "email": u.Email, "name": u.Name, "role": u.Role, "last_login_at": lastLoginAt}
+	return map[string]any{"id": u.ID, "tenant_id": u.TenantID, "email": u.Email, "name": u.Name, "role": u.Role, "active": u.Active, "last_login_at": lastLoginAt}
 }
 
 func (a *App) projects(w http.ResponseWriter, r *http.Request, c claims) {
