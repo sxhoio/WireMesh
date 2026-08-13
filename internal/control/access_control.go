@@ -11,11 +11,11 @@ import (
 func (a *App) accessResourceFromInput(tenantID string, network Network, in AccessResource) (AccessResource, error) {
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" || len([]rune(in.Name)) > 80 {
-		return AccessResource{}, fmt.Errorf("name is required and must not exceed 80 characters")
+		return AccessResource{}, fmt.Errorf("名称必填且不能超过 80 个字符")
 	}
 	gateway, err := a.store.GetNode(tenantID, in.GatewayNodeID)
 	if err != nil || gateway.NetworkID != network.ID {
-		return AccessResource{}, fmt.Errorf("gateway node must belong to this network")
+		return AccessResource{}, fmt.Errorf("网关节点必须属于该网络")
 	}
 	in.Target = strings.TrimSpace(in.Target)
 	if in.Target == "" {
@@ -23,14 +23,14 @@ func (a *App) accessResourceFromInput(tenantID string, network Network, in Acces
 	}
 	prefix, err := netip.ParsePrefix(in.Target)
 	if err != nil || !prefix.Addr().Is4() {
-		return AccessResource{}, fmt.Errorf("target must be a valid IPv4 CIDR")
+		return AccessResource{}, fmt.Errorf("目标必须是合法的 IPv4 CIDR")
 	}
 	if in.Port < 0 || in.Port > 65535 {
-		return AccessResource{}, fmt.Errorf("port must be between 0 and 65535")
+		return AccessResource{}, fmt.Errorf("端口必须在 0-65535 之间")
 	}
 	in.Protocol = strings.ToLower(strings.TrimSpace(in.Protocol))
 	if in.Protocol != "" && in.Protocol != "tcp" && in.Protocol != "udp" && in.Protocol != "any" {
-		return AccessResource{}, fmt.Errorf("protocol must be tcp, udp, any, or empty")
+		return AccessResource{}, fmt.Errorf("协议必须为 tcp、udp、any 或留空")
 	}
 	return AccessResource{
 		TenantID: tenantID, NetworkID: network.ID, Name: in.Name,
@@ -42,12 +42,12 @@ func (a *App) accessResourceFromInput(tenantID string, network Network, in Acces
 func (a *App) accessPolicyFromInput(tenantID string, network Network, current AccessPolicy, in AccessPolicy) (AccessPolicy, error) {
 	in.Name = strings.TrimSpace(in.Name)
 	if in.Name == "" || len([]rune(in.Name)) > 80 {
-		return AccessPolicy{}, fmt.Errorf("name is required and must not exceed 80 characters")
+		return AccessPolicy{}, fmt.Errorf("名称必填且不能超过 80 个字符")
 	}
 	in.SourceLabel = strings.TrimSpace(in.SourceLabel)
 	if in.SourceLabel != "" {
 		if _, _, ok := strings.Cut(in.SourceLabel, "="); !ok {
-			return AccessPolicy{}, fmt.Errorf("source_label must be key=value")
+			return AccessPolicy{}, fmt.Errorf("源标签必须为 key=value 格式")
 		}
 	}
 	sources := make([]string, 0, len(in.SourceNodeIDs))
@@ -59,14 +59,14 @@ func (a *App) accessPolicyFromInput(tenantID string, network Network, current Ac
 		}
 		node, err := a.store.GetNode(tenantID, id)
 		if err != nil || node.NetworkID != network.ID {
-			return AccessPolicy{}, fmt.Errorf("source node %s does not belong to this network", id)
+			return AccessPolicy{}, fmt.Errorf("源节点 %s 不属于该网络", id)
 		}
 		seen[id] = true
 		sources = append(sources, id)
 	}
 	resources, err := a.store.ListAccessResources(tenantID, network.ID)
 	if err != nil {
-		return AccessPolicy{}, fmt.Errorf("read access resources: %w", err)
+		return AccessPolicy{}, fmt.Errorf("读取访问资源: %w", err)
 	}
 	known := map[string]bool{}
 	for _, resource := range resources {
@@ -76,7 +76,7 @@ func (a *App) accessPolicyFromInput(tenantID string, network Network, current Ac
 	for _, id := range in.ResourceIDs {
 		id = strings.TrimSpace(id)
 		if id == "" || !known[id] {
-			return AccessPolicy{}, fmt.Errorf("resource %s does not exist", id)
+			return AccessPolicy{}, fmt.Errorf("资源 %s 不存在", id)
 		}
 		resourceIDs = append(resourceIDs, id)
 	}
@@ -90,13 +90,13 @@ func (a *App) accessPolicyFromInput(tenantID string, network Network, current Ac
 func (a *App) accessResources(w http.ResponseWriter, r *http.Request, c claims) {
 	network, err := a.store.GetNetwork(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "network not found")
+		writeError(w, http.StatusNotFound, "网络不存在")
 		return
 	}
 	if r.Method == http.MethodGet {
 		items, err := a.store.ListAccessResources(c.TenantID, network.ID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to list access resources")
+			writeError(w, http.StatusInternalServerError, "读取访问资源列表失败")
 			return
 		}
 		writeJSON(w, http.StatusOK, items)
@@ -113,7 +113,7 @@ func (a *App) accessResources(w http.ResponseWriter, r *http.Request, c claims) 
 	}
 	resource.ID, resource.CreatedAt = newID("acres"), time.Now().UTC()
 	if err := a.store.CreateAccessResource(resource); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create access resource")
+		writeError(w, http.StatusInternalServerError, "创建访问资源失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "access.resource.create", "network", network.ID, nil)
@@ -123,12 +123,12 @@ func (a *App) accessResources(w http.ResponseWriter, r *http.Request, c claims) 
 func (a *App) updateAccessResource(w http.ResponseWriter, r *http.Request, c claims) {
 	network, err := a.store.GetNetwork(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "network not found")
+		writeError(w, http.StatusNotFound, "网络不存在")
 		return
 	}
 	items, err := a.store.ListAccessResources(c.TenantID, network.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list access resources")
+		writeError(w, http.StatusInternalServerError, "读取访问资源列表失败")
 		return
 	}
 	var current AccessResource
@@ -140,7 +140,7 @@ func (a *App) updateAccessResource(w http.ResponseWriter, r *http.Request, c cla
 		}
 	}
 	if !found {
-		writeError(w, http.StatusNotFound, "access resource not found")
+		writeError(w, http.StatusNotFound, "资源不存在")
 		return
 	}
 	var in AccessResource
@@ -154,7 +154,7 @@ func (a *App) updateAccessResource(w http.ResponseWriter, r *http.Request, c cla
 	}
 	resource.ID, resource.NetworkID, resource.CreatedAt = current.ID, network.ID, current.CreatedAt
 	if err := a.store.UpdateAccessResource(resource); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update access resource")
+		writeError(w, http.StatusInternalServerError, "更新访问资源失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "access.resource.update", "network", network.ID, nil)
@@ -165,7 +165,7 @@ func (a *App) deleteAccessResource(w http.ResponseWriter, r *http.Request, c cla
 	// 被策略引用的资源不允许直接删除，避免策略静默失效。
 	policies, err := a.store.ListAccessPolicies(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list access policies")
+		writeError(w, http.StatusInternalServerError, "读取访问策略列表失败")
 		return
 	}
 	referenced := make([]string, 0)
@@ -178,11 +178,11 @@ func (a *App) deleteAccessResource(w http.ResponseWriter, r *http.Request, c cla
 		}
 	}
 	if len(referenced) > 0 {
-		writeError(w, http.StatusConflict, "resource is referenced by policies: "+strings.Join(referenced, ", "))
+		writeError(w, http.StatusConflict, "该资源仍被以下策略引用: "+strings.Join(referenced, ", "))
 		return
 	}
 	if err := a.store.DeleteAccessResource(c.TenantID, r.PathValue("resource_id")); err != nil {
-		writeError(w, http.StatusNotFound, "access resource not found")
+		writeError(w, http.StatusNotFound, "资源不存在")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "access.resource.delete", "network", r.PathValue("id"), nil)
@@ -192,13 +192,13 @@ func (a *App) deleteAccessResource(w http.ResponseWriter, r *http.Request, c cla
 func (a *App) accessPolicies(w http.ResponseWriter, r *http.Request, c claims) {
 	network, err := a.store.GetNetwork(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "network not found")
+		writeError(w, http.StatusNotFound, "网络不存在")
 		return
 	}
 	if r.Method == http.MethodGet {
 		items, err := a.store.ListAccessPolicies(c.TenantID, network.ID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to list access policies")
+			writeError(w, http.StatusInternalServerError, "读取访问策略列表失败")
 			return
 		}
 		writeJSON(w, http.StatusOK, items)
@@ -216,7 +216,7 @@ func (a *App) accessPolicies(w http.ResponseWriter, r *http.Request, c claims) {
 	now := time.Now().UTC()
 	policy.ID, policy.CreatedAt, policy.UpdatedAt = newID("acpol"), now, now
 	if err := a.store.CreateAccessPolicy(policy); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create access policy")
+		writeError(w, http.StatusInternalServerError, "创建访问策略失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "access.policy.create", "network", network.ID, nil)
@@ -226,12 +226,12 @@ func (a *App) accessPolicies(w http.ResponseWriter, r *http.Request, c claims) {
 func (a *App) updateAccessPolicy(w http.ResponseWriter, r *http.Request, c claims) {
 	network, err := a.store.GetNetwork(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "network not found")
+		writeError(w, http.StatusNotFound, "网络不存在")
 		return
 	}
 	items, err := a.store.ListAccessPolicies(c.TenantID, network.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list access policies")
+		writeError(w, http.StatusInternalServerError, "读取访问策略列表失败")
 		return
 	}
 	var current AccessPolicy
@@ -243,7 +243,7 @@ func (a *App) updateAccessPolicy(w http.ResponseWriter, r *http.Request, c claim
 		}
 	}
 	if !found {
-		writeError(w, http.StatusNotFound, "access policy not found")
+		writeError(w, http.StatusNotFound, "策略不存在")
 		return
 	}
 	var in AccessPolicy
@@ -257,7 +257,7 @@ func (a *App) updateAccessPolicy(w http.ResponseWriter, r *http.Request, c claim
 	}
 	policy.ID, policy.CreatedAt, policy.UpdatedAt = current.ID, current.CreatedAt, time.Now().UTC()
 	if err := a.store.UpdateAccessPolicy(policy); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update access policy")
+		writeError(w, http.StatusInternalServerError, "更新访问策略失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "access.policy.update", "network", network.ID, nil)
@@ -266,7 +266,7 @@ func (a *App) updateAccessPolicy(w http.ResponseWriter, r *http.Request, c claim
 
 func (a *App) deleteAccessPolicy(w http.ResponseWriter, r *http.Request, c claims) {
 	if err := a.store.DeleteAccessPolicy(c.TenantID, r.PathValue("policy_id")); err != nil {
-		writeError(w, http.StatusNotFound, "access policy not found")
+		writeError(w, http.StatusNotFound, "策略不存在")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "access.policy.delete", "network", r.PathValue("id"), nil)

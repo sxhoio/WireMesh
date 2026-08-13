@@ -15,7 +15,7 @@ func (a *App) apiTokens(w http.ResponseWriter, r *http.Request, c claims) {
 	if r.Method == http.MethodGet {
 		items, err := a.store.ListAPITokens(c.TenantID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to list API tokens")
+			writeError(w, http.StatusInternalServerError, "读取 API 令牌失败")
 			return
 		}
 		writeJSON(w, http.StatusOK, items)

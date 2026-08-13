@@ -109,7 +109,20 @@ func (s *SQLStore) migrate(ctx context.Context) error {
 	if err := s.ensureAlertRuleScopeColumns(ctx); err != nil {
 		return err
 	}
+	if err := s.ensureNodeAddressManualColumn(ctx); err != nil {
+		return err
+	}
 	return s.ensureUserActiveColumn(ctx)
+}
+
+func (s *SQLStore) ensureNodeAddressManualColumn(ctx context.Context) error {
+	return s.ensureSchemaColumn(
+		ctx,
+		"nodes",
+		schemaColumn{name: "address_manual", definition: "BOOLEAN NOT NULL DEFAULT FALSE", mysqlDefinition: "BOOLEAN NOT NULL DEFAULT FALSE"},
+		"inspect nodes schema",
+		"add nodes address manual column",
+	)
 }
 
 func (s *SQLStore) ensureUserActiveColumn(ctx context.Context) error {
@@ -336,7 +349,7 @@ func (s *SQLStore) CreateNode(v Node) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(s.query(`INSERT INTO nodes (id, tenant_id, project_id, network_id, name, hostname, interface_selector, collection_error, enabled, listen_port, mtu, address, endpoint, region, location_name, location_source, latitude, longitude, os, agent_version, labels_json, public_key, private_key_json, wireguard_json, peer_config_json, desired_peer_config_json, last_seen, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ProjectID, v.NetworkID, v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Enabled, v.ListenPort, v.MTU, v.Address, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.OS, v.AgentVersion, labels, v.PublicKey, secret, wireGuard, peerConfig, desiredPeerConfig, timeText(v.LastSeen), timeText(v.CreatedAt))
+	_, err = s.db.Exec(s.query(`INSERT INTO nodes (id, tenant_id, project_id, network_id, name, hostname, interface_selector, collection_error, enabled, listen_port, mtu, address, address_manual, endpoint, region, location_name, location_source, latitude, longitude, os, agent_version, labels_json, public_key, private_key_json, wireguard_json, peer_config_json, desired_peer_config_json, last_seen, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ProjectID, v.NetworkID, v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Enabled, v.ListenPort, v.MTU, v.Address, v.AddressManual, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.OS, v.AgentVersion, labels, v.PublicKey, secret, wireGuard, peerConfig, desiredPeerConfig, timeText(v.LastSeen), timeText(v.CreatedAt))
 	if err != nil && isAddressConflictError(err) {
 		return errAddressConflict
 	}
@@ -385,7 +398,7 @@ func (s *SQLStore) UpdateNode(v Node) error {
 	if err != nil {
 		return err
 	}
-	result, err := s.db.Exec(s.query(`UPDATE nodes SET name=?, hostname=?, interface_selector=?, collection_error=?, enabled=?, listen_port=?, mtu=?, address=?, endpoint=?, region=?, location_name=?, location_source=?, latitude=?, longitude=?, os=?, agent_version=?, labels_json=?, public_key=?, private_key_json=?, wireguard_json=?, peer_config_json=?, desired_peer_config_json=?, last_seen=? WHERE id=? AND tenant_id=?`), v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Enabled, v.ListenPort, v.MTU, v.Address, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.OS, v.AgentVersion, labels, v.PublicKey, secret, wireGuard, peerConfig, desiredPeerConfig, timeText(v.LastSeen), v.ID, v.TenantID)
+	result, err := s.db.Exec(s.query(`UPDATE nodes SET name=?, hostname=?, interface_selector=?, collection_error=?, enabled=?, listen_port=?, mtu=?, address=?, address_manual=?, endpoint=?, region=?, location_name=?, location_source=?, latitude=?, longitude=?, os=?, agent_version=?, labels_json=?, public_key=?, private_key_json=?, wireguard_json=?, peer_config_json=?, desired_peer_config_json=?, last_seen=? WHERE id=? AND tenant_id=?`), v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Enabled, v.ListenPort, v.MTU, v.Address, v.AddressManual, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.OS, v.AgentVersion, labels, v.PublicKey, secret, wireGuard, peerConfig, desiredPeerConfig, timeText(v.LastSeen), v.ID, v.TenantID)
 	return changed(result, err)
 }
 
@@ -760,6 +773,9 @@ func (s *SQLStore) CreateUser(v User) error {
 func (s *SQLStore) UpdateUser(v User) error {
 	return changed(s.db.Exec(s.query(`UPDATE users SET name=?, role=?, active=? WHERE tenant_id=? AND id=?`), v.Name, string(v.Role), v.Active, v.TenantID, v.ID))
 }
+func (s *SQLStore) UpdateUserPassword(id, passwordHash string) error {
+	return changed(s.db.Exec(s.query(`UPDATE users SET password_hash=? WHERE id=?`), passwordHash, id))
+}
 func (s *SQLStore) DeleteUser(tenant, id string) error {
 	return changed(s.db.Exec(s.query(`DELETE FROM users WHERE tenant_id=? AND id=?`), tenant, id))
 }
@@ -905,12 +921,12 @@ func scanNotificationChannel(row scanner) (NotificationChannel, error) {
 	return v, nil
 }
 
-const nodeSelect = `SELECT id, tenant_id, project_id, network_id, name, COALESCE(hostname, ''), COALESCE(interface_selector, ''), COALESCE(collection_error, ''), enabled, listen_port, mtu, address, endpoint, region, COALESCE(location_name, ''), COALESCE(location_source, ''), COALESCE(latitude, 0), COALESCE(longitude, 0), os, agent_version, labels_json, public_key, private_key_json, wireguard_json, COALESCE(peer_config_json, '[]'), COALESCE(desired_peer_config_json, '[]'), last_seen, created_at FROM nodes`
+const nodeSelect = `SELECT id, tenant_id, project_id, network_id, name, COALESCE(hostname, ''), COALESCE(interface_selector, ''), COALESCE(collection_error, ''), enabled, listen_port, mtu, address, address_manual, endpoint, region, COALESCE(location_name, ''), COALESCE(location_source, ''), COALESCE(latitude, 0), COALESCE(longitude, 0), os, agent_version, labels_json, public_key, private_key_json, wireguard_json, COALESCE(peer_config_json, '[]'), COALESCE(desired_peer_config_json, '[]'), last_seen, created_at FROM nodes`
 
 // nodeRefSelect omits the large per-node JSON columns (private key, WireGuard
 // status, and peer config files) for callers that only need scalar identity and
 // routing fields, avoiding the cost of decoding those blobs on every heartbeat.
-const nodeRefSelect = `SELECT id, tenant_id, project_id, network_id, name, COALESCE(hostname, ''), COALESCE(interface_selector, ''), COALESCE(collection_error, ''), enabled, listen_port, mtu, address, endpoint, region, COALESCE(location_name, ''), COALESCE(location_source, ''), COALESCE(latitude, 0), COALESCE(longitude, 0), os, agent_version, labels_json, public_key, last_seen, created_at FROM nodes`
+const nodeRefSelect = `SELECT id, tenant_id, project_id, network_id, name, COALESCE(hostname, ''), COALESCE(interface_selector, ''), COALESCE(collection_error, ''), enabled, listen_port, mtu, address, address_manual, endpoint, region, COALESCE(location_name, ''), COALESCE(location_source, ''), COALESCE(latitude, 0), COALESCE(longitude, 0), os, agent_version, labels_json, public_key, last_seen, created_at FROM nodes`
 
 func scanCommand(row scanner) (AgentCommand, error) {
 	var v AgentCommand
@@ -981,7 +997,7 @@ func scanNode(row scanner) (Node, error) {
 	var labels, secret, lastSeen, created string
 	var wireGuard sql.NullString
 	var peerConfig, desiredPeerConfig sql.NullString
-	if err := row.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.NetworkID, &v.Name, &v.Hostname, &v.InterfaceSelector, &v.CollectionError, &v.Enabled, &v.ListenPort, &v.MTU, &v.Address, &v.Endpoint, &v.Region, &v.LocationName, &v.LocationSource, &v.Latitude, &v.Longitude, &v.OS, &v.AgentVersion, &labels, &v.PublicKey, &secret, &wireGuard, &peerConfig, &desiredPeerConfig, &lastSeen, &created); err != nil {
+	if err := row.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.NetworkID, &v.Name, &v.Hostname, &v.InterfaceSelector, &v.CollectionError, &v.Enabled, &v.ListenPort, &v.MTU, &v.Address, &v.AddressManual, &v.Endpoint, &v.Region, &v.LocationName, &v.LocationSource, &v.Latitude, &v.Longitude, &v.OS, &v.AgentVersion, &labels, &v.PublicKey, &secret, &wireGuard, &peerConfig, &desiredPeerConfig, &lastSeen, &created); err != nil {
 		return Node{}, notFound(err)
 	}
 	if err := json.Unmarshal([]byte(labels), &v.Labels); err != nil {
@@ -1022,7 +1038,7 @@ func scanNode(row scanner) (Node, error) {
 func scanNodeRef(row scanner) (Node, error) {
 	var v Node
 	var labels, lastSeen, created string
-	if err := row.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.NetworkID, &v.Name, &v.Hostname, &v.InterfaceSelector, &v.CollectionError, &v.Enabled, &v.ListenPort, &v.MTU, &v.Address, &v.Endpoint, &v.Region, &v.LocationName, &v.LocationSource, &v.Latitude, &v.Longitude, &v.OS, &v.AgentVersion, &labels, &v.PublicKey, &lastSeen, &created); err != nil {
+	if err := row.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.NetworkID, &v.Name, &v.Hostname, &v.InterfaceSelector, &v.CollectionError, &v.Enabled, &v.ListenPort, &v.MTU, &v.Address, &v.AddressManual, &v.Endpoint, &v.Region, &v.LocationName, &v.LocationSource, &v.Latitude, &v.Longitude, &v.OS, &v.AgentVersion, &labels, &v.PublicKey, &lastSeen, &created); err != nil {
 		return Node{}, notFound(err)
 	}
 	if err := json.Unmarshal([]byte(labels), &v.Labels); err != nil {

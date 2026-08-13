@@ -114,20 +114,29 @@ func (a *App) agentPeerConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, wireproto.PeerConfigResponse{NodeID: node.ID, Files: peerConfigFilesToWire(peerConfigFilesOrEmpty(node.DesiredPeerConfig))})
 }
 
-func (a *App) recordPeerConfigCommandResult(node *Node, state string) error {
+// recordPeerConfigCommandResult 把命令下发时刻（commandIssuedAt）之前的期望配置
+// 标记为已应用。命令执行期间新下发的配置（UpdatedAt 晚于命令创建时间）保持
+// 待下发状态，避免被旧命令的完成结果误标为已应用。
+func (a *App) recordPeerConfigCommandResult(node *Node, state string, commandIssuedAt time.Time) error {
 	if state != "completed" || len(node.DesiredPeerConfig) == 0 {
 		return nil
 	}
-	applied := make([]PeerConfigFile, len(node.DesiredPeerConfig))
-	copy(applied, node.DesiredPeerConfig)
 	now := time.Now()
-	for i := range applied {
-		if applied[i].UpdatedAt.IsZero() {
-			applied[i].UpdatedAt = now
+	applied := make([]PeerConfigFile, 0, len(node.DesiredPeerConfig))
+	remaining := make([]PeerConfigFile, 0, len(node.DesiredPeerConfig))
+	for _, file := range node.DesiredPeerConfig {
+		if !file.UpdatedAt.IsZero() && file.UpdatedAt.After(commandIssuedAt) {
+			remaining = append(remaining, file)
+			continue
 		}
+		entry := file
+		if entry.UpdatedAt.IsZero() {
+			entry.UpdatedAt = now
+		}
+		applied = append(applied, entry)
 	}
-	node.PeerConfigFiles = applied
-	node.DesiredPeerConfig = []PeerConfigFile{}
+	node.PeerConfigFiles = append(node.PeerConfigFiles, applied...)
+	node.DesiredPeerConfig = remaining
 	node.LastSeen = now
 	return a.store.UpdateNode(normalizeNodeDefaults(*node))
 }

@@ -1,0 +1,43 @@
+# WireMesh 生产部署示例（TLS + 持久化 + master key）
+# 使用前：
+#   1. 生成 master key：openssl rand -base64 32，写入 ./secrets/master.key
+#   2. 准备 TLS 证书：./secrets/tls.crt 与 ./secrets/tls.key（域名指向本机）
+#   3. GeoIP 数据库：将 GeoLite2-City.mmdb 放入 ./data/（MaxMind 许可适用）
+services:
+  wiremesh:
+    image: wiremesh:0.3.6
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    environment:
+      # 必填：加密私钥与签名会话令牌的根密钥（缺省无法启动）
+      WIREMESH_MASTER_KEY_FILE: /run/secrets/master_key
+      WIREMESH_ADDR: ":8443"
+      # 直接 TLS 监听：默认要求 Agent 携带有效客户端证书（mTLS 严格模式）。
+      # 若流量经可信反向代理注入 X-Agent-ID，改为设置 WIREMESH_TRUST_PROXY_AGENT_ID=true。
+      WIREMESH_TLS_CERT_FILE: /run/secrets/tls_crt
+      WIREMESH_TLS_KEY_FILE: /run/secrets/tls_key
+      # Agent CA 持久化：重启不吊销已接入 Agent 的证书
+      WIREMESH_CA_FILE: /data/wiremesh-ca.json
+      # 数据库：默认使用 /data/wiremesh-database.json（SQLite）
+      WIREMESH_DATABASE_CONFIG: /data/wiremesh-database.json
+      # 可选：GeoIP 数据库路径（Docker 镜像默认内置一份）
+      WIREMESH_GEOIP_DB: /data/GeoLite2-City.mmdb
+    secrets:
+      - master_key
+      - tls_crt
+      - tls_key
+    volumes:
+      - wiremesh-data:/data
+      - ./data/GeoLite2-City.mmdb:/data/GeoLite2-City.mmdb:ro
+
+secrets:
+  master_key:
+    file: ./secrets/master.key
+  tls_crt:
+    file: ./secrets/tls.crt
+  tls_key:
+    file: ./secrets/tls.key
+
+volumes:
+  wiremesh-data:

@@ -185,6 +185,8 @@ func TestAgentHeartbeatUpdatesRealNode(t *testing.T) {
 	updated.Address = "10.91.0.3"
 	updated.ListenPort = 52222
 	updated.MTU = 1400
+	// 模拟操作者通过管理端手动保存：与 HTTP handler 一致，设置持久化手动标记
+	updated.AddressManual = true
 	if err := app.store.UpdateNode(updated); err != nil {
 		t.Fatal(err)
 	}

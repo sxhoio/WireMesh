@@ -135,6 +135,7 @@ async function save() {
   addressError.value = validateAddress()
   if (nameError.value || addressError.value) return
   const isEdit = Boolean(editingRecordId.value)
+  const recordId = editingRecordId.value
   saving.value = true
   error.value = ''
   const payload = {
@@ -143,7 +144,7 @@ async function save() {
     description: form.description.trim(),
   }
   try {
-    if (isEdit) await api.updateDNSRecord(selectedNetworkId.value, editingRecordId.value!, payload)
+    if (isEdit && recordId) await api.updateDNSRecord(selectedNetworkId.value, recordId, payload)
     else await api.createDNSRecord(selectedNetworkId.value, payload)
     resetForm()
     notice.value = isEdit ? '记录已更新' : '记录已添加'

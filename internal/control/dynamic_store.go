@@ -120,6 +120,9 @@ func (s *SwitchableStore) GetUser(id string) (User, error) { return s.store().Ge
 func (s *SwitchableStore) UpdateUserLastLogin(id string, at time.Time) error {
 	return s.store().UpdateUserLastLogin(id, at)
 }
+func (s *SwitchableStore) UpdateUserPassword(id, passwordHash string) error {
+	return s.store().UpdateUserPassword(id, passwordHash)
+}
 func (s *SwitchableStore) HasUsers() (bool, error)         { return s.store().HasUsers() }
 func (s *SwitchableStore) CreateInitialAdmin(v User) error { return s.store().CreateInitialAdmin(v) }
 

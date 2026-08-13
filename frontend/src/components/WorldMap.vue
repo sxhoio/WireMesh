@@ -22,8 +22,6 @@ const props = defineProps<{
   agents: Agent[]
   links: MapLink[]
   tempPeers: TempPeer[]
-  linkFilter: 'all' | PeerState
-  onlyErrors: boolean
 }>()
 
 const locatedAgents = () => props.agents.filter((agent) => Number.isFinite(agent.lng) && Number.isFinite(agent.lat))
@@ -136,9 +134,7 @@ function render() {
     for (const i of a.interfaces) ifacePoint.set(i.id, [a.lng, a.lat])
   }
 
-  let links = props.links
-  if (props.onlyErrors) links = links.filter((l) => l.displayState === 'degraded' || l.displayState === 'down')
-  if (props.linkFilter !== 'all') links = links.filter((l) => l.displayState === props.linkFilter)
+  const links = props.links
 
   const linkFeatures: Feature[] = []
   for (const l of links) {
@@ -349,7 +345,7 @@ onBeforeUnmount(() => {
 // store 采用 immutable 重新赋值（整数组替换），浅比较引用即可感知数据变化；
 // deep watch 会对大数组的每个嵌套字段做递归依赖追踪，开销显著且无必要。
 watch(
-  () => [props.agents, props.links, props.tempPeers, props.linkFilter, props.onlyErrors],
+  () => [props.agents, props.links, props.tempPeers],
   () => render(),
 )
 </script>

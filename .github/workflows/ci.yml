@@ -20,6 +20,10 @@ jobs:
         run: go test -count=1 ./...
       - name: go build
         run: go build ./...
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          $(go env GOPATH)/bin/govulncheck ./...
 
   frontend:
     name: 前端检查

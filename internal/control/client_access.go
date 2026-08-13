@@ -21,27 +21,27 @@ type ClientConfigResponse struct {
 func (a *App) nodeClientConfig(w http.ResponseWriter, r *http.Request, c claims) {
 	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "node not found")
+		writeError(w, http.StatusNotFound, "节点不存在")
 		return
 	}
 	revision, err := a.store.LatestRevision(node.TenantID, node.NetworkID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "no published configuration")
+		writeError(w, http.StatusNotFound, "该网络尚未发布配置")
 		return
 	}
 	config, ok := revision.Configs[node.ID]
 	if !ok {
-		writeError(w, http.StatusNotFound, "node not included in published configuration")
+		writeError(w, http.StatusNotFound, "该节点不在已发布的配置中")
 		return
 	}
 	config, err = a.openRevisionConfig(config)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to decrypt node configuration")
+		writeError(w, http.StatusInternalServerError, "解密节点配置失败")
 		return
 	}
 	network, err := a.store.GetNetwork(node.TenantID, node.NetworkID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "network not found")
+		writeError(w, http.StatusNotFound, "网络不存在")
 		return
 	}
 	writeJSON(w, http.StatusOK, ClientConfigResponse{

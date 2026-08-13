@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import QRCode from 'qrcode'
 import CustomPeerModal from '../components/CustomPeerModal.vue'
-import { api, apiBase, type ApiAPIToken, type ApiUserSession } from '../api'
+import { api, type ApiAPIToken, type ApiUserSession } from '../api'
 import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
 import type { NotificationConfig, NotifyChannel, NotifyChannelType, UserAccount } from '../types'
@@ -89,6 +89,7 @@ function selectTab(key: TabKey) {
 }
 
 const saved = ref(false)
+let savedTimer: number | undefined
 const confirmReset = ref(false)
 const customPeerNetwork = ref<string | null>(null)
 
@@ -171,7 +172,8 @@ async function addNetwork() {
 async function save() {
   if (await app.updateSettings(JSON.parse(JSON.stringify(form)))) {
     saved.value = true
-    setTimeout(() => (saved.value = false), 1600)
+    if (savedTimer) window.clearTimeout(savedTimer)
+    savedTimer = window.setTimeout(() => (saved.value = false), 1600)
   } else {
     mesh.error = app.error || '保存系统设置失败'
   }
@@ -194,6 +196,39 @@ async function addUser() {
     newUser.email = ''
     newUser.password = ''
     newUser.role = 'viewer'
+  }
+}
+
+// ---- 修改自己的密码 ----
+const passwordForm = reactive({ oldPassword: '', newPassword: '', confirm: '' })
+const passwordSaving = ref(false)
+const passwordError = ref('')
+
+async function changeMyPassword() {
+  passwordError.value = ''
+  if (!passwordForm.oldPassword || !passwordForm.newPassword) {
+    passwordError.value = '请输入旧密码与新密码'
+    return
+  }
+  if (passwordForm.newPassword.length < 8) {
+    passwordError.value = '新密码至少需要 8 个字符'
+    return
+  }
+  if (passwordForm.newPassword !== passwordForm.confirm) {
+    passwordError.value = '两次输入的新密码不一致'
+    return
+  }
+  passwordSaving.value = true
+  try {
+    await api.changePassword({ old_password: passwordForm.oldPassword, new_password: passwordForm.newPassword })
+    mesh.notice = '密码已修改'
+    passwordForm.oldPassword = ''
+    passwordForm.newPassword = ''
+    passwordForm.confirm = ''
+  } catch (reason) {
+    passwordError.value = reason instanceof Error ? reason.message : '修改密码失败'
+  } finally {
+    passwordSaving.value = false
   }
 }
 
@@ -447,6 +482,9 @@ async function loadAPITokens() {
 
 watch(() => tab.value, (value) => {
   if (value === 'apitoken') void loadAPITokens()
+  if (value === 'sessions') void loadSessions()
+  if (value === 'mfa') void loadMFA()
+  if (value === 'sso') void loadSSO()
 })
 
 async function createAPIToken() {
@@ -489,9 +527,7 @@ async function downloadBackup() {
   if (backingUp.value) return
   backingUp.value = true
   try {
-    const response = await fetch(apiBase + '/api/v1/settings/backup', { credentials: 'include' })
-    if (!response.ok) throw new Error('备份下载失败（' + response.status + '）')
-    const blob = await response.blob()
+    const blob = await api.backupDownload()
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
@@ -521,11 +557,7 @@ async function restoreBackup() {
   if (!confirmed) return
   restoring.value = true
   try {
-    const response = await fetch(apiBase + '/api/v1/settings/backup/restore', { method: 'POST', credentials: 'include', body: restoreFile.value })
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({})) as { error?: string }
-      throw new Error(payload.error || '恢复失败（' + response.status + '）')
-    }
+    await api.backupRestore(restoreFile.value)
     restoreFile.value = null
     mesh.notice = '数据库已恢复；请重新登录以继续'
     app.logout()
@@ -547,13 +579,6 @@ async function loadSessions() {
     sessions.value = []
   }
 }
-
-watch(() => tab.value, (value) => {
-  if (value === 'apitoken') void loadAPITokens()
-  if (value === 'sessions') void loadSessions()
-  if (value === 'mfa') void loadMFA()
-  if (value === 'sso') void loadSSO()
-})
 
 async function revokeSession(id: string) {
   const confirmed = await requestConfirm({
@@ -669,6 +694,8 @@ async function saveSSO() {
     ssoSaving.value = false
   }
 }
+
+onUnmounted(() => { if (savedTimer) window.clearTimeout(savedTimer) })
 
 </script>
 
@@ -1058,6 +1085,16 @@ async function saveSSO() {
       <section v-else-if="tab === 'users'" class="panel p-5">
         <h2 class="text-sm font-semibold text-white">用户与权限</h2>
         <p class="mt-0.5 text-xs text-slate-500">Viewer 只读 · Operator 可调整节点与 Peer · Admin 管理系统设置、用户与 IP 库</p>
+        <div class="mt-4 rounded-xl border border-ink-700 bg-ink-900/50 p-4">
+          <p class="text-xs font-semibold text-slate-300">修改我的密码</p>
+          <div class="mt-3 grid grid-cols-1 items-end gap-3 sm:grid-cols-[1fr_1fr_1fr_auto]">
+            <div><label class="label">旧密码</label><input v-model="passwordForm.oldPassword" type="password" autocomplete="current-password" class="input" /></div>
+            <div><label class="label">新密码（至少 8 位）</label><input v-model="passwordForm.newPassword" type="password" autocomplete="new-password" class="input" /></div>
+            <div><label class="label">确认新密码</label><input v-model="passwordForm.confirm" type="password" autocomplete="new-password" class="input" @keyup.enter="changeMyPassword" /></div>
+            <button class="btn-secondary" :disabled="passwordSaving" @click="changeMyPassword">{{ passwordSaving ? '修改中…' : '修改密码' }}</button>
+          </div>
+          <p v-if="passwordError" class="mt-2 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300 ring-1 ring-red-500/30">{{ passwordError }}</p>
+        </div>
         <div class="mt-4 space-y-2">
           <div v-for="u in mesh.users" :key="u.id" class="flex flex-wrap items-center gap-3 rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600" :class="{ 'opacity-70': !u.active }">
             <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ring-1" :class="roleMeta[u.role].c">{{ u.name.slice(0, 1).toUpperCase() }}</div>

@@ -63,8 +63,9 @@ func (a *App) adoptReportedNodeConfiguration(node *Node) (string, bool) {
 	if err != nil || len(deliveries) != 0 {
 		return "", false
 	}
-	hasUpdate, err := a.store.HasNodeAuditAction(node.TenantID, node.ID, "node.update", "agent.config.observed")
-	if err != nil || hasUpdate {
+	// 操作者手动指定过地址的节点不再自动收养 Agent 上报地址（持久标记，
+	// 不依赖可能被裁剪的审计日志）。
+	if node.AddressManual {
 		return "", false
 	}
 	others, err := a.store.ListNodeRefs(node.TenantID, node.NetworkID)
@@ -155,6 +156,8 @@ func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
 			}
 		}
 		node.Address = value
+		// 手动指定地址后关闭自动收养，Agent 上报的地址不再覆盖人工设置
+		node.AddressManual = true
 	}
 	if in.Endpoint != nil {
 		node.Endpoint = strings.TrimSpace(*in.Endpoint)
@@ -773,7 +776,7 @@ func (a *App) agentCommandResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if command.Type == agentCommandTypeApplyPeerConfig {
-		if err := a.recordPeerConfigCommandResult(&node, in.State); err != nil {
+		if err := a.recordPeerConfigCommandResult(&node, in.State, command.CreatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to record peer config result")
 			return
 		}

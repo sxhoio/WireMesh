@@ -83,18 +83,20 @@ type PeerConfigFile struct {
 }
 
 type Node struct {
-	ID                string                     `json:"id"`
-	TenantID          string                     `json:"tenant_id"`
-	ProjectID         string                     `json:"project_id"`
-	NetworkID         string                     `json:"network_id"`
-	Name              string                     `json:"name"`
-	Hostname          string                     `json:"hostname"`
-	InterfaceSelector string                     `json:"interface_selector"`
-	CollectionError   string                     `json:"collection_error,omitempty"`
-	Enabled           bool                       `json:"enabled"`
-	ListenPort        int                        `json:"listen_port"`
-	MTU               int                        `json:"mtu"`
-	Address           string                     `json:"address"`
+	ID                string `json:"id"`
+	TenantID          string `json:"tenant_id"`
+	ProjectID         string `json:"project_id"`
+	NetworkID         string `json:"network_id"`
+	Name              string `json:"name"`
+	Hostname          string `json:"hostname"`
+	InterfaceSelector string `json:"interface_selector"`
+	CollectionError   string `json:"collection_error,omitempty"`
+	Enabled           bool   `json:"enabled"`
+	ListenPort        int    `json:"listen_port"`
+	MTU               int    `json:"mtu"`
+	Address           string `json:"address"`
+	// AddressManual 表示地址由操作者手动指定，Agent 上报的地址不再自动收养。
+	AddressManual     bool                       `json:"address_manual"`
 	Endpoint          string                     `json:"endpoint"`
 	Region            string                     `json:"region"`
 	LocationName      string                     `json:"location_name"`

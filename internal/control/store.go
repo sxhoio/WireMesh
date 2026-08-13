@@ -57,6 +57,7 @@ type Store interface {
 	GetUserByEmail(string) (User, error)
 	GetUser(string) (User, error)
 	UpdateUserLastLogin(string, time.Time) error
+	UpdateUserPassword(string, string) error
 	HasUsers() (bool, error)
 	CreateInitialAdmin(User) error
 	ListUsers(string) ([]User, error)
@@ -1006,6 +1007,18 @@ func (s *MemoryStore) ListUsers(tenant string) ([]User, error) {
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out, nil
 }
+func (s *MemoryStore) UpdateUserPassword(id, passwordHash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.users[id]
+	if !ok {
+		return errNotFound
+	}
+	current.PasswordHash = passwordHash
+	s.users[id] = current
+	return nil
+}
+
 func (s *MemoryStore) CreateUser(v User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

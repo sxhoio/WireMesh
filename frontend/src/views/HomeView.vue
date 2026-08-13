@@ -78,12 +78,7 @@ async function manualRefresh() {
   }
 }
 
-const visibleLinks = computed(() => {
-  let ls = mesh.scopedLinks
-  if (mesh.onlyErrors) ls = ls.filter((l) => l.displayState === 'degraded' || l.displayState === 'down')
-  if (mesh.linkFilter !== 'all') ls = ls.filter((l) => l.displayState === mesh.linkFilter)
-  return ls
-})
+const visibleLinks = computed(() => mesh.scopedLinksFiltered)
 
 const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.geo))
 </script>
@@ -142,10 +137,8 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
       <div class="panel relative h-[420px] overflow-hidden sm:h-[520px] lg:col-span-3 lg:h-auto lg:min-h-[520px]">
         <WorldMap
           :agents="mesh.scopedAgents"
-          :links="mesh.scopedLinks"
+          :links="visibleLinks"
           :temp-peers="mesh.scopedTempPeers"
-          :link-filter="mesh.linkFilter"
-          :only-errors="mesh.onlyErrors"
           @agent-click="onAgentClick"
           @link-click="onLinkClick"
           @map-blank-click="onMapBlankClick"

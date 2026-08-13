@@ -141,6 +141,5 @@ export const useAppStore = defineStore('app', {
       } finally { this.loading = false }
     },
     resetAll() { this.logout(); this.settings = structuredClone(settings) },
-    persist() {},
   },
 })

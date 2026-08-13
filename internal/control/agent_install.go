@@ -391,10 +391,10 @@ func (a *App) agentUpdateManifest(r *http.Request, requestedOS, requestedArch, c
 func (a *App) agentBinaryFor(requestedOS, requestedArch string) (string, error) {
 	configuredPath := strings.TrimSpace(a.agentBinaryPath)
 	if configuredPath == "" {
-		return "", fmt.Errorf("agent binary is not configured on this control plane")
+		return "", fmt.Errorf("服务端未配置 Agent 更新包")
 	}
 	if requestedOS != "linux" || (requestedArch != "amd64" && requestedArch != "arm64") {
-		return "", fmt.Errorf("agent binary is not available for the requested platform")
+		return "", fmt.Errorf("暂不支持该平台的 Agent 更新包")
 	}
 	binaryPath := configuredPath
 	if strings.Contains(binaryPath, "{os}") || strings.Contains(binaryPath, "{arch}") {
@@ -434,6 +434,14 @@ func compareAgentVersions(a, b string) int {
 	left, okLeft := parseAgentVersion(a)
 	right, okRight := parseAgentVersion(b)
 	if !okLeft || !okRight {
+		// 无法解析的版本视为不兼容：a 无法解析时判为"更新"（b 更新），
+		// b 无法解析时判为"不更新"（清单版本无效），与 node_management 的拦截逻辑一致。
+		if !okLeft && okRight {
+			return -1
+		}
+		if okLeft && !okRight {
+			return 1
+		}
 		return 0
 	}
 	for i := 0; i < len(left) && i < len(right); i++ {

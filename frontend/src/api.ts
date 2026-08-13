@@ -131,6 +131,37 @@ async function requestArray<T>(url: string): Promise<T[]> {
   return Array.isArray(value) ? value : []
 }
 
+/** 统一鉴权头构造：备份下载与恢复上传与 JSON 请求走同一认证通道。 */
+function authHeaders(extra?: HeadersInit): Headers {
+  const headers = new Headers(extra)
+  if (session.token) headers.set('Authorization', 'Bearer ' + session.token)
+  return headers
+}
+
+async function downloadBackupFile(): Promise<Blob> {
+  const response = await fetch(apiBase + '/api/v1/settings/backup', { headers: authHeaders(), credentials: 'include' })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { error?: string }
+    if (response.status === 401) session.clear()
+    throw new ApiError(response.status, payload.error || '备份下载失败（' + response.status + '）')
+  }
+  return response.blob()
+}
+
+async function uploadRestoreFile(file: File): Promise<void> {
+  const response = await fetch(apiBase + '/api/v1/settings/backup/restore', {
+    method: 'POST',
+    headers: authHeaders(),
+    credentials: 'include',
+    body: file,
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { error?: string }
+    if (response.status === 401) session.clear()
+    throw new ApiError(response.status, payload.error || '恢复失败（' + response.status + '）')
+  }
+}
+
 export const api = {
   setupStatus: () => request<SetupStatus>('/api/v1/setup/status'),
   databaseStatus: () => request<{ configured: boolean; driver?: DatabaseDriver }>('/api/v1/setup/database'),
@@ -218,4 +249,7 @@ export const api = {
   createUser: (payload: { name: string; email: string; password: string; role: ApiUser['role'] }) => request<ApiUser>('/api/v1/users', { method: 'POST', body: JSON.stringify(payload) }),
   updateUser: (id: string, payload: { name?: string; role?: ApiUser['role']; active?: boolean }) => request<ApiUser>('/api/v1/users/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteUser: (id: string) => request<void>('/api/v1/users/' + encodeURIComponent(id), { method: 'DELETE' }),
+  changePassword: (payload: { old_password: string; new_password: string }) => request<void>('/api/v1/auth/change-password', { method: 'POST', body: JSON.stringify(payload) }),
+  backupDownload: downloadBackupFile,
+  backupRestore: uploadRestoreFile,
 }

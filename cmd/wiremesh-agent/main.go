@@ -252,8 +252,10 @@ func main() {
 			log.Printf("report configuration version %d result: %v", payload.Version, err)
 			return "", err
 		}
-		state.AttemptedVersion = payload.Version
+		// 仅在应用成功时推进 AttemptedVersion：失败（含 rolled_back）的版本
+		// 在下一个周期重试，而不是被持久化后永久跳过。
 		if status == "applied" {
+			state.AttemptedVersion = payload.Version
 			state.AppliedVersion = payload.Version
 		}
 		if err := saveState(statePath, state); err != nil {

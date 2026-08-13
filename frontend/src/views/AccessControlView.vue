@@ -148,9 +148,9 @@ function policyUnlinkedCount(policy: ApiAccessPolicy) {
 
 /** 后端 409 引用保护错误映射为可操作的中文提示 */
 function friendlyReferenceError(message: string) {
-  const prefix = 'resource is referenced by policies: '
+  const prefix = '该资源仍被以下策略引用: '
   if (message.startsWith(prefix)) {
-    return `无法删除：该资源仍被以下策略引用——${message.slice(prefix.length)}。请先调整或删除相关策略。`
+    return `无法删除：${message}。请先调整或删除相关策略。`
   }
   return message
 }
@@ -299,6 +299,7 @@ async function saveResource() {
   }
   // 先捕获编辑状态：resetResourceForm 会清空 editingResourceId，避免提示文案误判
   const isEdit = Boolean(editingResourceId.value)
+  const resourceId = editingResourceId.value
   savingResource.value = true
   error.value = ''
   const payload = {
@@ -310,7 +311,7 @@ async function saveResource() {
     description: resourceForm.description.trim(),
   }
   try {
-    if (isEdit) await api.updateAccessResource(selectedNetworkId.value, editingResourceId.value!, payload)
+    if (isEdit && resourceId) await api.updateAccessResource(selectedNetworkId.value, resourceId, payload)
     else await api.createAccessResource(selectedNetworkId.value, payload)
     resetResourceForm()
     markDirty()

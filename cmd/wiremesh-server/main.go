@@ -21,6 +21,12 @@ func main() {
 
 	masterKey := os.Getenv("WIREMESH_MASTER_KEY")
 	if strings.TrimSpace(masterKey) == "" {
+		// 兼容 Docker secrets 挂载：从文件读取根密钥
+		if raw, readErr := os.ReadFile(strings.TrimSpace(os.Getenv("WIREMESH_MASTER_KEY_FILE"))); readErr == nil {
+			masterKey = strings.TrimSpace(string(raw))
+		}
+	}
+	if strings.TrimSpace(masterKey) == "" {
 		log.Fatal("WIREMESH_MASTER_KEY is required: set it to a long random secret (used to encrypt private keys and sign session tokens). Generate one with: openssl rand -base64 32")
 	}
 	databaseDriver := strings.TrimSpace(os.Getenv("WIREMESH_DATABASE_DRIVER"))
@@ -127,6 +133,12 @@ func withFrontend(api http.Handler, directory string) http.Handler {
 			return
 		}
 		relative := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		// 含反斜杠的路径在 Windows 下可能让 filepath.Join 逃出 web 目录，
+		// 直接回退到 index.html（前端路由由哈希模式接管）。
+		if strings.Contains(relative, "\\") {
+			http.ServeFile(w, r, filepath.Join(directory, "index.html"))
+			return
+		}
 		candidate := filepath.Join(directory, filepath.FromSlash(relative))
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			if strings.HasPrefix(r.URL.Path, "/assets/") {

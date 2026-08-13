@@ -26,6 +26,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
 
@@ -117,6 +119,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /api/v1/setup", a.setup)
 	mux.HandleFunc("POST /api/v1/auth/login", a.login)
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logout)
+	mux.HandleFunc("POST /api/v1/auth/change-password", a.withUser(RoleViewer, a.changePassword))
 	mux.HandleFunc("GET /api/v1/auth/sessions", a.withUser(RoleAdmin, a.userSessions))
 	mux.HandleFunc("DELETE /api/v1/auth/sessions/{id}", a.withUser(RoleAdmin, a.userSessions))
 	mux.HandleFunc("GET /api/v1/auth/mfa/status", a.withUser(RoleViewer, a.mfaStatus))
@@ -425,8 +428,48 @@ func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// changePassword 允许登录用户修改自己的密码（需验证旧密码）。
+func (a *App) changePassword(w http.ResponseWriter, r *http.Request, c claims) {
+	var in struct {
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if len(in.NewPassword) < 8 {
+		writeError(w, http.StatusBadRequest, "新密码至少需要 8 个字符")
+		return
+	}
+	user, err := a.store.GetUser(c.Subject)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "account no longer exists")
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.OldPassword)) != nil {
+		writeError(w, http.StatusUnauthorized, "旧密码不正确")
+		return
+	}
+	passwordHash, err := hashPassword(in.NewPassword)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "密码加密失败")
+		return
+	}
+	if err := a.store.UpdateUserPassword(user.ID, passwordHash); err != nil {
+		writeError(w, http.StatusInternalServerError, "保存密码失败")
+		return
+	}
+	a.auditEvent(c.TenantID, c.Subject, "auth.password.change", "user", user.ID, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
 func (a *App) me(w http.ResponseWriter, r *http.Request, c claims) {
-	user, _ := a.store.GetUser(c.Subject)
+	user, err := a.store.GetUser(c.Subject)
+	if err != nil {
+		// 用户已被删除（或令牌失效）时返回 401，前端据此登出
+		writeError(w, http.StatusUnauthorized, "account no longer exists")
+		return
+	}
 	writeJSON(w, http.StatusOK, publicUser(user))
 }
 func publicUser(u User) map[string]any {
@@ -980,9 +1023,15 @@ func (a *App) agentStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	node.LastSeen = time.Now()
-	a.store.UpdateNode(node)
+	if err := a.store.UpdateNode(node); err != nil {
+		writeError(w, http.StatusInternalServerError, "保存节点状态失败")
+		return
+	}
 	delivery := ConfigDelivery{ID: newID("delivery"), TenantID: node.TenantID, NodeID: node.ID, Version: in.Version, State: in.State, Message: in.Message, UpdatedAt: time.Now()}
-	a.store.UpdateDelivery(delivery)
+	if err := a.store.UpdateDelivery(delivery); err != nil {
+		writeError(w, http.StatusInternalServerError, "保存下发状态失败")
+		return
+	}
 	a.auditEvent(node.TenantID, node.ID, "agent.config."+in.State, "node", node.ID, map[string]string{"version": fmt.Sprint(in.Version)})
 	writeJSON(w, 200, map[string]string{"status": "recorded"})
 }

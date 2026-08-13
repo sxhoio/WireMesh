@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import QRCode from 'qrcode'
 import { api, apiBase, type ApiClientConfig } from '../api'
@@ -24,6 +24,8 @@ const creating = ref(false)
 const refreshing = ref(false)
 const newClientName = ref('')
 const flashId = ref('')
+let flashTimer: number | undefined
+onUnmounted(() => { if (flashTimer) window.clearTimeout(flashTimer) })
 const editingAgent = ref<Agent | null>(null)
 const { copied, copyText } = useClipboard(false, 1400)
 
@@ -50,12 +52,12 @@ watch(selectedNetworkId, () => {
   if (first) selectedNodeId.value = first.id
 })
 
-/** 把后端英文错误映射为可操作的中文提示 */
+/** 后端错误映射为可操作的中文提示 */
 function friendlyConfigError(message: string) {
-  if (message.includes('no published configuration')) return '该网络尚未发布配置，请到「系统设置 → 网络」发布后再导出'
-  if (message.includes('not included in published configuration')) return '该设备未包含在已发布的配置中，请重新发布网络配置后再导出'
-  if (message.includes('node not found')) return '设备不存在或已被删除，请刷新列表'
-  if (message.includes('network not found')) return '网络不存在或已被删除'
+  if (message.includes('尚未发布配置')) return '该网络尚未发布配置，请到「系统设置 → 网络」发布后再导出'
+  if (message.includes('不在已发布的配置中')) return '该设备未包含在已发布的配置中，请重新发布网络配置后再导出'
+  if (message.includes('节点不存在')) return '设备不存在或已被删除，请刷新列表'
+  if (message.includes('网络不存在')) return '网络不存在或已被删除'
   return message
 }
 
@@ -146,7 +148,8 @@ async function createClient() {
     newClientName.value = ''
     selectedNodeId.value = node.id
     flashId.value = node.id
-    window.setTimeout(() => { if (flashId.value === node.id) flashId.value = '' }, 2400)
+    if (flashTimer) window.clearTimeout(flashTimer)
+    flashTimer = window.setTimeout(() => { if (flashId.value === node.id) flashId.value = '' }, 2400)
     await nextTick()
     document.getElementById('device-' + node.id)?.scrollIntoView({ block: 'nearest' })
   } catch (reason) {

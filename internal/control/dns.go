@@ -113,7 +113,7 @@ func (a *App) updateDNSRecord(w http.ResponseWriter, r *http.Request, c claims) 
 
 func (a *App) deleteDNSRecord(w http.ResponseWriter, r *http.Request, c claims) {
 	if err := a.store.DeleteDNSRecord(c.TenantID, r.PathValue("record_id")); err != nil {
-		writeError(w, http.StatusNotFound, "DNS record not found")
+		writeError(w, http.StatusNotFound, "DNS 记录不存在")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "dns.record.delete", "network", r.PathValue("id"), nil)

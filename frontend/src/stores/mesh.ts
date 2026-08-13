@@ -17,6 +17,12 @@ function enqueueNodeLoad(task: () => Promise<unknown>) {
   return run
 }
 
+function pruneTrafficSamples(agentIDs: Set<string>) {
+  for (const key of [...trafficSamples.keys()]) {
+    if (!agentIDs.has(key)) trafficSamples.delete(key)
+  }
+}
+
 let pollingTimer: number | undefined
 const trafficSamples = new Map<string, { time: number; receiveBytes: number; transmitBytes: number; rxMbps: number; txMbps: number }>()
 const deletingNodeIDs = new Set<string>()
@@ -422,6 +428,13 @@ export const useMeshStore = defineStore('mesh', {
       return s.links.filter((link) => this.scopedNetworkIds.has(link.networkId)).map((link) => ({ ...link, displayState: link.state }))
     },
     scopedTempPeers(s): TempPeer[] { return s.tempPeers.filter((peer) => this.scopedNetworkIds.has(this.ifaceById(peer.sourceIfaceId)?.networkId || '')) },
+    /** 应用「仅看异常」与状态筛选后的链路，地图与首页列表共用，避免两处重复过滤 */
+    scopedLinksFiltered(s): (PeerLink & { displayState: PeerState })[] {
+      let links = this.scopedLinks
+      if (s.onlyErrors) links = links.filter((l) => l.displayState === 'degraded' || l.displayState === 'down')
+      if (s.linkFilter !== 'all') links = links.filter((l) => l.displayState === s.linkFilter)
+      return links
+    },
     stats(): { agentTotal: number; agentOnline: number; ifaceCount: number; linkOk: number; linkBad: number; linkDown: number; linkUnknown: number; rx: number; tx: number; tempCount: number } {
       const agents = this.scopedAgents
       const links = this.scopedLinks
@@ -462,6 +475,7 @@ export const useMeshStore = defineStore('mesh', {
         this.agents = telemetry.agents
         this.links = telemetry.links
         this.tempPeers = telemetry.tempPeers
+        pruneTrafficSamples(new Set(telemetry.agents.map((agent) => agent.id)))
 
         if (projectsResult.status === 'fulfilled') {
           const projects = projectsResult.value
@@ -555,6 +569,7 @@ export const useMeshStore = defineStore('mesh', {
         this.agents = telemetry.agents
         this.links = telemetry.links
         this.tempPeers = telemetry.tempPeers
+        pruneTrafficSamples(new Set(telemetry.agents.map((agent) => agent.id)))
         this.lastUpdated = Date.now()
         return true
       } catch (reason) {

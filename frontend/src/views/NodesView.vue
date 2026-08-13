@@ -159,6 +159,11 @@ function agentUpdateStatus(id: string) {
   return mesh.agentUpdate.node_status.find((status) => status.node_id === id)
 }
 
+/** 更多操作菜单当前目标与缓存的更新状态（模板多处使用，避免重复 O(n) 查找） */
+const menuAgent = computed(() => filtered.value.find((agent) => agent.id === menuFor.value) || null)
+const menuUpdateBlocked = computed(() => (menuAgent.value ? agentRemoteUpdateBlockedReason(menuAgent.value) : ''))
+const menuNeedsUpdate = computed(() => (menuAgent.value ? agentNeedsUpdate(menuAgent.value) : false))
+
 function agentRemoteUpdateBlockedReason(agent: Agent) {
   const status = agentUpdateStatus(agent.id)
   if (status?.reason) return status.reason
@@ -615,12 +620,12 @@ async function rotateKey(agent: Agent) {
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="openPeerEditor(a, 'manual'); closeMenu()">编辑 Peer</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.collectNow(a.id); closeMenu()">立即采集状态</button>
             <button
-              v-if="app.canOperate"
+              v-if="app.canOperate && menuAgent"
               class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700 disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
-              :disabled="Boolean(agentRemoteUpdateBlockedReason(a)) || updating"
-              :title="agentRemoteUpdateBlockedReason(a) || '下发 Agent 自更新命令'"
-              @click="updateAgent(a); closeMenu()"
-            >{{ agentRemoteUpdateBlockedReason(a) ? '更新 Agent（需手动升级）' : agentNeedsUpdate(a) ? '更新 Agent（可更新）' : '更新 Agent' }}</button>
+              :disabled="Boolean(menuUpdateBlocked) || updating"
+              :title="menuUpdateBlocked || '下发 Agent 自更新命令'"
+              @click="updateAgent(menuAgent); closeMenu()"
+            >{{ menuUpdateBlocked ? '更新 Agent（需手动升级）' : menuNeedsUpdate ? '更新 Agent（可更新）' : '更新 Agent' }}</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.checkConnectivity(a.id); closeMenu()">连通性检测</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="editingAgent = a; closeMenu()">编辑配置</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.interfaces.map((i) => i.tunnelIP).filter(Boolean).join(', ') || a.address, 'ip-' + a.id)">{{ copiedKey === 'ip-' + a.id ? '已复制 ✓' : '复制隧道 IP' }}</button>
