@@ -14,26 +14,80 @@ const app = useAppStore()
 const mesh = useMeshStore()
 const router = useRouter()
 
-const tabs = [
-  { k: 'net', l: '网络默认值' },
-  { k: 'status', l: '状态判定' },
-  { k: 'collect', l: '数据采集' },
-  { k: 'retention', l: '流量保留' },
-  { k: 'geoip', l: 'GeoIP' },
-  { k: 'agent', l: 'Agent' },
-  { k: 'notify', l: '通知配置' },
-  { k: 'project', l: '项目与网络' },
-  { k: 'users', l: '用户与权限' },
-  { k: 'audit', l: '审计日志' },
-  { k: 'publish', l: '发布记录' },
-  { k: 'apitoken', l: 'API 令牌' },
-  { k: 'backup', l: '备份与恢复' },
-  { k: 'sessions', l: '登录会话' },
-  { k: 'mfa', l: '多因素认证' },
-  { k: 'sso', l: '单点登录' },
+const tabGroups = [
+  {
+    label: '基础参数',
+    items: [
+      { k: 'net', l: '网络默认值', d: '新建网络与接口时的默认参数' },
+      { k: 'status', l: '状态判定', d: '链路与节点在线状态的判定阈值' },
+      { k: 'collect', l: '数据采集', d: 'Agent 上报与连通探测周期' },
+      { k: 'retention', l: '流量保留', d: '流量采样数据的分层保留策略' },
+      { k: 'geoip', l: 'GeoIP', d: 'MaxMind 地理位置数据库配置与测试' },
+    ],
+  },
+  {
+    label: '资源与集成',
+    items: [
+      { k: 'project', l: '项目与网络', d: '项目、网络与自定义拓扑管理' },
+      { k: 'notify', l: '通知配置', d: '告警通知渠道、模板与发送记录' },
+      { k: 'agent', l: 'Agent', d: '节点 Agent 接入入口' },
+      { k: 'apitoken', l: 'API 令牌', d: '供脚本与 CI 使用的长期 API 凭据' },
+    ],
+  },
+  {
+    label: '安全与账号',
+    items: [
+      { k: 'users', l: '用户与权限', d: '控制台用户、角色与登录状态' },
+      { k: 'sessions', l: '登录会话', d: '活跃会话查看与强制下线' },
+      { k: 'mfa', l: '多因素认证', d: 'TOTP 动态验证码绑定' },
+      { k: 'sso', l: '单点登录', d: 'OIDC 单点登录接入' },
+    ],
+  },
+  {
+    label: '审计与运维',
+    items: [
+      { k: 'audit', l: '审计日志', d: '控制台操作审计记录' },
+      { k: 'publish', l: '发布记录', d: '配置版本发布历史与节点应用结果' },
+      { k: 'backup', l: '备份与恢复', d: 'SQLite 在线备份与恢复' },
+    ],
+  },
 ] as const
 
-const tab = ref<string>('net')
+type TabKey = (typeof tabGroups)[number]['items'][number]['k']
+
+const initialTab = sessionStorage.getItem('settings-tab')
+const tab = ref<TabKey>(initialTab && tabGroups.some((group) => group.items.some((item) => item.k === initialTab)) ? (initialTab as TabKey) : 'net')
+watch(tab, (value) => sessionStorage.setItem('settings-tab', value))
+const allTabs = computed(() => {
+  const out: { k: TabKey; l: string; d: string }[] = []
+  for (const group of tabGroups) out.push(...group.items)
+  return out
+})
+const currentTabMeta = computed(() => allTabs.value.find((item) => item.k === tab.value))
+const formTabKeys: readonly string[] = ['net', 'status', 'collect', 'retention']
+
+/** 设置类 tab 是否有未保存的修改（与已生效配置逐字段对比） */
+const formDirty = computed(
+  () => formTabKeys.includes(tab.value) && JSON.stringify(form) !== JSON.stringify(app.settings),
+)
+
+/** 切换 tab：设置类 tab 有未保存修改时先确认，避免静默丢弃 */
+function selectTab(key: TabKey) {
+  if (tab.value === key) return
+  if (formDirty.value) {
+    void requestConfirm({
+      title: '有未保存的修改',
+      message: '当前设置尚未保存，切换后修改将丢失。仍要切换吗？',
+      confirmText: '放弃修改并切换',
+      variant: 'warning',
+    }).then((ok) => {
+      if (ok) tab.value = key
+    })
+    return
+  }
+  tab.value = key
+}
+
 const saved = ref(false)
 const confirmReset = ref(false)
 const customPeerNetwork = ref<string | null>(null)
@@ -541,26 +595,46 @@ async function saveSSO() {
 </script>
 
 <template>
-  <div class="grid w-full grid-cols-1 gap-4 lg:grid-cols-[11rem_minmax(0,1fr)] lg:gap-6 2xl:grid-cols-[12rem_minmax(0,1fr)] 2xl:gap-8">
-    <!-- 分组导航：移动端横向滚动，桌面左侧竖排 -->
+  <div class="grid w-full grid-cols-1 gap-4 lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-6">
+    <!-- 分组导航：移动端横向滚动，桌面左侧竖排分组 -->
     <aside class="w-full min-w-0">
-      <div class="flex gap-1 overflow-x-auto pb-1 lg:sticky lg:top-0 lg:flex-col lg:space-y-1 lg:overflow-visible lg:pb-0">
-        <button
-          v-for="t in tabs"
-          :key="t.k"
-          class="shrink-0 whitespace-nowrap rounded-xl px-3.5 py-2.5 text-left text-sm font-medium transition lg:w-full lg:shrink"
-          :class="tab === t.k ? 'bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30' : 'text-slate-400 hover:bg-ink-800 hover:text-slate-200'"
-          @click="tab = t.k"
-        >
-          {{ t.l }}
-        </button>
+      <div class="flex gap-1 overflow-x-auto pb-1 lg:sticky lg:top-0 lg:flex lg:max-h-[calc(100vh-6rem)] lg:flex-col lg:overflow-y-auto lg:pb-0">
+        <template v-for="group in tabGroups" :key="group.label">
+          <p class="hidden shrink-0 px-3.5 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-slate-600 first:pt-0 lg:block lg:whitespace-nowrap">{{ group.label }}</p>
+          <button
+            v-for="t in group.items"
+            :key="t.k"
+            class="shrink-0 whitespace-nowrap rounded-xl px-3.5 py-2 text-left text-sm font-medium transition lg:w-full lg:shrink"
+            :class="tab === t.k ? 'bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30' : 'text-slate-400 hover:bg-ink-800 hover:text-slate-200'"
+            @click="selectTab(t.k)"
+          >
+            {{ t.l }}
+          </button>
+        </template>
+        <div class="mt-auto hidden border-t border-ink-700 pt-2 lg:block">
+          <button class="w-full whitespace-nowrap rounded-xl px-3.5 py-2 text-left text-xs text-red-400/80 transition hover:bg-red-500/10 hover:text-red-300" @click="confirmReset = true">退出并重置本地界面</button>
+        </div>
       </div>
     </aside>
 
     <!-- 右侧内容 -->
-    <div class="min-w-0 w-full space-y-5 px-4 sm:px-6 lg:pl-0 lg:pr-6 xl:pl-0 xl:pr-8 2xl:pl-0 2xl:pr-10">
+    <div class="min-w-0 w-full space-y-5">
+      <!-- 页头：当前分组标题、说明与保存入口 -->
+      <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-ink-950/60 px-4 py-3 ring-1 ring-ink-700">
+        <div>
+          <h1 class="flex items-center gap-2 text-base font-semibold text-white">
+            {{ currentTabMeta?.l }}
+            <span v-if="formDirty" class="chip bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/30">有未保存的修改</span>
+          </h1>
+          <p class="mt-0.5 text-xs text-slate-500">{{ currentTabMeta?.d }}</p>
+        </div>
+        <button v-if="formTabKeys.includes(tab)" class="btn-primary min-w-28" :disabled="app.loading || !app.isAdmin" @click="save">
+          <svg v-if="saved" viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+          {{ saved ? '已保存' : '保存设置' }}
+        </button>
+      </div>
       <!-- 网络默认值 -->
-      <section v-if="tab === 'net'" class="panel p-4 sm:p-6 2xl:p-7">
+      <section v-if="tab === 'net'" class="panel p-5">
         <h2 class="text-sm font-semibold text-white">网络默认值</h2>
         <p class="mt-0.5 text-xs text-slate-500">新建网络/接口时的默认参数</p>
         <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 2xl:grid-cols-3">
@@ -580,7 +654,7 @@ async function saveSSO() {
       </section>
 
       <!-- 状态判定 -->
-      <section v-else-if="tab === 'status'" class="panel p-4 sm:p-6 2xl:p-7">
+      <section v-else-if="tab === 'status'" class="panel p-5">
         <h2 class="text-sm font-semibold text-white">状态判定</h2>
         <p class="mt-0.5 text-xs text-slate-500">链路绿/黄/红/灰的判定阈值</p>
         <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3 2xl:gap-6">
@@ -603,7 +677,7 @@ async function saveSSO() {
       </section>
 
       <!-- 数据采集 -->
-      <section v-else-if="tab === 'collect'" class="panel p-4 sm:p-6 2xl:p-7">
+      <section v-else-if="tab === 'collect'" class="panel p-5">
         <h2 class="text-sm font-semibold text-white">数据采集</h2>
         <p class="mt-0.5 text-xs text-slate-500">Agent 上报与连通探测周期</p>
         <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3 2xl:gap-6">
@@ -614,7 +688,7 @@ async function saveSSO() {
       </section>
 
       <!-- 流量保留 -->
-      <section v-else-if="tab === 'retention'" class="panel p-4 sm:p-6 2xl:p-7">
+      <section v-else-if="tab === 'retention'" class="panel p-5">
         <h2 class="text-sm font-semibold text-white">流量保留</h2>
         <p class="mt-0.5 text-xs text-slate-500">分层保留策略：原始数据用于 5 分钟到 24 小时曲线，小时聚合用于 7 天，日聚合用于 30 天</p>
         <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3 2xl:gap-6">
@@ -625,7 +699,7 @@ async function saveSSO() {
       </section>
 
       <!-- GeoIP -->
-      <section v-else-if="tab === 'geoip'" class="panel p-4 sm:p-6 2xl:p-7">
+      <section v-else-if="tab === 'geoip'" class="panel p-5">
         <h2 class="text-sm font-semibold text-white">GeoIP</h2>
         <p class="mt-0.5 text-xs text-slate-500">通过 Endpoint 公网 IP 解析地理位置；隧道私网地址不用于定位</p>
         <div class="mt-4 space-y-4">
@@ -658,7 +732,7 @@ async function saveSSO() {
       </section>
 
       <!-- Agent -->
-      <section v-else-if="tab === 'agent'" class="panel p-4 sm:p-6 2xl:p-7">
+      <section v-else-if="tab === 'agent'" class="panel p-5">
         <h2 class="text-sm font-semibold text-white">Agent</h2>
         <p class="mt-0.5 text-xs text-slate-500">WireMesh 使用由后端签发的一次性注册令牌，不在浏览器中保存全局 Token。</p>
         <div class="mt-4 rounded-xl bg-ink-800/60 p-4 ring-1 ring-ink-600">
@@ -671,7 +745,7 @@ async function saveSSO() {
       <section v-else-if="tab === 'notify'">
         <div class="grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(22rem,0.9fr)_minmax(0,1.1fr)] 2xl:grid-cols-[minmax(26rem,0.85fr)_minmax(0,1.15fr)]">
           <div class="min-w-0 space-y-5">
-            <div class="panel p-4 sm:p-6 2xl:p-7">
+            <div class="panel p-5">
             <div class="flex items-start justify-between gap-3">
               <div>
                 <h2 class="text-sm font-semibold text-white">通知渠道</h2>
@@ -700,7 +774,7 @@ async function saveSSO() {
             </div>
           </div>
 
-          <div class="panel p-4 sm:p-6 2xl:p-7">
+          <div class="panel p-5">
             <div class="flex items-center justify-between"><div><h2 class="text-sm font-semibold text-white">通知记录</h2><p class="mt-1 text-xs text-slate-500">测试和实际发送结果均由后端记录。</p></div></div>
             <div class="mt-4 max-h-[32rem] space-y-2 overflow-y-auto pr-1">
               <div v-for="log in mesh.notifyLogs" :key="log.id" class="flex items-start gap-3 rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600">
@@ -713,7 +787,7 @@ async function saveSSO() {
           </div>
           </div>
 
-          <div class="panel p-4 sm:p-6 2xl:p-7">
+          <div class="panel p-5">
             <div class="flex items-start justify-between gap-3">
               <div>
                 <h2 class="text-sm font-semibold text-white">{{ editingChannelId ? '编辑通知渠道' : '新建通知渠道' }}</h2>
@@ -829,7 +903,7 @@ async function saveSSO() {
 
       <!-- 项目与网络 -->
       <section v-else-if="tab === 'project'" class="grid grid-cols-1 items-start gap-5">
-        <div class="panel p-4 sm:p-6 2xl:p-7">
+        <div class="panel p-5">
           <h2 class="text-sm font-semibold text-white">项目</h2>
           <div class="mt-3 space-y-2">
             <div v-for="p in mesh.projects" :key="p.id" class="flex items-center justify-between rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600">
@@ -848,7 +922,7 @@ async function saveSSO() {
             <button class="btn-primary shrink-0" :disabled="!app.isAdmin || !newProject.name.trim()" @click="addProject">新建项目</button>
           </div>
         </div>
-        <div class="panel p-4 sm:p-6 2xl:p-7">
+        <div class="panel p-5">
           <h2 class="text-sm font-semibold text-white">网络与拓扑</h2>
           <p class="mt-0.5 text-xs text-slate-500">Full Mesh / Hub-Spoke 自动互联不可逐个排除；Custom 通过选择器手动指定</p>
           <div class="mt-3 space-y-2">
@@ -891,7 +965,7 @@ async function saveSSO() {
       </section>
 
       <!-- 用户与权限 -->
-      <section v-else-if="tab === 'users'" class="panel p-4 sm:p-6 2xl:p-7">
+      <section v-else-if="tab === 'users'" class="panel p-5">
         <h2 class="text-sm font-semibold text-white">用户与权限</h2>
         <p class="mt-0.5 text-xs text-slate-500">Viewer 只读 · Operator 可调整节点与 Peer · Admin 管理系统设置、用户与 IP 库</p>
         <div class="mt-4 space-y-2">
@@ -920,7 +994,7 @@ async function saveSSO() {
       </section>
 
       <!-- 审计日志 -->
-      <section v-else-if="tab === 'audit'" class="panel p-4 sm:p-6 2xl:p-7">
+      <section v-else-if="tab === 'audit'" class="panel p-5">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 class="text-sm font-semibold text-white">审计日志</h2>
@@ -958,7 +1032,7 @@ async function saveSSO() {
       <!-- 发布记录 -->
       <section v-else-if="tab === 'publish'" class="space-y-4">
         <div v-if="!mesh.revisions.length" class="panel py-10 text-center text-xs text-slate-500">后端未返回发布记录</div>
-        <div v-for="r in mesh.revisions" :key="r.id" class="panel p-4 sm:p-6 2xl:p-7">
+        <div v-for="r in mesh.revisions" :key="r.id" class="panel p-5">
           <div class="flex items-center justify-between">
             <p class="text-sm font-semibold text-white">配置版本 v{{ r.version }}</p>
             <span class="text-xs text-slate-500">{{ fmtDateTime(r.time) }} · {{ r.operator }}</span>
@@ -975,7 +1049,7 @@ async function saveSSO() {
       </section>
 
       <!-- API 令牌 -->
-      <section v-else-if="tab === 'apitoken'" class="panel p-4 sm:p-6 2xl:p-7">
+      <section v-else-if="tab === 'apitoken'" class="panel p-5">
         <h2 class="text-sm font-semibold text-white">API 令牌</h2>
         <p class="mt-0.5 text-xs text-slate-500">供脚本 / CI 调用控制平面 API 的长期凭据；明文仅在创建时显示一次，服务端只保存哈希。</p>
         <div v-if="createdToken" class="mt-4 rounded-xl bg-emerald-500/10 p-4 ring-1 ring-emerald-500/40">
@@ -1009,7 +1083,7 @@ async function saveSSO() {
       </section>
 
       <!-- 备份与恢复 -->
-      <section v-else-if="tab === 'backup'" class="panel p-4 sm:p-6 2xl:p-7">
+      <section v-else-if="tab === 'backup'" class="panel p-5">
         <h2 class="text-sm font-semibold text-white">备份与恢复</h2>
         <p class="mt-0.5 text-xs text-slate-500">使用 VACUUM INTO 生成一致性在线备份；恢复会立即切换到备份中的数据库（仅 SQLite 部署支持）。</p>
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
@@ -1030,7 +1104,7 @@ async function saveSSO() {
       </section>
 
       <!-- 登录会话 -->
-      <section v-else-if="tab === 'sessions'" class="panel p-4 sm:p-6 2xl:p-7">
+      <section v-else-if="tab === 'sessions'" class="panel p-5">
         <h2 class="text-sm font-semibold text-white">登录会话</h2>
         <p class="mt-0.5 text-xs text-slate-500">查看当前活跃的登录会话并强制下线；会话记录保存在内存中，服务重启后清空。</p>
         <div class="mt-4 space-y-2">
@@ -1047,7 +1121,7 @@ async function saveSSO() {
       </section>
 
       <!-- 多因素认证 -->
-      <section v-else-if="tab === 'mfa'" class="panel p-4 sm:p-6 2xl:p-7">
+      <section v-else-if="tab === 'mfa'" class="panel p-5">
         <h2 class="text-sm font-semibold text-white">多因素认证（MFA / TOTP）</h2>
         <p class="mt-0.5 text-xs text-slate-500">使用 Google Authenticator / 1Password 等认证器扫码，登录时额外要求 6 位动态验证码。</p>
         <div class="mt-4 flex items-center gap-3 rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600">
@@ -1078,7 +1152,7 @@ async function saveSSO() {
       </section>
 
       <!-- 单点登录（SSO / OIDC） -->
-      <section v-else-if="tab === 'sso'" class="panel p-4 sm:p-6 2xl:p-7">
+      <section v-else-if="tab === 'sso'" class="panel p-5">
         <h2 class="text-sm font-semibold text-white">单点登录（SSO / OIDC）</h2>
         <p class="mt-0.5 text-xs text-slate-500">对接 Keycloak、Google Workspace 等 OIDC 提供商；登录页显示「单点登录」入口，按邮箱匹配现有 WireMesh 用户。</p>
         <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -1091,14 +1165,7 @@ async function saveSSO() {
       </section>
 
       <!-- 保存栏（设置类分组显示） -->
-      <div v-if="['net', 'status', 'collect', 'retention', 'agent'].includes(tab)" class="flex items-center justify-between">
-        <button class="text-sm text-red-400/80 transition hover:text-red-300" @click="confirmReset = true">退出并重置本地界面</button>
-        <button class="btn-primary min-w-32" :disabled="app.loading || !app.isAdmin" @click="save">
-          <svg v-if="saved" viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-          {{ saved ? '已保存' : '保存设置' }}
-        </button>
-      </div>
-      <p v-else-if="tab === 'publish' && currentRevision" class="text-center text-[11px] text-slate-600">当前生效版本 v{{ currentRevision.version }} · 发布记录来自 WireMesh 后端</p>
+      <p v-if="tab === 'publish' && currentRevision" class="text-center text-[11px] text-slate-600">当前生效版本 v{{ currentRevision.version }} · 发布记录来自 WireMesh 后端</p>
     </div>
 
     <CustomPeerModal v-if="customPeerNetwork" :network-id="customPeerNetwork" @close="customPeerNetwork = null" />
