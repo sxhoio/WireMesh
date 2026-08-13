@@ -15,7 +15,6 @@ import (
 const (
 	defaultNodeListenPort           = 51820
 	defaultNodeMTU                  = 1420
-	maxCommandWait                  = 25 * time.Second
 	maxParallelAgentCommandDispatch = 32
 )
 
@@ -57,15 +56,19 @@ func (a *App) adoptReportedNodeConfiguration(node *Node) (string, bool) {
 	if node.Address == address && node.ListenPort == listenPort && node.MTU == mtu {
 		return "", false
 	}
-	if len(a.store.ListDeliveries(node.TenantID, node.ID)) != 0 {
+	deliveries, err := a.store.ListDeliveries(node.TenantID, node.ID)
+	if err != nil || len(deliveries) != 0 {
 		return "", false
 	}
-	for _, event := range a.store.ListAudit(node.TenantID) {
-		if event.ResourceType == "node" && event.ResourceID == node.ID && (event.Action == "node.update" || event.Action == "agent.config.observed") {
-			return "", false
-		}
+	hasUpdate, err := a.store.HasNodeAuditAction(node.TenantID, node.ID, "node.update", "agent.config.observed")
+	if err != nil || hasUpdate {
+		return "", false
 	}
-	for _, other := range a.store.ListNodes(node.TenantID, node.NetworkID) {
+	others, err := a.store.ListNodeRefs(node.TenantID, node.NetworkID)
+	if err != nil {
+		return "", false
+	}
+	for _, other := range others {
 		if other.ID != node.ID && other.Address == address {
 			return "", false
 		}
@@ -94,7 +97,7 @@ func (a *App) reportedNodeConfiguration(node Node) (WireGuardInterfaceStatus, st
 func (a *App) nodeByID(w http.ResponseWriter, r *http.Request, c claims) {
 	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "node not found")
+		writeError(w, http.StatusNotFound, "节点不存在")
 		return
 	}
 	writeJSON(w, http.StatusOK, normalizeNodeDefaults(node))
@@ -103,7 +106,7 @@ func (a *App) nodeByID(w http.ResponseWriter, r *http.Request, c claims) {
 func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
 	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "node not found")
+		writeError(w, http.StatusNotFound, "节点不存在")
 		return
 	}
 	var in struct {
@@ -126,7 +129,7 @@ func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
 	if in.Name != nil {
 		value := strings.TrimSpace(*in.Name)
 		if value == "" {
-			writeError(w, http.StatusBadRequest, "node name is required")
+			writeError(w, http.StatusBadRequest, "节点名称不能为空")
 			return
 		}
 		node.Name = value
@@ -137,9 +140,14 @@ func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		for _, other := range a.store.ListNodes(c.TenantID, node.NetworkID) {
+		others, err := a.store.ListNodes(c.TenantID, node.NetworkID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "读取网络节点列表失败")
+			return
+		}
+		for _, other := range others {
 			if other.ID != node.ID && other.Address == value {
-				writeError(w, http.StatusConflict, "address is already used by another node")
+				writeError(w, http.StatusConflict, "该地址已被其他节点占用")
 				return
 			}
 		}
@@ -150,14 +158,14 @@ func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
 	}
 	if in.ListenPort != nil {
 		if *in.ListenPort < 1 || *in.ListenPort > 65535 {
-			writeError(w, http.StatusBadRequest, "listen_port must be between 1 and 65535")
+			writeError(w, http.StatusBadRequest, "listen_port 必须在 1 到 65535 之间")
 			return
 		}
 		node.ListenPort = *in.ListenPort
 	}
 	if in.MTU != nil {
 		if *in.MTU < 576 || *in.MTU > 9000 {
-			writeError(w, http.StatusBadRequest, "mtu must be between 576 and 9000")
+			writeError(w, http.StatusBadRequest, "mtu 必须在 576 到 9000 之间")
 			return
 		}
 		node.MTU = *in.MTU
@@ -191,7 +199,7 @@ func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
 				locationName = strings.TrimSpace(*in.LocationName)
 			}
 			if locationName == "" {
-				writeError(w, http.StatusBadRequest, "location_name is required for manual location")
+				writeError(w, http.StatusBadRequest, "手动定位时必须填写 location_name")
 				return
 			}
 
@@ -203,11 +211,11 @@ func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
 				longitude = *in.Longitude
 			}
 			if math.IsNaN(latitude) || math.IsInf(latitude, 0) || latitude < -90 || latitude > 90 {
-				writeError(w, http.StatusBadRequest, "latitude must be between -90 and 90")
+				writeError(w, http.StatusBadRequest, "latitude 必须在 -90 到 90 之间")
 				return
 			}
 			if math.IsNaN(longitude) || math.IsInf(longitude, 0) || longitude < -180 || longitude > 180 {
-				writeError(w, http.StatusBadRequest, "longitude must be between -180 and 180")
+				writeError(w, http.StatusBadRequest, "longitude 必须在 -180 到 180 之间")
 				return
 			}
 			node.LocationName = locationName
@@ -215,31 +223,24 @@ func (a *App) updateNode(w http.ResponseWriter, r *http.Request, c claims) {
 			node.Latitude = latitude
 			node.Longitude = longitude
 		default:
-			writeError(w, http.StatusBadRequest, "location_source must be manual or empty")
+			writeError(w, http.StatusBadRequest, "location_source 只能为 manual 或留空")
 			return
 		}
 	}
 	node = normalizeNodeDefaults(node)
 	if err := a.store.UpdateNode(node); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update node")
+		writeError(w, http.StatusInternalServerError, "更新节点失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "node.update", "node", node.ID, map[string]string{"address": node.Address, "enabled": fmt.Sprint(node.Enabled), "location_source": node.LocationSource})
 	var delivery *ConfigPublishResult
 	deliveryError := ""
 	if network, err := a.store.GetNetwork(c.TenantID, node.NetworkID); err == nil {
-		if result, err := a.publishNetwork(c.TenantID, network); err != nil {
+		result, err := a.publishAndAudit(c.TenantID, c.Subject, network, "config.publish.auto", map[string]string{"node_id": node.ID})
+		if err != nil {
 			deliveryError = err.Error()
 		} else {
 			delivery = &result
-			action := "config.publish.auto"
-			if result.Unchanged {
-				action = "config.publish.auto.noop"
-			}
-			a.auditEvent(c.TenantID, c.Subject, action, "network", network.ID, map[string]string{
-				"node_id": node.ID, "version": fmt.Sprint(result.Version),
-				"changed_nodes": fmt.Sprint(len(result.ChangedNodeIDs)), "offline_nodes": fmt.Sprint(len(result.OfflineNodeIDs)),
-			})
 		}
 	} else {
 		deliveryError = "node network not found"
@@ -288,11 +289,11 @@ func lastIPv4Address(prefix netip.Prefix) netip.Addr {
 func (a *App) deleteNode(w http.ResponseWriter, r *http.Request, c claims) {
 	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "node not found")
+		writeError(w, http.StatusNotFound, "节点不存在")
 		return
 	}
 	if err := a.store.DeleteNode(c.TenantID, node.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete node")
+		writeError(w, http.StatusInternalServerError, "删除节点失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "node.delete", "node", node.ID, map[string]string{"name": node.Name})
@@ -303,12 +304,12 @@ func (a *App) createNodeCommand(commandType string) func(http.ResponseWriter, *h
 	return func(w http.ResponseWriter, r *http.Request, c claims) {
 		node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 		if err != nil {
-			writeError(w, http.StatusNotFound, "node not found")
+			writeError(w, http.StatusNotFound, "节点不存在")
 			return
 		}
 		command := newAgentCommand(c.TenantID, node.ID, commandType)
 		if err := a.createAgentCommand(command); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to create agent command")
+			writeError(w, http.StatusInternalServerError, "创建 Agent 指令失败")
 			return
 		}
 		a.auditEvent(c.TenantID, c.Subject, "agent.command."+commandType, "node", node.ID, map[string]string{"command_id": command.ID})
@@ -333,7 +334,7 @@ type AgentUpdateDispatchResult struct {
 func (a *App) updateAgent(w http.ResponseWriter, r *http.Request, c claims) {
 	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "node not found")
+		writeError(w, http.StatusNotFound, "节点不存在")
 		return
 	}
 	if reason := a.agentRemoteUpdateBlockedReason(r, node); reason != "" {
@@ -342,7 +343,7 @@ func (a *App) updateAgent(w http.ResponseWriter, r *http.Request, c claims) {
 	}
 	command := newAgentCommand(c.TenantID, node.ID, agentCommandTypeUpdateAgent)
 	if err := a.createAgentCommand(command); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create agent update command")
+		writeError(w, http.StatusInternalServerError, "创建 Agent 更新指令失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "agent.command."+agentCommandTypeUpdateAgent, "node", node.ID, map[string]string{"command_id": command.ID})
@@ -402,7 +403,7 @@ func (a *App) collectNodes(w http.ResponseWriter, r *http.Request, c claims) {
 	}
 	commands, nodeIDs := newAgentCommandsForNodes(c.TenantID, agentCommandTypeCollect, targets)
 	if err := a.createAgentCommandsParallel(commands); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create agent command")
+		writeError(w, http.StatusInternalServerError, "创建 Agent 指令失败")
 		return
 	}
 	created := len(commands)
@@ -436,7 +437,7 @@ func (a *App) updateAgents(w http.ResponseWriter, r *http.Request, c claims) {
 		nodeIDs = append(nodeIDs, node.ID)
 	}
 	if err := a.createAgentCommandsParallel(commands); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create agent update command")
+		writeError(w, http.StatusInternalServerError, "创建 Agent 更新指令失败")
 		return
 	}
 	created := len(commands)
@@ -446,7 +447,10 @@ func (a *App) updateAgents(w http.ResponseWriter, r *http.Request, c claims) {
 
 func (a *App) commandTargetNodes(tenant string, nodeIDs []string) []Node {
 	if len(nodeIDs) == 0 {
-		nodes := a.store.ListNodes(tenant, "")
+		nodes, err := a.store.ListNodeRefs(tenant, "")
+		if err != nil {
+			return nil
+		}
 		targets := make([]Node, 0, len(nodes))
 		for _, node := range nodes {
 			if node.Enabled {
@@ -468,12 +472,16 @@ func (a *App) commandTargetNodes(tenant string, nodeIDs []string) []Node {
 func (a *App) nodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
 	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "node not found")
+		writeError(w, http.StatusNotFound, "节点不存在")
 		return
 	}
 	limit, offset := parseLogPage(r)
 	errorsOnly := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("level")), "error")
-	commands := a.store.ListCommandsPage(c.TenantID, node.ID, limit+1, offset, errorsOnly)
+	commands, err := a.store.ListCommandsPage(c.TenantID, node.ID, limit+1, offset, errorsOnly)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取 Agent 指令列表失败")
+		return
+	}
 	logs := make([]NodeLog, 0)
 	for _, command := range commands {
 		message := agentCommandLogMessage(command)
@@ -544,11 +552,11 @@ func agentCommandStateLabel(value string) string {
 func (a *App) clearNodeLogs(w http.ResponseWriter, r *http.Request, c claims) {
 	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "node not found")
+		writeError(w, http.StatusNotFound, "节点不存在")
 		return
 	}
 	if err := a.store.ClearCommands(c.TenantID, node.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to clear Agent logs")
+		writeError(w, http.StatusInternalServerError, "清除 Agent 日志失败")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -654,8 +662,8 @@ func parseCommandWait(value string) (time.Duration, error) {
 	if err != nil || waitFor < 0 {
 		return 0, fmt.Errorf("wait must be a non-negative duration")
 	}
-	if waitFor > maxCommandWait {
-		waitFor = maxCommandWait
+	if waitFor > wireproto.CommandLongPollWait {
+		waitFor = wireproto.CommandLongPollWait
 	}
 	return waitFor, nil
 }
@@ -728,10 +736,9 @@ func (a *App) agentCommandResult(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) findAgentCommand(tenant, node, id string) (AgentCommand, bool) {
-	for _, command := range a.store.ListCommands(tenant, node) {
-		if command.ID == id {
-			return command, true
-		}
+	command, err := a.store.GetCommand(id)
+	if err != nil || command.TenantID != tenant || command.NodeID != node {
+		return AgentCommand{}, false
 	}
-	return AgentCommand{}, false
+	return command, true
 }

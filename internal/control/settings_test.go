@@ -45,8 +45,8 @@ func TestSystemSettingsAPIAndPermissions(t *testing.T) {
 	if err != nil || persisted.DashboardName != "Production WireMesh" {
 		t.Fatalf("settings not persisted: %#v %v", persisted, err)
 	}
-	if events := app.store.ListAudit(admin.TenantID); !hasAuditAction(events, "settings.update") {
-		t.Fatalf("missing settings audit: %#v", events)
+	if events, err := app.store.ListAudit(admin.TenantID); err != nil || !hasAuditAction(events, "settings.update") {
+		t.Fatalf("missing settings audit: %#v %v", events, err)
 	}
 
 	viewer := User{ID: "viewer_settings", TenantID: admin.TenantID, Email: "viewer-settings@example.com", Name: "Viewer", Role: RoleViewer, PasswordHash: "unused", CreatedAt: time.Now().UTC()}
@@ -114,7 +114,11 @@ func TestNotificationAndUserManagementAPIs(t *testing.T) {
 	if err != nil || stored.Target.Ciphertext == "" || app.decryptTarget(stored) != secretTarget {
 		t.Fatalf("notification target not encrypted/persisted: %#v %v", stored, err)
 	}
-	for _, event := range app.store.ListAudit(admin.TenantID) {
+	auditEvents, err := app.store.ListAudit(admin.TenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range auditEvents {
 		raw, _ := json.Marshal(event.Metadata)
 		if strings.Contains(string(raw), "secret") || strings.Contains(string(raw), secretTarget) {
 			t.Fatalf("notification secret leaked in audit: %s", raw)
@@ -146,7 +150,7 @@ func TestNotificationAndUserManagementAPIs(t *testing.T) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("weak password accepted: %d %s", response.Code, response.Body.String())
 	}
-	if !hasAuditAction(app.store.ListAudit(admin.TenantID), "user.create") {
+	if events, err := app.store.ListAudit(admin.TenantID); err != nil || !hasAuditAction(events, "user.create") {
 		t.Fatal("missing user creation audit")
 	}
 }
@@ -331,7 +335,7 @@ func TestNotificationTemplateValidationAndRenderedWebhookTest(t *testing.T) {
 	_, token := initializeTestAdmin(t, app, "notify-template@example.com", "strong-password")
 	invalid := `{"name":"Invalid","type":"webhook","config":{"url":"https://hooks.example.com/test","method":"POST","contentType":"application/json","signatureType":"none","timeoutSec":8},"template":"{{.Missing","enabled":true,"agents":"all"}`
 	response := authenticatedRequest(app, http.MethodPost, "/api/v1/settings/notifications", token, invalid)
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "template") {
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "模板") {
 		t.Fatalf("invalid template accepted: %d %s", response.Code, response.Body.String())
 	}
 

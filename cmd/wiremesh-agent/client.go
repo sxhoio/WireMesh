@@ -161,7 +161,7 @@ func (client agentClient) Enroll(ctx context.Context, token, name string, labels
 
 func (client agentClient) PollCommands(ctx context.Context) ([]agentCommand, bool, error) {
 	var commands []agentCommand
-	response, err := client.doJSON(ctx, http.MethodGet, "/agent/v1/commands?wait="+agentCommandWait.String(), nil, &commands, 0, http.StatusOK)
+	response, err := client.doJSON(ctx, http.MethodGet, "/agent/v1/commands?wait="+wireproto.CommandLongPollWait.String(), nil, &commands, 0, http.StatusOK)
 	if err != nil {
 		return nil, false, err
 	}

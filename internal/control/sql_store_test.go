@@ -115,8 +115,8 @@ func TestSQLitePersistsLoginAndControlPlaneState(t *testing.T) {
 	if err != nil || !persistedUser.LastLoginAt.Equal(loggedInUser.LastLoginAt) {
 		t.Fatalf("login time was not persisted after restart: %#v %v", persistedUser, err)
 	}
-	if projects := store.ListProjects(admin.TenantID); len(projects) != 1 || projects[0].ID != project.ID {
-		t.Fatalf("projects not persisted: %#v", projects)
+	if projects, err := store.ListProjects(admin.TenantID); err != nil || len(projects) != 1 || projects[0].ID != project.ID {
+		t.Fatalf("projects not persisted: %#v %v", projects, err)
 	}
 	persistedNode, err := store.GetNode(admin.TenantID, node.ID)
 	if err != nil || persistedNode.Labels["wiremesh.role"] != "hub" || persistedNode.PrivateKey.Ciphertext == "" {
@@ -126,20 +126,23 @@ func TestSQLitePersistsLoginAndControlPlaneState(t *testing.T) {
 	if err != nil || latest.Version != 1 || latest.Configs[node.ID].ListenPort != 51820 {
 		t.Fatalf("revision not persisted: %#v %v", latest, err)
 	}
-	if deliveries := store.ListDeliveries(admin.TenantID, node.ID); len(deliveries) != 1 || deliveries[0].State != "applied" {
-		t.Fatalf("delivery not persisted: %#v", deliveries)
+	if deliveries, err := store.ListDeliveries(admin.TenantID, node.ID); err != nil || len(deliveries) != 1 || deliveries[0].State != "applied" {
+		t.Fatalf("delivery not persisted: %#v %v", deliveries, err)
 	}
 	if _, err := store.GetIdentity(node.ID); err != nil {
 		t.Fatalf("identity not persisted: %v", err)
 	}
-	if events := store.ListAudit(admin.TenantID); len(events) < 2 {
-		t.Fatalf("audit events not persisted: %#v", events)
+	if events, err := store.ListAudit(admin.TenantID); err != nil || len(events) < 2 {
+		t.Fatalf("audit events not persisted: %#v %v", events, err)
 	}
 	persistedSettings, err := store.GetSettings(admin.TenantID)
 	if err != nil || persistedSettings.DashboardName != settings.DashboardName {
 		t.Fatalf("settings not persisted: %#v %v", persistedSettings, err)
 	}
-	channels := store.ListNotificationChannels(admin.TenantID)
+	channels, err := store.ListNotificationChannels(admin.TenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(channels) != 1 || channels[0].ID != channel.ID {
 		t.Fatalf("notification channel not persisted: %#v", channels)
 	}
@@ -147,7 +150,10 @@ func TestSQLitePersistsLoginAndControlPlaneState(t *testing.T) {
 	if err != nil || string(plaintext) != "https://hooks.example.com/test" {
 		t.Fatalf("notification target not persisted or decryptable: %q %v", plaintext, err)
 	}
-	logs := store.ListNotificationLogs(admin.TenantID)
+	logs, err := store.ListNotificationLogs(admin.TenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(logs) != 1 || logs[0].ID != notificationLog.ID || logs[0].Message != notificationLog.Message {
 		t.Fatalf("notification log not persisted: %#v", logs)
 	}
@@ -371,7 +377,10 @@ func TestSQLiteNodeCommandsAndDeleteCascade(t *testing.T) {
 	if err := store.UpdateCommand(claimed[0]); err != nil {
 		t.Fatal(err)
 	}
-	commands := store.ListCommands(project.TenantID, node.ID)
+	commands, err := store.ListCommands(project.TenantID, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(commands) != 1 || commands[0].State != "completed" || commands[0].Result != "wireguard_interfaces=1" || commands[0].CompletedAt == nil {
 		t.Fatalf("command result was not persisted: %#v", commands)
 	}
@@ -385,14 +394,14 @@ func TestSQLiteNodeCommandsAndDeleteCascade(t *testing.T) {
 	if _, err := store.GetIdentity(node.ID); err == nil {
 		t.Fatal("deleted node identity is still present")
 	}
-	if peers := store.ListPeers(project.TenantID, network.ID); len(peers) != 0 {
-		t.Fatalf("deleted node peers are still present: %#v", peers)
+	if peers, err := store.ListPeers(project.TenantID, network.ID); err != nil || len(peers) != 0 {
+		t.Fatalf("deleted node peers are still present: %#v %v", peers, err)
 	}
-	if deliveries := store.ListDeliveries(project.TenantID, node.ID); len(deliveries) != 0 {
-		t.Fatalf("deleted node deliveries are still present: %#v", deliveries)
+	if deliveries, err := store.ListDeliveries(project.TenantID, node.ID); err != nil || len(deliveries) != 0 {
+		t.Fatalf("deleted node deliveries are still present: %#v %v", deliveries, err)
 	}
-	if commands := store.ListCommands(project.TenantID, node.ID); len(commands) != 0 {
-		t.Fatalf("deleted node commands are still present: %#v", commands)
+	if commands, err := store.ListCommands(project.TenantID, node.ID); err != nil || len(commands) != 0 {
+		t.Fatalf("deleted node commands are still present: %#v %v", commands, err)
 	}
 	if _, err := store.GetNode(project.TenantID, other.ID); err != nil {
 		t.Fatalf("unrelated node was deleted: %v", err)
@@ -417,14 +426,17 @@ func TestSQLiteTrafficSamples(t *testing.T) {
 	if err := store.AddTrafficSamples(samples); err != nil {
 		t.Fatal(err)
 	}
-	got := store.ListTrafficSamples(node.TenantID, node.ID, "wg0", now.Add(-time.Second))
+	got, err := store.ListTrafficSamples(node.TenantID, node.ID, "wg0", now.Add(-time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 2 || got[1].ReceiveBytes != samples[1].ReceiveBytes {
 		t.Fatalf("unexpected traffic samples: %#v", got)
 	}
 	if err := store.DeleteNode(node.TenantID, node.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got := store.ListTrafficSamples(node.TenantID, node.ID, "wg0", now.Add(-time.Second)); len(got) != 0 {
-		t.Fatalf("traffic samples not deleted: %#v", got)
+	if got, err := store.ListTrafficSamples(node.TenantID, node.ID, "wg0", now.Add(-time.Second)); err != nil || len(got) != 0 {
+		t.Fatalf("traffic samples not deleted: %#v %v", got, err)
 	}
 }

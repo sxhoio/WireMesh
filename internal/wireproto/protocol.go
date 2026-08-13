@@ -1,5 +1,13 @@
 package wireproto
 
+import "time"
+
+// CommandLongPollWait is the coordination window used by Agents when long
+// polling for commands and the upper bound the control plane applies to the
+// `wait` query parameter. Keeping the value in one place avoids the two
+// processes drifting apart.
+const CommandLongPollWait = 25 * time.Second
+
 type EnrollmentRequest struct {
 	Token        string            `json:"token"`
 	Name         string            `json:"name"`

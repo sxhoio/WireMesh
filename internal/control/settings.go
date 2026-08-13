@@ -57,7 +57,7 @@ func (a *App) settings(w http.ResponseWriter, r *http.Request, c claims) {
 	if r.Method == http.MethodGet {
 		settings, err := a.tenantSettings(c.TenantID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to read settings")
+			writeError(w, http.StatusInternalServerError, "读取设置失败")
 			return
 		}
 		writeJSON(w, http.StatusOK, settings)
@@ -76,12 +76,12 @@ func (a *App) settings(w http.ResponseWriter, r *http.Request, c claims) {
 	}
 	current, err := a.tenantSettings(c.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read settings")
+		writeError(w, http.StatusInternalServerError, "读取设置失败")
 		return
 	}
 	in.TenantID, in.GeoIPDBPath, in.UpdatedAt = c.TenantID, current.GeoIPDBPath, time.Now().UTC()
 	if err := a.store.UpsertSettings(in); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save settings")
+		writeError(w, http.StatusInternalServerError, "保存设置失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "settings.update", "settings", c.TenantID, nil)
@@ -133,7 +133,7 @@ func validateSystemSettings(v SystemSettings) error {
 func (a *App) geoIPStatus(w http.ResponseWriter, r *http.Request, c claims) {
 	settings, err := a.tenantSettings(c.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read GeoIP settings")
+		writeError(w, http.StatusInternalServerError, "读取 GeoIP 设置失败")
 		return
 	}
 	a.geoMu.RLock()
@@ -161,7 +161,7 @@ func (a *App) updateGeoIP(w http.ResponseWriter, r *http.Request, c claims) {
 	}
 	in.DBPath = strings.TrimSpace(in.DBPath)
 	if in.DBPath == "" {
-		writeError(w, http.StatusBadRequest, "dbPath is required")
+		writeError(w, http.StatusBadRequest, "dbPath 不能为空")
 		return
 	}
 	loadedPath, err := a.loadGeoIP(c.TenantID, in.DBPath)
@@ -171,12 +171,12 @@ func (a *App) updateGeoIP(w http.ResponseWriter, r *http.Request, c claims) {
 	}
 	settings, err := a.tenantSettings(c.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read settings")
+		writeError(w, http.StatusInternalServerError, "读取设置失败")
 		return
 	}
 	settings.GeoIPDBPath, settings.UpdatedAt = loadedPath, time.Now().UTC()
 	if err := a.store.UpsertSettings(settings); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save GeoIP path")
+		writeError(w, http.StatusInternalServerError, "保存 GeoIP 路径失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "geoip.update", "settings", c.TenantID, map[string]string{"path": loadedPath})
@@ -186,11 +186,11 @@ func (a *App) updateGeoIP(w http.ResponseWriter, r *http.Request, c claims) {
 func (a *App) reloadGeoIP(w http.ResponseWriter, r *http.Request, c claims) {
 	settings, err := a.tenantSettings(c.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read settings")
+		writeError(w, http.StatusInternalServerError, "读取设置失败")
 		return
 	}
 	if settings.GeoIPDBPath == "" {
-		writeError(w, http.StatusBadRequest, "GeoIP database path is not configured")
+		writeError(w, http.StatusBadRequest, "尚未配置 GeoIP 数据库路径")
 		return
 	}
 	if _, err := a.loadGeoIP(c.TenantID, settings.GeoIPDBPath); err != nil {
@@ -261,13 +261,13 @@ func (a *App) lookupGeoIP(w http.ResponseWriter, r *http.Request, c claims) {
 	if err != nil {
 		switch {
 		case errors.Is(err, errGeoIPUnavailable):
-			writeError(w, http.StatusConflict, "GeoIP database is not loaded")
+			writeError(w, http.StatusConflict, "GeoIP 数据库未加载")
 		case errors.Is(err, errGeoIPNotFound):
-			writeError(w, http.StatusNotFound, "GeoIP location was not found")
+			writeError(w, http.StatusNotFound, "未找到该 IP 的地理位置信息")
 		case strings.Contains(err.Error(), "valid public IP"):
-			writeError(w, http.StatusBadRequest, "valid public IP address is required")
+			writeError(w, http.StatusBadRequest, "请输入有效的公网 IP 地址")
 		default:
-			writeError(w, http.StatusInternalServerError, "GeoIP lookup failed")
+			writeError(w, http.StatusInternalServerError, "GeoIP 查询失败")
 		}
 		return
 	}
@@ -279,12 +279,21 @@ func (a *App) lookupGeoIP(w http.ResponseWriter, r *http.Request, c claims) {
 }
 
 func (a *App) notificationLogs(w http.ResponseWriter, r *http.Request, c claims) {
-	writeJSON(w, http.StatusOK, a.store.ListNotificationLogs(c.TenantID))
+	items, err := a.store.ListNotificationLogs(c.TenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取通知日志失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (a *App) users(w http.ResponseWriter, r *http.Request, c claims) {
 	if r.Method == http.MethodGet {
-		users := a.store.ListUsers(c.TenantID)
+		users, err := a.store.ListUsers(c.TenantID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "读取用户列表失败")
+			return
+		}
 		out := make([]map[string]interface{}, 0, len(users))
 		for _, user := range users {
 			item := publicUser(user)
@@ -306,24 +315,24 @@ func (a *App) users(w http.ResponseWriter, r *http.Request, c claims) {
 	in.Name, in.Email = strings.TrimSpace(in.Name), strings.ToLower(strings.TrimSpace(in.Email))
 	parsed, err := mail.ParseAddress(in.Email)
 	if in.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		writeError(w, http.StatusBadRequest, "名称不能为空")
 		return
 	}
 	if err != nil || strings.ToLower(parsed.Address) != in.Email {
-		writeError(w, http.StatusBadRequest, "valid email is required")
+		writeError(w, http.StatusBadRequest, "请输入有效的邮箱地址")
 		return
 	}
 	if len(in.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		writeError(w, http.StatusBadRequest, "密码至少需要 8 个字符")
 		return
 	}
 	if in.Role != RoleViewer && in.Role != RoleOperator && in.Role != RoleAdmin {
-		writeError(w, http.StatusBadRequest, "role is invalid")
+		writeError(w, http.StatusBadRequest, "角色无效")
 		return
 	}
 	passwordHash, err := hashPassword(in.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to secure password")
+		writeError(w, http.StatusInternalServerError, "密码加密失败")
 		return
 	}
 	user := User{ID: newID("usr"), TenantID: c.TenantID, Email: in.Email, Name: in.Name, Role: in.Role, PasswordHash: passwordHash, CreatedAt: time.Now().UTC()}

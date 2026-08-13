@@ -9,12 +9,12 @@ import (
 func (a *App) nodeTraffic(w http.ResponseWriter, r *http.Request, c claims) {
 	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "node not found")
+		writeError(w, http.StatusNotFound, "节点不存在")
 		return
 	}
 	iface := strings.TrimSpace(r.URL.Query().Get("interface"))
 	if iface == "" {
-		writeError(w, http.StatusBadRequest, "interface is required")
+		writeError(w, http.StatusBadRequest, "请指定接口")
 		return
 	}
 	durations := map[string]time.Duration{
@@ -35,10 +35,14 @@ func (a *App) nodeTraffic(w http.ResponseWriter, r *http.Request, c claims) {
 	}
 	duration, ok := durations[rangeName]
 	if !ok {
-		writeError(w, http.StatusBadRequest, "range must be one of 5m, 10m, 30m, 1h, 2h, 6h, 12h, 24h, 7d or 30d")
+		writeError(w, http.StatusBadRequest, "range 必须是 5m、10m、30m、1h、2h、6h、12h、24h、7d 或 30d 之一")
 		return
 	}
-	samples := a.store.ListTrafficSamples(c.TenantID, node.ID, iface, time.Now().Add(-duration))
+	samples, err := a.store.ListTrafficSamples(c.TenantID, node.ID, iface, time.Now().Add(-duration))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取流量采样数据失败")
+		return
+	}
 	points := make([]TrafficPoint, len(samples))
 	for i, sample := range samples {
 		points[i] = TrafficPoint{RecordedAt: sample.RecordedAt, ReceiveBytes: sample.ReceiveBytes, TransmitBytes: sample.TransmitBytes}

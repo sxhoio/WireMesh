@@ -157,7 +157,11 @@ func defaultNotificationConfig(kind string) NotificationConfig {
 
 func (a *App) notificationChannels(w http.ResponseWriter, r *http.Request, c claims) {
 	if r.Method == http.MethodGet {
-		channels := a.store.ListNotificationChannels(c.TenantID)
+		channels, err := a.store.ListNotificationChannels(c.TenantID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "读取通知渠道列表失败")
+			return
+		}
 		out := make([]notificationChannelResponse, 0, len(channels))
 		for _, channel := range channels {
 			out = append(out, a.publicNotificationChannel(channel))
@@ -189,7 +193,7 @@ func (a *App) notificationChannels(w http.ResponseWriter, r *http.Request, c cla
 	now := time.Now().UTC()
 	channel.ID, channel.CreatedAt, channel.UpdatedAt = newID("notify"), now, now
 	if err := a.store.CreateNotificationChannel(channel); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create notification channel")
+		writeError(w, http.StatusInternalServerError, "创建通知渠道失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "notification.create", "notification_channel", channel.ID, map[string]string{"type": channel.Type})
@@ -199,7 +203,7 @@ func (a *App) notificationChannels(w http.ResponseWriter, r *http.Request, c cla
 func (a *App) updateNotificationChannel(w http.ResponseWriter, r *http.Request, c claims) {
 	current, err := a.store.GetNotificationChannel(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "notification channel not found")
+		writeError(w, http.StatusNotFound, "通知渠道不存在")
 		return
 	}
 	var in struct {
@@ -225,7 +229,7 @@ func (a *App) updateNotificationChannel(w http.ResponseWriter, r *http.Request, 
 	}
 	channel.ID, channel.CreatedAt, channel.UpdatedAt = current.ID, current.CreatedAt, time.Now().UTC()
 	if err := a.store.UpdateNotificationChannel(channel); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update notification channel")
+		writeError(w, http.StatusInternalServerError, "更新通知渠道失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "notification.update", "notification_channel", channel.ID, map[string]string{"type": channel.Type})
@@ -263,10 +267,10 @@ func (a *App) notificationFromInput(tenant string, current NotificationChannel, 
 	if err := validateNotificationConfig(kind, config); err != nil {
 		return NotificationChannel{}, err
 	}
-	if err := validateNotificationTemplate("message template", bodyTemplate); err != nil {
+	if err := validateNotificationTemplate("消息模板", bodyTemplate); err != nil {
 		return NotificationChannel{}, err
 	}
-	if err := validateNotificationTemplate("subject template", subjectTemplate); err != nil {
+	if err := validateNotificationTemplate("主题模板", subjectTemplate); err != nil {
 		return NotificationChannel{}, err
 	}
 	allAgents, ids, err := parseNotificationAgents(agents)
@@ -534,14 +538,14 @@ func validateHTTPNotificationURL(value string) error {
 
 func validateNotificationTemplate(label, value string) error {
 	if strings.TrimSpace(value) == "" {
-		return fmt.Errorf("%s is required", label)
+		return fmt.Errorf("%s不能为空", label)
 	}
 	if len(value) > 20000 {
-		return fmt.Errorf("%s must not exceed 20000 characters", label)
+		return fmt.Errorf("%s不能超过 20000 个字符", label)
 	}
 	_, err := template.New("notification").Funcs(notificationTemplateFunctions()).Option("missingkey=error").Parse(value)
 	if err != nil {
-		return fmt.Errorf("%s syntax is invalid: %v", label, err)
+		return fmt.Errorf("%s语法无效：%v", label, err)
 	}
 	return nil
 }
@@ -654,7 +658,7 @@ func (a *App) publicNotificationChannel(channel NotificationChannel) notificatio
 func (a *App) deleteNotificationChannel(w http.ResponseWriter, r *http.Request, c claims) {
 	id := r.PathValue("id")
 	if err := a.store.DeleteNotificationChannel(c.TenantID, id); err != nil {
-		writeError(w, http.StatusNotFound, "notification channel not found")
+		writeError(w, http.StatusNotFound, "通知渠道不存在")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "notification.delete", "notification_channel", id, nil)
@@ -664,7 +668,7 @@ func (a *App) deleteNotificationChannel(w http.ResponseWriter, r *http.Request, 
 func (a *App) testNotificationChannel(w http.ResponseWriter, r *http.Request, c claims) {
 	channel, err := a.store.GetNotificationChannel(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "notification channel not found")
+		writeError(w, http.StatusNotFound, "通知渠道不存在")
 		return
 	}
 	envelope, err := a.decryptNotificationEnvelope(channel)
@@ -847,24 +851,18 @@ func postJSONNotificationWithProxy(ctx context.Context, target string, payload a
 	return doNotificationRequest(req, timeout, allowPrivate, proxyValue)
 }
 
+var errNotificationPrivateAddress = errors.New("notification target resolves to a private or local address")
+
 func doNotificationRequest(req *http.Request, timeout int, allowPrivate bool, proxyValue string) error {
-	if !allowPrivate {
-		addresses, err := net.LookupIP(req.URL.Hostname())
-		if err != nil {
-			return errors.New("notification target host cannot be resolved")
-		}
-		for _, address := range addresses {
-			if isUnsafeNotificationIP(address) {
-				return errors.New("notification target resolves to a private or local address")
-			}
-		}
-	}
-	client, err := notificationHTTPClient(timeout, proxyValue)
+	client, err := notificationHTTPClient(timeout, proxyValue, allowPrivate)
 	if err != nil {
 		return err
 	}
 	response, err := client.Do(req)
 	if err != nil {
+		if errors.Is(err, errNotificationPrivateAddress) {
+			return errNotificationPrivateAddress
+		}
 		return errors.New("notification request failed")
 	}
 	defer response.Body.Close()
@@ -875,28 +873,64 @@ func doNotificationRequest(req *http.Request, timeout int, allowPrivate bool, pr
 	return nil
 }
 
-func notificationHTTPClient(timeout int, proxyValue string) (*http.Client, error) {
+func notificationHTTPClient(timeout int, proxyValue string, allowPrivate bool) (*http.Client, error) {
 	client := &http.Client{Timeout: time.Duration(timeout) * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
-	if proxyValue == "" {
-		return client, nil
-	}
-	if err := validateNotificationProxyURL(proxyValue); err != nil {
-		return nil, err
-	}
-	proxyURL, _ := url.Parse(proxyValue)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	switch strings.ToLower(proxyURL.Scheme) {
-	case "http", "https":
-		transport.Proxy = http.ProxyURL(proxyURL)
-	case "socks5", "socks5h":
-		transport.Proxy = nil
-		dialTimeout := time.Duration(timeout) * time.Second
-		transport.DialContext = func(ctx context.Context, _, address string) (net.Conn, error) {
-			return dialSOCKS5Proxy(ctx, proxyURL, address, dialTimeout)
+	switch {
+	case proxyValue != "":
+		if err := validateNotificationProxyURL(proxyValue); err != nil {
+			return nil, err
+		}
+		proxyURL, _ := url.Parse(proxyValue)
+		switch strings.ToLower(proxyURL.Scheme) {
+		case "http", "https":
+			transport.Proxy = http.ProxyURL(proxyURL)
+		case "socks5", "socks5h":
+			transport.Proxy = nil
+			dialTimeout := time.Duration(timeout) * time.Second
+			transport.DialContext = func(ctx context.Context, _, address string) (net.Conn, error) {
+				return dialSOCKS5Proxy(ctx, proxyURL, address, dialTimeout)
+			}
+		}
+	case !allowPrivate:
+		dialer := &net.Dialer{Timeout: time.Duration(timeout) * time.Second, KeepAlive: 30 * time.Second}
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			return dialNotificationAddress(ctx, dialer, network, address)
 		}
 	}
 	client.Transport = transport
 	return client, nil
+}
+
+// dialNotificationAddress resolves the target host once, rejects private and
+// local addresses, and then dials the resolved IP directly. Reusing the same
+// resolved addresses for both the policy check and the connection closes the
+// DNS-rebinding window where a resolver returns a public address during the
+// check and a private address on the actual dial.
+func dialNotificationAddress(ctx context.Context, dialer *net.Dialer, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, errNotificationPrivateAddress
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, errNotificationPrivateAddress
+	}
+	var lastErr error
+	for _, ip := range ips {
+		if isUnsafeNotificationIP(ip.IP) {
+			return nil, errNotificationPrivateAddress
+		}
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errNotificationPrivateAddress
 }
 
 func dialSOCKS5Proxy(ctx context.Context, proxyURL *url.URL, targetAddress string, timeout time.Duration) (net.Conn, error) {
@@ -1004,28 +1038,36 @@ func dialSOCKS5Proxy(ctx context.Context, proxyURL *url.URL, targetAddress strin
 }
 
 func sendEmail(ctx context.Context, c NotificationConfig, subject, body string) error {
-	if !c.AllowPrivate {
-		addresses, err := net.LookupIP(c.SMTPHost)
-		if err != nil {
-			return errors.New("SMTP host cannot be resolved")
-		}
-		for _, address := range addresses {
-			if isUnsafeNotificationIP(address) {
-				return errors.New("SMTP host resolves to a private or local address")
-			}
-		}
-	}
 	address := net.JoinHostPort(c.SMTPHost, strconv.Itoa(c.SMTPPort))
-	dialer := net.Dialer{Timeout: time.Duration(c.TimeoutSec) * time.Second}
+	dialTimeout := time.Duration(c.TimeoutSec) * time.Second
+	tlsConfig := &tls.Config{ServerName: c.SMTPHost, MinVersion: tls.VersionTLS12, InsecureSkipVerify: c.SkipTLSVerify}
 	var conn net.Conn
 	var err error
-	tlsConfig := &tls.Config{ServerName: c.SMTPHost, MinVersion: tls.VersionTLS12, InsecureSkipVerify: c.SkipTLSVerify}
 	if c.Encryption == "tls" {
-		conn, err = tls.DialWithDialer(&dialer, "tcp", address, tlsConfig)
+		if c.AllowPrivate {
+			conn, err = tls.DialWithDialer(&net.Dialer{Timeout: dialTimeout}, "tcp", address, tlsConfig)
+		} else {
+			raw, dialErr := dialNotificationAddress(ctx, &net.Dialer{Timeout: dialTimeout}, "tcp", address)
+			if dialErr != nil {
+				err = dialErr
+			} else {
+				tlsConn := tls.Client(raw, tlsConfig)
+				if err = tlsConn.HandshakeContext(ctx); err != nil {
+					_ = raw.Close()
+				} else {
+					conn = tlsConn
+				}
+			}
+		}
+	} else if c.AllowPrivate {
+		conn, err = (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp", address)
 	} else {
-		conn, err = dialer.DialContext(ctx, "tcp", address)
+		conn, err = dialNotificationAddress(ctx, &net.Dialer{Timeout: dialTimeout}, "tcp", address)
 	}
 	if err != nil {
+		if errors.Is(err, errNotificationPrivateAddress) {
+			return errNotificationPrivateAddress
+		}
 		return errors.New("SMTP connection failed")
 	}
 	defer conn.Close()

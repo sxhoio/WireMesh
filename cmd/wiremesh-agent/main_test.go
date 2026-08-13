@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
 
 func TestResolveControlPlaneURLFollowsHTTPSRedirect(t *testing.T) {
@@ -79,8 +81,8 @@ func TestPollAgentCommandsUsesLongPoll(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/agent/v1/commands" {
 			t.Fatalf("unexpected command request: %s %s", r.Method, r.URL.Path)
 		}
-		if value := r.URL.Query().Get("wait"); value != agentCommandWait.String() {
-			t.Fatalf("wait = %q, want %q", value, agentCommandWait)
+		if value := r.URL.Query().Get("wait"); value != wireproto.CommandLongPollWait.String() {
+			t.Fatalf("wait = %q, want %q", value, wireproto.CommandLongPollWait)
 		}
 		if value := r.Header.Get("X-Agent-ID"); value != "node-test" {
 			t.Fatalf("X-Agent-ID = %q", value)

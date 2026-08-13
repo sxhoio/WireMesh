@@ -264,7 +264,7 @@ func normalizeDatabaseConfig(cfg DatabaseConfig, baseDir string) (DatabaseConfig
 			return DatabaseConfig{}, "", errors.New("SQLite path must stay inside the WireMesh data directory")
 		}
 		if info, err := os.Stat(resolved); err == nil && info.IsDir() {
-			return DatabaseConfig{}, "", errors.New("SQLite path must be a file")
+			return DatabaseConfig{}, "", errors.New("SQLite 路径必须是文件")
 		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return DatabaseConfig{}, "", fmt.Errorf("inspect SQLite path: %w", err)
 		}
@@ -393,7 +393,7 @@ func (a *App) databaseStatus(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) testDatabase(w http.ResponseWriter, r *http.Request) {
 	if a.database == nil {
-		writeError(w, http.StatusConflict, "database is managed by server environment settings")
+		writeError(w, http.StatusConflict, "数据库由服务端环境变量管理")
 		return
 	}
 	var cfg DatabaseConfig
@@ -401,14 +401,14 @@ func (a *App) testDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if initialized, err := a.store.HasUsers(); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read setup status")
+		writeError(w, http.StatusInternalServerError, "读取初始化状态失败")
 		return
 	} else if initialized {
-		writeError(w, http.StatusConflict, "WireMesh is already initialized")
+		writeError(w, http.StatusConflict, "WireMesh 已完成初始化")
 		return
 	}
 	if err := a.database.Test(r.Context(), cfg); err != nil {
-		writeError(w, http.StatusBadRequest, "database connection failed: "+err.Error())
+		writeError(w, http.StatusBadRequest, "数据库连接失败："+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"connected": true})
@@ -416,7 +416,7 @@ func (a *App) testDatabase(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) configureDatabase(w http.ResponseWriter, r *http.Request) {
 	if a.database == nil {
-		writeError(w, http.StatusConflict, "database is managed by server environment settings")
+		writeError(w, http.StatusConflict, "数据库由服务端环境变量管理")
 		return
 	}
 	var cfg DatabaseConfig
@@ -426,7 +426,7 @@ func (a *App) configureDatabase(w http.ResponseWriter, r *http.Request) {
 	status, initialized, err := a.database.Configure(r.Context(), cfg)
 	if err != nil {
 		if errors.Is(err, errAlreadyInitialized) {
-			writeError(w, http.StatusConflict, "WireMesh is already initialized")
+			writeError(w, http.StatusConflict, "WireMesh 已完成初始化")
 			return
 		}
 		writeError(w, http.StatusBadRequest, err.Error())

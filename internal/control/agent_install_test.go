@@ -168,7 +168,11 @@ func TestAgentHeartbeatUpdatesRealNode(t *testing.T) {
 		t.Fatalf("reported WireGuard configuration was not adopted: %#v", updated)
 	}
 	foundAdoptionAudit := false
-	for _, event := range app.store.ListAudit(network.TenantID) {
+	auditEvents, err := app.store.ListAudit(network.TenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range auditEvents {
 		if event.ResourceID == node.ID && event.Action == "agent.config.observed" {
 			foundAdoptionAudit = true
 			break

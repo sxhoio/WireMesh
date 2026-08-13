@@ -86,7 +86,7 @@ func parseWireGuardDump(value, selector string) ([]wireGuardInterfaceStatus, err
 			continue
 		}
 		fields := strings.Split(line, "	")
-		if len(fields) != 5 && len(fields) < 9 {
+		if len(fields) != 5 && len(fields) != 9 {
 			return nil, fmt.Errorf("unexpected wg dump row with %d fields", len(fields))
 		}
 		name := fields[0]

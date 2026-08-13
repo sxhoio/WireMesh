@@ -140,21 +140,52 @@ func (s *SQLStore) query(value string) string {
 	return out.String()
 }
 
-func queryList[T any](store *SQLStore, query string, scan func(scanner) (T, error), args ...any) []T {
+func queryList[T any](store *SQLStore, query string, scan func(scanner) (T, error), args ...any) ([]T, error) {
 	rows, err := store.db.Query(store.query(query), args...)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
-	var out []T
+	out := make([]T, 0)
 	for rows.Next() {
 		value, err := scan(rows)
 		if err != nil {
-			return nil
+			return nil, err
 		}
 		out = append(out, value)
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// marshalColumn encodes a JSON column value. The input types are JSON-safe, but
+// returning the error keeps future struct changes from silently persisting an
+// empty column when a field stops being serializable.
+func marshalColumn(value any) (string, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func marshalNodeColumns(v Node) (labels, secret, wireGuard, peerConfig, desiredPeerConfig string, err error) {
+	if labels, err = marshalColumn(v.Labels); err != nil {
+		return
+	}
+	if secret, err = marshalColumn(v.PrivateKey); err != nil {
+		return
+	}
+	if wireGuard, err = marshalColumn(v.WireGuard); err != nil {
+		return
+	}
+	if peerConfig, err = marshalColumn(v.PeerConfigFiles); err != nil {
+		return
+	}
+	desiredPeerConfig, err = marshalColumn(v.DesiredPeerConfig)
+	return
 }
 
 func (s *SQLStore) HasUsers() (bool, error) {
@@ -226,7 +257,7 @@ func (s *SQLStore) CreateProject(v Project) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO projects (id, tenant_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.Name, v.Description, timeText(v.CreatedAt))
 	return err
 }
-func (s *SQLStore) ListProjects(tenant string) []Project {
+func (s *SQLStore) ListProjects(tenant string) ([]Project, error) {
 	return queryList(s, `SELECT id, tenant_id, name, description, created_at FROM projects WHERE tenant_id = ? ORDER BY created_at`, scanProject, tenant)
 }
 func (s *SQLStore) GetProject(tenant, id string) (Project, error) {
@@ -237,7 +268,7 @@ func (s *SQLStore) CreateNetwork(v Network) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO networks (id, tenant_id, project_id, name, cidr, dns, topology, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ProjectID, v.Name, v.CIDR, v.DNS, string(v.Topology), timeText(v.CreatedAt))
 	return err
 }
-func (s *SQLStore) ListNetworks(tenant, project string) []Network {
+func (s *SQLStore) ListNetworks(tenant, project string) ([]Network, error) {
 	return queryList(s, `SELECT id, tenant_id, project_id, name, cidr, dns, topology, created_at FROM networks WHERE tenant_id = ? AND project_id = ? ORDER BY created_at`, scanNetwork, tenant, project)
 }
 func (s *SQLStore) GetNetwork(tenant, id string) (Network, error) {
@@ -246,12 +277,11 @@ func (s *SQLStore) GetNetwork(tenant, id string) (Network, error) {
 
 func (s *SQLStore) CreateNode(v Node) error {
 	v = normalizeNodeDefaults(v)
-	labels, _ := json.Marshal(v.Labels)
-	secret, _ := json.Marshal(v.PrivateKey)
-	wireGuard, _ := json.Marshal(v.WireGuard)
-	peerConfig, _ := json.Marshal(v.PeerConfigFiles)
-	desiredPeerConfig, _ := json.Marshal(v.DesiredPeerConfig)
-	_, err := s.db.Exec(s.query(`INSERT INTO nodes (id, tenant_id, project_id, network_id, name, hostname, interface_selector, collection_error, enabled, listen_port, mtu, address, endpoint, region, location_name, location_source, latitude, longitude, os, agent_version, labels_json, public_key, private_key_json, wireguard_json, peer_config_json, desired_peer_config_json, last_seen, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ProjectID, v.NetworkID, v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Enabled, v.ListenPort, v.MTU, v.Address, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.OS, v.AgentVersion, string(labels), v.PublicKey, string(secret), string(wireGuard), string(peerConfig), string(desiredPeerConfig), timeText(v.LastSeen), timeText(v.CreatedAt))
+	labels, secret, wireGuard, peerConfig, desiredPeerConfig, err := marshalNodeColumns(v)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(s.query(`INSERT INTO nodes (id, tenant_id, project_id, network_id, name, hostname, interface_selector, collection_error, enabled, listen_port, mtu, address, endpoint, region, location_name, location_source, latitude, longitude, os, agent_version, labels_json, public_key, private_key_json, wireguard_json, peer_config_json, desired_peer_config_json, last_seen, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ProjectID, v.NetworkID, v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Enabled, v.ListenPort, v.MTU, v.Address, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.OS, v.AgentVersion, labels, v.PublicKey, secret, wireGuard, peerConfig, desiredPeerConfig, timeText(v.LastSeen), timeText(v.CreatedAt))
 	return err
 }
 func (s *SQLStore) GetNode(tenant, id string) (Node, error) {
@@ -260,7 +290,7 @@ func (s *SQLStore) GetNode(tenant, id string) (Node, error) {
 func (s *SQLStore) GetNodeByID(id string) (Node, error) {
 	return scanNode(s.db.QueryRow(s.query(nodeSelect+` WHERE id = ?`), id))
 }
-func (s *SQLStore) ListNodes(tenant, network string) []Node {
+func (s *SQLStore) ListNodes(tenant, network string) ([]Node, error) {
 	query := nodeSelect + ` WHERE tenant_id = ?`
 	args := []any{tenant}
 	if network != "" {
@@ -270,13 +300,22 @@ func (s *SQLStore) ListNodes(tenant, network string) []Node {
 	query += ` ORDER BY created_at`
 	return queryList(s, query, scanNode, args...)
 }
+func (s *SQLStore) ListNodeRefs(tenant, network string) ([]Node, error) {
+	query := nodeRefSelect + ` WHERE tenant_id = ?`
+	args := []any{tenant}
+	if network != "" {
+		query += ` AND network_id = ?`
+		args = append(args, network)
+	}
+	query += ` ORDER BY created_at`
+	return queryList(s, query, scanNodeRef, args...)
+}
 func (s *SQLStore) UpdateNode(v Node) error {
-	labels, _ := json.Marshal(v.Labels)
-	secret, _ := json.Marshal(v.PrivateKey)
-	wireGuard, _ := json.Marshal(v.WireGuard)
-	peerConfig, _ := json.Marshal(v.PeerConfigFiles)
-	desiredPeerConfig, _ := json.Marshal(v.DesiredPeerConfig)
-	result, err := s.db.Exec(s.query(`UPDATE nodes SET name=?, hostname=?, interface_selector=?, collection_error=?, enabled=?, listen_port=?, mtu=?, address=?, endpoint=?, region=?, location_name=?, location_source=?, latitude=?, longitude=?, os=?, agent_version=?, labels_json=?, public_key=?, private_key_json=?, wireguard_json=?, peer_config_json=?, desired_peer_config_json=?, last_seen=? WHERE id=? AND tenant_id=?`), v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Enabled, v.ListenPort, v.MTU, v.Address, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.OS, v.AgentVersion, string(labels), v.PublicKey, string(secret), string(wireGuard), string(peerConfig), string(desiredPeerConfig), timeText(v.LastSeen), v.ID, v.TenantID)
+	labels, secret, wireGuard, peerConfig, desiredPeerConfig, err := marshalNodeColumns(v)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.Exec(s.query(`UPDATE nodes SET name=?, hostname=?, interface_selector=?, collection_error=?, enabled=?, listen_port=?, mtu=?, address=?, endpoint=?, region=?, location_name=?, location_source=?, latitude=?, longitude=?, os=?, agent_version=?, labels_json=?, public_key=?, private_key_json=?, wireguard_json=?, peer_config_json=?, desired_peer_config_json=?, last_seen=? WHERE id=? AND tenant_id=?`), v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Enabled, v.ListenPort, v.MTU, v.Address, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.OS, v.AgentVersion, labels, v.PublicKey, secret, wireGuard, peerConfig, desiredPeerConfig, timeText(v.LastSeen), v.ID, v.TenantID)
 	return changed(result, err)
 }
 
@@ -331,7 +370,7 @@ func (s *SQLStore) AddTrafficSamples(samples []TrafficSample) error {
 	}
 	return tx.Commit()
 }
-func (s *SQLStore) ListTrafficSamples(tenant, node, iface string, since time.Time) (out []TrafficSample) {
+func (s *SQLStore) ListTrafficSamples(tenant, node, iface string, since time.Time) ([]TrafficSample, error) {
 	return queryList(s, `SELECT id, tenant_id, node_id, interface_name, receive_bytes, transmit_bytes, recorded_at FROM traffic_samples WHERE tenant_id=? AND node_id=? AND interface_name=? AND recorded_at>=? ORDER BY recorded_at`, scanTrafficSample, tenant, node, iface, timeText(since))
 }
 
@@ -339,7 +378,7 @@ func (s *SQLStore) AddPeer(v PeerRelation) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO peer_relations (id, tenant_id, network_id, source_node_id, target_node_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.NetworkID, v.SourceNodeID, v.TargetNodeID, timeText(v.CreatedAt))
 	return err
 }
-func (s *SQLStore) ListPeers(tenant, network string) []PeerRelation {
+func (s *SQLStore) ListPeers(tenant, network string) ([]PeerRelation, error) {
 	return queryList(s, `SELECT id, tenant_id, network_id, source_node_id, target_node_id, created_at FROM peer_relations WHERE tenant_id=? AND network_id=? ORDER BY created_at`, scanPeerRelation, tenant, network)
 }
 
@@ -380,7 +419,7 @@ func (s *SQLStore) UpdateDelivery(v ConfigDelivery) error {
 	}
 	return s.CreateDelivery(v)
 }
-func (s *SQLStore) ListDeliveries(tenant, node string) []ConfigDelivery {
+func (s *SQLStore) ListDeliveries(tenant, node string) ([]ConfigDelivery, error) {
 	query := `SELECT id, tenant_id, node_id, version, state, message, updated_at FROM config_deliveries WHERE tenant_id=?`
 	args := []any{tenant}
 	if node != "" {
@@ -404,7 +443,17 @@ func (s *SQLStore) ClaimCommands(node string) []AgentCommand {
 		return nil
 	}
 	defer tx.Rollback()
-	rows, err := tx.Query(s.query(`SELECT id, tenant_id, node_id, type, state, result, created_at, started_at, completed_at FROM agent_commands WHERE node_id=? AND state='pending' ORDER BY created_at`), node)
+	claimQuery := `SELECT id, tenant_id, node_id, type, state, result, created_at, started_at, completed_at FROM agent_commands WHERE node_id=? AND state='pending' ORDER BY created_at`
+	// Lock the selected rows so concurrent control-plane instances cannot claim
+	// the same pending command. SQLite is a single-connection store and is
+	// already serialized by MaxOpenConns(1).
+	switch s.driver {
+	case "postgres":
+		claimQuery += ` FOR UPDATE SKIP LOCKED`
+	case "mysql":
+		claimQuery += ` FOR UPDATE`
+	}
+	rows, err := tx.Query(s.query(claimQuery), node)
 	if err != nil {
 		return nil
 	}
@@ -435,7 +484,10 @@ func (s *SQLStore) UpdateCommand(v AgentCommand) error {
 	result, err := s.db.Exec(s.query(`UPDATE agent_commands SET state=?, result=?, started_at=?, completed_at=? WHERE id=? AND tenant_id=? AND node_id=?`), v.State, v.Result, optionalTimeText(v.StartedAt), optionalTimeText(v.CompletedAt), v.ID, v.TenantID, v.NodeID)
 	return changed(result, err)
 }
-func (s *SQLStore) ListCommands(tenant, node string) []AgentCommand {
+func (s *SQLStore) GetCommand(id string) (AgentCommand, error) {
+	return scanCommand(s.db.QueryRow(s.query(`SELECT id, tenant_id, node_id, type, state, result, created_at, started_at, completed_at FROM agent_commands WHERE id=?`), id))
+}
+func (s *SQLStore) ListCommands(tenant, node string) ([]AgentCommand, error) {
 	query := `SELECT id, tenant_id, node_id, type, state, result, created_at, started_at, completed_at FROM agent_commands WHERE tenant_id=?`
 	args := []any{tenant}
 	if node != "" {
@@ -446,7 +498,7 @@ func (s *SQLStore) ListCommands(tenant, node string) []AgentCommand {
 	return queryList(s, query, scanCommand, args...)
 }
 
-func (s *SQLStore) ListCommandsPage(tenant, node string, limit, offset int, errorsOnly bool) []AgentCommand {
+func (s *SQLStore) ListCommandsPage(tenant, node string, limit, offset int, errorsOnly bool) ([]AgentCommand, error) {
 	query := `SELECT id, tenant_id, node_id, type, state, result, created_at, started_at, completed_at FROM agent_commands WHERE tenant_id=?`
 	args := []any{tenant}
 	if node != "" {
@@ -519,19 +571,41 @@ func (s *SQLStore) GetIdentity(node string) (AgentIdentity, error) {
 }
 
 func (s *SQLStore) AddAudit(v AuditEvent) error {
-	metadata, _ := json.Marshal(v.Metadata)
-	_, err := s.db.Exec(s.query(`INSERT INTO audit_events (id, tenant_id, actor_id, action, resource_type, resource_id, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ActorID, v.Action, v.ResourceType, v.ResourceID, string(metadata), timeText(v.CreatedAt))
+	metadata, err := marshalColumn(v.Metadata)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(s.query(`INSERT INTO audit_events (id, tenant_id, actor_id, action, resource_type, resource_id, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ActorID, v.Action, v.ResourceType, v.ResourceID, metadata, timeText(v.CreatedAt))
 	if err != nil {
 		return err
 	}
 	return s.pruneAudit(v.TenantID)
 }
-func (s *SQLStore) ListAudit(tenant string) []AuditEvent {
+func (s *SQLStore) ListAudit(tenant string) ([]AuditEvent, error) {
 	return queryList(s, `SELECT id, tenant_id, actor_id, action, resource_type, resource_id, metadata_json, created_at FROM audit_events WHERE tenant_id=? ORDER BY created_at DESC`, scanAudit, tenant)
 }
 
-func (s *SQLStore) ListAuditPage(tenant string, limit, offset int) []AuditEvent {
+func (s *SQLStore) ListAuditPage(tenant string, limit, offset int) ([]AuditEvent, error) {
 	return queryList(s, `SELECT id, tenant_id, actor_id, action, resource_type, resource_id, metadata_json, created_at FROM audit_events WHERE tenant_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, scanAudit, tenant, limit, offset)
+}
+
+func (s *SQLStore) HasNodeAuditAction(tenant, nodeID string, actions ...string) (bool, error) {
+	if len(actions) == 0 {
+		return false, nil
+	}
+	placeholders := make([]string, len(actions))
+	args := make([]any, 0, len(actions)+2)
+	args = append(args, tenant, nodeID)
+	for i, action := range actions {
+		placeholders[i] = "?"
+		args = append(args, action)
+	}
+	query := `SELECT COUNT(*) FROM audit_events WHERE tenant_id=? AND resource_type='node' AND resource_id=? AND action IN (` + strings.Join(placeholders, ",") + `)`
+	var count int
+	if err := s.db.QueryRow(s.query(query), args...).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (s *SQLStore) ClearAudit(tenant string) error {
@@ -540,45 +614,42 @@ func (s *SQLStore) ClearAudit(tenant string) error {
 }
 
 func (s *SQLStore) pruneCommands(tenant, node string) error {
-	var count int
-	if err := s.db.QueryRow(s.query(`SELECT COUNT(*) FROM agent_commands WHERE tenant_id=? AND node_id=?`), tenant, node).Scan(&count); err != nil {
-		return err
-	}
-	if count <= maxAgentLogRecords {
-		return nil
-	}
-	return s.pruneTableKeepingNewest("agent_commands", tenant, node, maxAgentLogRecords)
+	return s.pruneKeepingNewest("agent_commands", tenant, node, maxAgentLogRecords)
 }
 
 func (s *SQLStore) pruneAudit(tenant string) error {
-	var count int
-	if err := s.db.QueryRow(s.query(`SELECT COUNT(*) FROM audit_events WHERE tenant_id=?`), tenant).Scan(&count); err != nil {
-		return err
-	}
-	if count <= maxAuditRecords {
-		return nil
-	}
-	return s.pruneTableKeepingNewest("audit_events", tenant, "", maxAuditRecords)
+	return s.pruneKeepingNewest("audit_events", tenant, "", maxAuditRecords)
 }
 
-func (s *SQLStore) pruneTableKeepingNewest(table, tenant, node string, keep int) error {
-	if s.driver == "mysql" {
-		if table == "agent_commands" {
-			_, err := s.db.Exec(s.query(`DELETE target FROM agent_commands target LEFT JOIN (SELECT id FROM agent_commands WHERE tenant_id=? AND node_id=? ORDER BY created_at DESC, id DESC LIMIT ?) keep_rows ON target.id=keep_rows.id WHERE target.tenant_id=? AND target.node_id=? AND keep_rows.id IS NULL`), tenant, node, keep, tenant, node)
-			return err
-		}
-		_, err := s.db.Exec(s.query(`DELETE target FROM audit_events target LEFT JOIN (SELECT id FROM audit_events WHERE tenant_id=? ORDER BY created_at DESC, id DESC LIMIT ?) keep_rows ON target.id=keep_rows.id WHERE target.tenant_id=? AND keep_rows.id IS NULL`), tenant, keep, tenant)
+// pruneKeepingNewest keeps at most `keep` newest rows for the given tenant (and
+// optional node) scope. It first reads the (created_at, id) boundary of the
+// keep-th newest row, so the common case (fewer than keep rows) is a single
+// bounded lookup instead of a full count plus a subquery delete. When pruning
+// is required the range delete uses the existing tenant/index columns directly.
+func (s *SQLStore) pruneKeepingNewest(table, tenant, node string, keep int) error {
+	where := `tenant_id=?`
+	args := []any{tenant}
+	if node != "" {
+		where += ` AND node_id=?`
+		args = append(args, node)
+	}
+	boundaryArgs := append(append([]any{}, args...), keep-1)
+	boundaryQuery := fmt.Sprintf(`SELECT created_at, id FROM %s WHERE %s ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET ?`, table, where)
+	var boundaryCreated, boundaryID string
+	err := s.db.QueryRow(s.query(boundaryQuery), boundaryArgs...).Scan(&boundaryCreated, &boundaryID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	if table == "agent_commands" {
-		_, err := s.db.Exec(s.query(`DELETE FROM agent_commands WHERE tenant_id=? AND node_id=? AND id NOT IN (SELECT id FROM agent_commands WHERE tenant_id=? AND node_id=? ORDER BY created_at DESC, id DESC LIMIT ?)`), tenant, node, tenant, node, keep)
-		return err
-	}
-	_, err := s.db.Exec(s.query(`DELETE FROM audit_events WHERE tenant_id=? AND id NOT IN (SELECT id FROM audit_events WHERE tenant_id=? ORDER BY created_at DESC, id DESC LIMIT ?)`), tenant, tenant, keep)
+	deleteArgs := append(append([]any{}, args...), boundaryCreated, boundaryCreated, boundaryID)
+	deleteQuery := fmt.Sprintf(`DELETE FROM %s WHERE %s AND (created_at < ? OR (created_at = ? AND id < ?))`, table, where)
+	_, err = s.db.Exec(s.query(deleteQuery), deleteArgs...)
 	return err
 }
 
-func (s *SQLStore) ListUsers(tenant string) []User {
+func (s *SQLStore) ListUsers(tenant string) ([]User, error) {
 	return queryList(s, `SELECT id, tenant_id, email, password_hash, name, role, last_login_at, created_at FROM users WHERE tenant_id = ? ORDER BY created_at`, scanUser, tenant)
 }
 func (s *SQLStore) ensureNodeWireGuardColumn(ctx context.Context) error {
@@ -634,22 +705,34 @@ func (s *SQLStore) UpsertSettings(v SystemSettings) error {
 	_, err = s.db.Exec(s.query(query), v.TenantID, string(raw), v.GeoIPDBPath, timeText(v.UpdatedAt))
 	return err
 }
-func (s *SQLStore) ListNotificationChannels(tenant string) []NotificationChannel {
+func (s *SQLStore) ListNotificationChannels(tenant string) ([]NotificationChannel, error) {
 	return queryList(s, `SELECT id, tenant_id, name, type, target_json, enabled, all_agents, agent_ids_json, created_at, updated_at FROM notification_channels WHERE tenant_id = ? ORDER BY created_at`, scanNotificationChannel, tenant)
 }
 func (s *SQLStore) GetNotificationChannel(tenant, id string) (NotificationChannel, error) {
 	return scanNotificationChannel(s.db.QueryRow(s.query(`SELECT id, tenant_id, name, type, target_json, enabled, all_agents, agent_ids_json, created_at, updated_at FROM notification_channels WHERE tenant_id = ? AND id = ?`), tenant, id))
 }
 func (s *SQLStore) CreateNotificationChannel(v NotificationChannel) error {
-	target, _ := json.Marshal(v.Target)
-	agents, _ := json.Marshal(v.AgentIDs)
-	_, err := s.db.Exec(s.query(`INSERT INTO notification_channels (id, tenant_id, name, type, target_json, enabled, all_agents, agent_ids_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.Name, v.Type, string(target), v.Enabled, v.AllAgents, string(agents), timeText(v.CreatedAt), timeText(v.UpdatedAt))
+	target, err := marshalColumn(v.Target)
+	if err != nil {
+		return err
+	}
+	agents, err := marshalColumn(v.AgentIDs)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(s.query(`INSERT INTO notification_channels (id, tenant_id, name, type, target_json, enabled, all_agents, agent_ids_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.Name, v.Type, target, v.Enabled, v.AllAgents, agents, timeText(v.CreatedAt), timeText(v.UpdatedAt))
 	return err
 }
 func (s *SQLStore) UpdateNotificationChannel(v NotificationChannel) error {
-	target, _ := json.Marshal(v.Target)
-	agents, _ := json.Marshal(v.AgentIDs)
-	return changed(s.db.Exec(s.query(`UPDATE notification_channels SET name=?, type=?, target_json=?, enabled=?, all_agents=?, agent_ids_json=?, updated_at=? WHERE tenant_id=? AND id=?`), v.Name, v.Type, string(target), v.Enabled, v.AllAgents, string(agents), timeText(v.UpdatedAt), v.TenantID, v.ID))
+	target, err := marshalColumn(v.Target)
+	if err != nil {
+		return err
+	}
+	agents, err := marshalColumn(v.AgentIDs)
+	if err != nil {
+		return err
+	}
+	return changed(s.db.Exec(s.query(`UPDATE notification_channels SET name=?, type=?, target_json=?, enabled=?, all_agents=?, agent_ids_json=?, updated_at=? WHERE tenant_id=? AND id=?`), v.Name, v.Type, target, v.Enabled, v.AllAgents, agents, timeText(v.UpdatedAt), v.TenantID, v.ID))
 }
 func (s *SQLStore) DeleteNotificationChannel(tenant, id string) error {
 	return changed(s.db.Exec(s.query(`DELETE FROM notification_channels WHERE tenant_id=? AND id=?`), tenant, id))
@@ -658,7 +741,7 @@ func (s *SQLStore) AddNotificationLog(v NotificationLog) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO notification_logs (id, tenant_id, channel_id, channel_name, channel_type, agent_name, message, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ChannelID, v.ChannelName, v.ChannelType, v.AgentName, v.Message, v.Status, timeText(v.CreatedAt))
 	return err
 }
-func (s *SQLStore) ListNotificationLogs(tenant string) []NotificationLog {
+func (s *SQLStore) ListNotificationLogs(tenant string) ([]NotificationLog, error) {
 	return queryList(s, `SELECT id, tenant_id, channel_id, channel_name, channel_type, agent_name, message, status, created_at FROM notification_logs WHERE tenant_id=? ORDER BY created_at DESC`, scanNotificationLog, tenant)
 }
 
@@ -730,6 +813,11 @@ func scanNotificationChannel(row scanner) (NotificationChannel, error) {
 }
 
 const nodeSelect = `SELECT id, tenant_id, project_id, network_id, name, COALESCE(hostname, ''), COALESCE(interface_selector, ''), COALESCE(collection_error, ''), enabled, listen_port, mtu, address, endpoint, region, COALESCE(location_name, ''), COALESCE(location_source, ''), COALESCE(latitude, 0), COALESCE(longitude, 0), os, agent_version, labels_json, public_key, private_key_json, wireguard_json, COALESCE(peer_config_json, '[]'), COALESCE(desired_peer_config_json, '[]'), last_seen, created_at FROM nodes`
+
+// nodeRefSelect omits the large per-node JSON columns (private key, WireGuard
+// status, and peer config files) for callers that only need scalar identity and
+// routing fields, avoiding the cost of decoding those blobs on every heartbeat.
+const nodeRefSelect = `SELECT id, tenant_id, project_id, network_id, name, COALESCE(hostname, ''), COALESCE(interface_selector, ''), COALESCE(collection_error, ''), enabled, listen_port, mtu, address, endpoint, region, COALESCE(location_name, ''), COALESCE(location_source, ''), COALESCE(latitude, 0), COALESCE(longitude, 0), os, agent_version, labels_json, public_key, last_seen, created_at FROM nodes`
 
 func scanCommand(row scanner) (AgentCommand, error) {
 	var v AgentCommand
@@ -828,6 +916,23 @@ func scanNode(row scanner) (Node, error) {
 	}
 	if v.DesiredPeerConfig == nil {
 		v.DesiredPeerConfig = []PeerConfigFile{}
+	}
+	v.LastSeen = parseTime(lastSeen)
+	v.CreatedAt = parseTime(created)
+	return v, nil
+}
+
+func scanNodeRef(row scanner) (Node, error) {
+	var v Node
+	var labels, lastSeen, created string
+	if err := row.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.NetworkID, &v.Name, &v.Hostname, &v.InterfaceSelector, &v.CollectionError, &v.Enabled, &v.ListenPort, &v.MTU, &v.Address, &v.Endpoint, &v.Region, &v.LocationName, &v.LocationSource, &v.Latitude, &v.Longitude, &v.OS, &v.AgentVersion, &labels, &v.PublicKey, &lastSeen, &created); err != nil {
+		return Node{}, notFound(err)
+	}
+	if err := json.Unmarshal([]byte(labels), &v.Labels); err != nil {
+		return Node{}, err
+	}
+	if v.Labels == nil {
+		v.Labels = map[string]string{}
 	}
 	v.LastSeen = parseTime(lastSeen)
 	v.CreatedAt = parseTime(created)

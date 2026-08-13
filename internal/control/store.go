@@ -18,55 +18,58 @@ var (
 // development-only; a PostgreSQL implementation can preserve this API.
 type Store interface {
 	CreateProject(Project) error
-	ListProjects(string) []Project
+	ListProjects(string) ([]Project, error)
 	GetProject(string, string) (Project, error)
 	CreateNetwork(Network) error
-	ListNetworks(string, string) []Network
+	ListNetworks(string, string) ([]Network, error)
 	GetNetwork(string, string) (Network, error)
 	CreateNode(Node) error
 	GetNode(string, string) (Node, error)
 	GetNodeByID(string) (Node, error)
-	ListNodes(string, string) []Node
+	ListNodes(string, string) ([]Node, error)
+	ListNodeRefs(string, string) ([]Node, error)
 	UpdateNode(Node) error
 	DeleteNode(string, string) error
 	AddTrafficSamples([]TrafficSample) error
-	ListTrafficSamples(string, string, string, time.Time) []TrafficSample
+	ListTrafficSamples(string, string, string, time.Time) ([]TrafficSample, error)
 	AddPeer(PeerRelation) error
-	ListPeers(string, string) []PeerRelation
+	ListPeers(string, string) ([]PeerRelation, error)
 	CreateRevision(ConfigRevision) error
 	LatestRevision(string, string) (ConfigRevision, error)
 	CreateDelivery(ConfigDelivery) error
 	UpdateDelivery(ConfigDelivery) error
-	ListDeliveries(string, string) []ConfigDelivery
+	ListDeliveries(string, string) ([]ConfigDelivery, error)
 	CreateCommand(AgentCommand) error
 	ClaimCommands(string) []AgentCommand
 	UpdateCommand(AgentCommand) error
-	ListCommands(string, string) []AgentCommand
-	ListCommandsPage(string, string, int, int, bool) []AgentCommand
+	GetCommand(string) (AgentCommand, error)
+	ListCommands(string, string) ([]AgentCommand, error)
+	ListCommandsPage(string, string, int, int, bool) ([]AgentCommand, error)
 	ClearCommands(string, string) error
 	CreateEnrollment(EnrollmentToken) error
 	ConsumeEnrollment(string) (EnrollmentToken, error)
 	CreateIdentity(AgentIdentity) error
 	GetIdentity(string) (AgentIdentity, error)
 	AddAudit(AuditEvent) error
-	ListAudit(string) []AuditEvent
+	ListAudit(string) ([]AuditEvent, error)
+	HasNodeAuditAction(string, string, ...string) (bool, error)
 	GetUserByEmail(string) (User, error)
 	GetUser(string) (User, error)
 	UpdateUserLastLogin(string, time.Time) error
 	HasUsers() (bool, error)
 	CreateInitialAdmin(User) error
-	ListUsers(string) []User
+	ListUsers(string) ([]User, error)
 	CreateUser(User) error
 	GetSettings(string) (SystemSettings, error)
 	UpsertSettings(SystemSettings) error
-	ListNotificationChannels(string) []NotificationChannel
+	ListNotificationChannels(string) ([]NotificationChannel, error)
 	GetNotificationChannel(string, string) (NotificationChannel, error)
 	CreateNotificationChannel(NotificationChannel) error
 	UpdateNotificationChannel(NotificationChannel) error
 	DeleteNotificationChannel(string, string) error
 	AddNotificationLog(NotificationLog) error
-	ListNotificationLogs(string) []NotificationLog
-	ListAuditPage(string, int, int) []AuditEvent
+	ListNotificationLogs(string) ([]NotificationLog, error)
+	ListAuditPage(string, int, int) ([]AuditEvent, error)
 	ClearAudit(string) error
 }
 
@@ -100,16 +103,17 @@ func (s *MemoryStore) CreateProject(v Project) error {
 	s.projects[v.ID] = v
 	return nil
 }
-func (s *MemoryStore) ListProjects(t string) (out []Project) {
+func (s *MemoryStore) ListProjects(t string) ([]Project, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]Project, 0)
 	for _, v := range s.projects {
 		if v.TenantID == t {
 			out = append(out, v)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	return
+	return out, nil
 }
 func (s *MemoryStore) GetProject(t, id string) (Project, error) {
 	s.mu.RLock()
@@ -126,15 +130,16 @@ func (s *MemoryStore) CreateNetwork(v Network) error {
 	s.networks[v.ID] = v
 	return nil
 }
-func (s *MemoryStore) ListNetworks(t, p string) (out []Network) {
+func (s *MemoryStore) ListNetworks(t, p string) ([]Network, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]Network, 0)
 	for _, v := range s.networks {
 		if v.TenantID == t && v.ProjectID == p {
 			out = append(out, v)
 		}
 	}
-	return
+	return out, nil
 }
 func (s *MemoryStore) GetNetwork(t, id string) (Network, error) {
 	s.mu.RLock()
@@ -170,15 +175,19 @@ func (s *MemoryStore) GetNodeByID(id string) (Node, error) {
 	}
 	return v, nil
 }
-func (s *MemoryStore) ListNodes(t, n string) (out []Node) {
+func (s *MemoryStore) ListNodes(t, n string) ([]Node, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]Node, 0)
 	for _, v := range s.nodes {
 		if v.TenantID == t && (n == "" || v.NetworkID == n) {
 			out = append(out, v)
 		}
 	}
-	return
+	return out, nil
+}
+func (s *MemoryStore) ListNodeRefs(t, n string) ([]Node, error) {
+	return s.ListNodes(t, n)
 }
 func (s *MemoryStore) UpdateNode(v Node) error {
 	s.mu.Lock()
@@ -223,16 +232,17 @@ func (s *MemoryStore) AddTrafficSamples(samples []TrafficSample) error {
 	s.trafficSamples = append(s.trafficSamples, samples...)
 	return nil
 }
-func (s *MemoryStore) ListTrafficSamples(tenant, node, interfaceName string, since time.Time) (out []TrafficSample) {
+func (s *MemoryStore) ListTrafficSamples(tenant, node, interfaceName string, since time.Time) ([]TrafficSample, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]TrafficSample, 0)
 	for _, sample := range s.trafficSamples {
 		if sample.TenantID == tenant && sample.NodeID == node && sample.InterfaceName == interfaceName && !sample.RecordedAt.Before(since) {
 			out = append(out, sample)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RecordedAt.Before(out[j].RecordedAt) })
-	return
+	return out, nil
 }
 
 func (s *MemoryStore) AddPeer(v PeerRelation) error {
@@ -241,15 +251,16 @@ func (s *MemoryStore) AddPeer(v PeerRelation) error {
 	s.peers[v.ID] = v
 	return nil
 }
-func (s *MemoryStore) ListPeers(t, n string) (out []PeerRelation) {
+func (s *MemoryStore) ListPeers(t, n string) ([]PeerRelation, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]PeerRelation, 0)
 	for _, v := range s.peers {
 		if v.TenantID == t && v.NetworkID == n {
 			out = append(out, v)
 		}
 	}
-	return
+	return out, nil
 }
 func (s *MemoryStore) CreateRevision(v ConfigRevision) error {
 	s.mu.Lock()
@@ -288,15 +299,16 @@ func (s *MemoryStore) UpdateDelivery(v ConfigDelivery) error {
 	s.deliveries[v.ID] = v
 	return nil
 }
-func (s *MemoryStore) ListDeliveries(t, n string) (out []ConfigDelivery) {
+func (s *MemoryStore) ListDeliveries(t, n string) ([]ConfigDelivery, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]ConfigDelivery, 0)
 	for _, v := range s.deliveries {
 		if v.TenantID == t && (n == "" || v.NodeID == n) {
 			out = append(out, v)
 		}
 	}
-	return
+	return out, nil
 }
 func (s *MemoryStore) CreateCommand(v AgentCommand) error {
 	s.mu.Lock()
@@ -329,21 +341,32 @@ func (s *MemoryStore) UpdateCommand(v AgentCommand) error {
 	s.commands[v.ID] = v
 	return nil
 }
-func (s *MemoryStore) ListCommands(tenant, node string) (out []AgentCommand) {
+func (s *MemoryStore) GetCommand(id string) (AgentCommand, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	command, ok := s.commands[id]
+	if !ok {
+		return AgentCommand{}, errNotFound
+	}
+	return command, nil
+}
+func (s *MemoryStore) ListCommands(tenant, node string) ([]AgentCommand, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]AgentCommand, 0)
 	for _, command := range s.commands {
 		if command.TenantID == tenant && (node == "" || command.NodeID == node) {
 			out = append(out, command)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
-	return
+	return out, nil
 }
 
-func (s *MemoryStore) ListCommandsPage(tenant, node string, limit, offset int, errorsOnly bool) (out []AgentCommand) {
+func (s *MemoryStore) ListCommandsPage(tenant, node string, limit, offset int, errorsOnly bool) ([]AgentCommand, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]AgentCommand, 0)
 	for _, v := range s.commands {
 		if v.TenantID != tenant || (node != "" && v.NodeID != node) {
 			continue
@@ -359,7 +382,7 @@ func (s *MemoryStore) ListCommandsPage(tenant, node string, limit, offset int, e
 		}
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
-	return pageSlice(out, limit, offset)
+	return pageSlice(out, limit, offset), nil
 }
 
 func (s *MemoryStore) ClearCommands(tenant, node string) error {
@@ -413,21 +436,38 @@ func (s *MemoryStore) AddAudit(v AuditEvent) error {
 	s.pruneAuditLocked(v.TenantID)
 	return nil
 }
-func (s *MemoryStore) ListAudit(t string) (out []AuditEvent) {
+func (s *MemoryStore) ListAudit(t string) ([]AuditEvent, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]AuditEvent, 0)
 	for _, v := range s.audits {
 		if v.TenantID == t {
 			out = append(out, v)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
-	return
+	return out, nil
 }
 
-func (s *MemoryStore) ListAuditPage(tenant string, limit, offset int) (out []AuditEvent) {
+func (s *MemoryStore) HasNodeAuditAction(tenant, nodeID string, actions ...string) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	allowed := make(map[string]bool, len(actions))
+	for _, action := range actions {
+		allowed[action] = true
+	}
+	for _, event := range s.audits {
+		if event.TenantID == tenant && event.ResourceType == "node" && event.ResourceID == nodeID && allowed[event.Action] {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *MemoryStore) ListAuditPage(tenant string, limit, offset int) ([]AuditEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]AuditEvent, 0)
 	for _, v := range s.audits {
 		if v.TenantID == tenant {
 			out = append(out, v)
@@ -439,7 +479,7 @@ func (s *MemoryStore) ListAuditPage(tenant string, limit, offset int) (out []Aud
 		}
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
-	return pageSlice(out, limit, offset)
+	return pageSlice(out, limit, offset), nil
 }
 
 func pageSlice[T any](items []T, limit, offset int) []T {
@@ -556,16 +596,17 @@ func (s *MemoryStore) CreateInitialAdmin(user User) error {
 	return nil
 }
 
-func (s *MemoryStore) ListUsers(tenant string) (out []User) {
+func (s *MemoryStore) ListUsers(tenant string) ([]User, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]User, 0)
 	for _, v := range s.users {
 		if v.TenantID == tenant {
 			out = append(out, v)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	return
+	return out, nil
 }
 func (s *MemoryStore) CreateUser(v User) error {
 	s.mu.Lock()
@@ -593,16 +634,17 @@ func (s *MemoryStore) UpsertSettings(v SystemSettings) error {
 	s.settings[v.TenantID] = v
 	return nil
 }
-func (s *MemoryStore) ListNotificationChannels(tenant string) (out []NotificationChannel) {
+func (s *MemoryStore) ListNotificationChannels(tenant string) ([]NotificationChannel, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]NotificationChannel, 0)
 	for _, v := range s.notifications {
 		if v.TenantID == tenant {
 			out = append(out, v)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	return
+	return out, nil
 }
 func (s *MemoryStore) GetNotificationChannel(tenant, id string) (NotificationChannel, error) {
 	s.mu.RLock()
@@ -645,14 +687,15 @@ func (s *MemoryStore) AddNotificationLog(v NotificationLog) error {
 	s.notificationLogs = append(s.notificationLogs, v)
 	return nil
 }
-func (s *MemoryStore) ListNotificationLogs(tenant string) (out []NotificationLog) {
+func (s *MemoryStore) ListNotificationLogs(tenant string) ([]NotificationLog, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	out := make([]NotificationLog, 0)
 	for _, v := range s.notificationLogs {
 		if v.TenantID == tenant {
 			out = append(out, v)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
-	return
+	return out, nil
 }

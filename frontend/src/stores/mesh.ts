@@ -667,16 +667,7 @@ export const useMeshStore = defineStore('mesh', {
       } catch (reason) { this.error = reason instanceof Error ? reason.message : '保存节点配置失败'; return false }
     },
     async updateNodeAndPublish(id: string, patch: { name?: string; address?: string; endpoint?: string; listen_port?: number; mtu?: number; enabled?: boolean; interface_selector?: string; labels?: Record<string, string>; location_name?: string; location_source?: string; latitude?: number; longitude?: number }) {
-      this.error = ''
-      try {
-        const saved = await api.updateNode(id, patch)
-        const status = await this.waitForDeliveryResult(saved.delivery)
-        await this.refresh()
-        this.notice = saved.delivery_error
-          ? '节点配置已保存，但自动下发失败：' + saved.delivery_error
-          : deliverySummaryMessage('节点配置已保存', saved.delivery, status)
-        return true
-      } catch (reason) { this.error = reason instanceof Error ? reason.message : '保存节点配置失败'; return false }
+      return this.updateNodeConfig(id, patch)
     },
     async collectNow(id: string) {
       this.error = ''

@@ -287,7 +287,7 @@ func TestTenantIsolationAndRevision(t *testing.T) {
 	if response.Code != 401 {
 		t.Fatalf("expected protected nodes, got %d", response.Code)
 	}
-	if !strings.Contains(response.Body.String(), "permission") {
+	if !strings.Contains(response.Body.String(), "权限") {
 		t.Fatalf("unexpected error %s", response.Body.String())
 	}
 }
@@ -366,12 +366,15 @@ func TestNodeConfigurationIsSavedAndDeliveredImmediately(t *testing.T) {
 	if revision.Version != 1 || config.Address != updated.Address || config.ListenPort != updated.ListenPort || config.MTU != updated.MTU {
 		t.Fatalf("saved config was not immediately published: %#v", revision)
 	}
-	deliveries := app.store.ListDeliveries(admin.TenantID, "")
+	deliveries, err := app.store.ListDeliveries(admin.TenantID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(deliveries) != 2 {
 		t.Fatalf("initial auto-publish should queue both enabled nodes, got %#v", deliveries)
 	}
-	if commands := app.store.ListCommands(admin.TenantID, node.ID); len(commands) == 0 || commands[0].Type != "apply_config" {
-		t.Fatalf("updated node was not woken for immediate apply: %#v", commands)
+	if commands, err := app.store.ListCommands(admin.TenantID, node.ID); err != nil || len(commands) == 0 || commands[0].Type != "apply_config" {
+		t.Fatalf("updated node was not woken for immediate apply: %#v %v", commands, err)
 	}
 
 	now := time.Now()
@@ -531,8 +534,8 @@ func TestAgentUpdateRejectsAgentsWithoutUpdaterSupport(t *testing.T) {
 	if response.Code != http.StatusConflict {
 		t.Fatalf("old Agent update should be rejected before command dispatch: %d %s", response.Code, response.Body.String())
 	}
-	if commands := app.store.ListCommands(admin.TenantID, oldNode.ID); len(commands) != 0 {
-		t.Fatalf("unsupported old Agent must not receive update_agent command: %#v", commands)
+	if commands, err := app.store.ListCommands(admin.TenantID, oldNode.ID); err != nil || len(commands) != 0 {
+		t.Fatalf("unsupported old Agent must not receive update_agent command: %#v %v", commands, err)
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/nodes/"+newNode.ID+"/update-agent", nil)
@@ -542,8 +545,8 @@ func TestAgentUpdateRejectsAgentsWithoutUpdaterSupport(t *testing.T) {
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("supported Agent update should be accepted: %d %s", response.Code, response.Body.String())
 	}
-	if commands := app.store.ListCommands(admin.TenantID, newNode.ID); len(commands) != 1 || commands[0].Type != "update_agent" {
-		t.Fatalf("supported Agent did not receive update command: %#v", commands)
+	if commands, err := app.store.ListCommands(admin.TenantID, newNode.ID); err != nil || len(commands) != 1 || commands[0].Type != "update_agent" {
+		t.Fatalf("supported Agent did not receive update command: %#v %v", commands, err)
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/nodes/update-agent", strings.NewReader(`{"node_ids":["`+oldNode.ID+`","`+newNode.ID+`"]}`))
@@ -594,7 +597,10 @@ func TestPeerConfigSaveQueuesImmediateApplyAndRecordsResult(t *testing.T) {
 	if saved.Command.Type != "apply_peer_config" || saved.Command.State != "pending" || saved.Offline {
 		t.Fatalf("unexpected peer config update result: %#v", saved)
 	}
-	commands := app.store.ListCommands(admin.TenantID, node.ID)
+	commands, err := app.store.ListCommands(admin.TenantID, node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(commands) != 1 || commands[0].Type != "apply_peer_config" || commands[0].State != "pending" {
 		t.Fatalf("apply_peer_config command was not queued: %#v", commands)
 	}

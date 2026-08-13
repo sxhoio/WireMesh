@@ -30,7 +30,7 @@ type NodePeerConfigUpdateResult struct {
 func (a *App) nodePeerConfig(w http.ResponseWriter, r *http.Request, c claims) {
 	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "node not found")
+		writeError(w, http.StatusNotFound, "节点不存在")
 		return
 	}
 	writeJSON(w, http.StatusOK, NodePeerConfigResponse{
@@ -44,7 +44,7 @@ func (a *App) nodePeerConfig(w http.ResponseWriter, r *http.Request, c claims) {
 func (a *App) updateNodePeerConfig(w http.ResponseWriter, r *http.Request, c claims) {
 	node, err := a.store.GetNode(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "node not found")
+		writeError(w, http.StatusNotFound, "节点不存在")
 		return
 	}
 	var in struct {
@@ -59,12 +59,12 @@ func (a *App) updateNodePeerConfig(w http.ResponseWriter, r *http.Request, c cla
 		iface = node.PeerConfigFiles[0].Interface
 	}
 	if !wgconfig.ValidInterfaceName(iface) {
-		writeError(w, http.StatusBadRequest, "interface must be a valid WireGuard interface name")
+		writeError(w, http.StatusBadRequest, "接口必须是有效的 WireGuard 接口名称")
 		return
 	}
 	content := wgconfig.NormalizePeerConfig(in.Content)
 	if len(content) > maxPeerConfigContentBytes {
-		writeError(w, http.StatusBadRequest, "peer config is too large")
+		writeError(w, http.StatusBadRequest, "Peer 配置内容过大")
 		return
 	}
 	if err := wgconfig.ValidatePeerConfig(content); err != nil {
@@ -80,12 +80,12 @@ func (a *App) updateNodePeerConfig(w http.ResponseWriter, r *http.Request, c cla
 	node.DesiredPeerConfig = upsertPeerConfigFile(node.DesiredPeerConfig, file)
 	node = normalizeNodeDefaults(node)
 	if err := a.store.UpdateNode(node); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save peer config")
+		writeError(w, http.StatusInternalServerError, "保存 Peer 配置失败")
 		return
 	}
 	command := newAgentCommand(c.TenantID, node.ID, agentCommandTypeApplyPeerConfig)
 	if err := a.createAgentCommand(command); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to queue peer config delivery")
+		writeError(w, http.StatusInternalServerError, "Peer 配置下发失败")
 		return
 	}
 	offline := a.nodeCurrentlyOffline(c.TenantID, node)

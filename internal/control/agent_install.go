@@ -124,8 +124,17 @@ install_wireguard
 install -d -m 0700 /etc/wireguard
 
 TMP_FILE="$(mktemp)"
-trap 'rm -f "$TMP_FILE"' EXIT
-curl -fL "$SERVER/agent/download?os=$OS&arch=$ARCH" -o "$TMP_FILE"
+HEADER_FILE="$(mktemp)"
+trap 'rm -f "$TMP_FILE" "$HEADER_FILE"' EXIT
+curl -fL -D "$HEADER_FILE" "$SERVER/agent/download?os=$OS&arch=$ARCH" -o "$TMP_FILE"
+EXPECTED_SHA256="$(awk 'tolower($1)=="x-wiremesh-agent-sha256:"{gsub("\r","",$2); print $2}' "$HEADER_FILE" | tail -n 1)"
+if [ -n "$EXPECTED_SHA256" ] && command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL_SHA256="$(sha256sum "$TMP_FILE" | awk '{print $1}')"
+  if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+    echo "Agent 二进制校验失败，已中止安装" >&2
+    exit 1
+  fi
+fi
 install -m 0755 "$TMP_FILE" /usr/local/bin/wiremesh-agent
 
 install -d -m 0700 /var/lib/wiremesh-agent /etc/wiremesh-agent

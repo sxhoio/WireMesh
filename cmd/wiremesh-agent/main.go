@@ -19,7 +19,6 @@ import (
 )
 
 const (
-	agentCommandWait              = 25 * time.Second
 	commandPollFallbackRetryDelay = 2 * time.Second
 )
 

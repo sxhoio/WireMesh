@@ -18,6 +18,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/mail"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -44,6 +45,7 @@ type App struct {
 	caKey           any
 	geoMu           sync.RWMutex
 	geoReaders      map[string]*geoReaderState
+	geoFailures     map[string]time.Time
 	geoLookup       func(string, string) (geoIPLocation, error)
 	commandMu       sync.Mutex
 	commandWakeups  map[string]chan struct{}
@@ -66,6 +68,7 @@ func NewApp(cfg Config) (*App, error) {
 		databaseDriver:  cfg.DatabaseDriver,
 		box:             box,
 		geoReaders:      map[string]*geoReaderState{},
+		geoFailures:     map[string]time.Time{},
 		commandWakeups:  map[string]chan struct{}{},
 		agentBinaryPath: cfg.AgentBinaryPath,
 		agentVersion:    strings.TrimSpace(cfg.AgentVersion),
@@ -151,7 +154,7 @@ func (a *App) health(w http.ResponseWriter, r *http.Request) {
 func (a *App) setupStatus(w http.ResponseWriter, r *http.Request) {
 	initialized, err := a.store.HasUsers()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read setup status")
+		writeError(w, http.StatusInternalServerError, "读取初始化状态失败")
 		return
 	}
 	status := DatabaseStatus{Configured: true, Driver: a.databaseDriver}
@@ -168,7 +171,7 @@ func (a *App) setupStatus(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) setup(w http.ResponseWriter, r *http.Request) {
 	if a.database != nil && !a.database.Status().Configured {
-		writeError(w, http.StatusConflict, "configure a database before creating the administrator")
+		writeError(w, http.StatusConflict, "请先配置数据库再创建管理员")
 		return
 	}
 	var in struct {
@@ -183,20 +186,20 @@ func (a *App) setup(w http.ResponseWriter, r *http.Request) {
 	in.Name = strings.TrimSpace(in.Name)
 	parsedEmail, err := mail.ParseAddress(in.Email)
 	if err != nil || strings.ToLower(parsedEmail.Address) != in.Email {
-		writeError(w, http.StatusBadRequest, "valid email is required")
+		writeError(w, http.StatusBadRequest, "请输入有效的邮箱地址")
 		return
 	}
 	if in.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		writeError(w, http.StatusBadRequest, "名称不能为空")
 		return
 	}
 	if len(in.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		writeError(w, http.StatusBadRequest, "密码至少需要 8 个字符")
 		return
 	}
 	passwordHash, err := hashPassword(in.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to secure password")
+		writeError(w, http.StatusInternalServerError, "密码加密失败")
 		return
 	}
 	user := User{
@@ -215,14 +218,14 @@ func (a *App) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if errors.Is(err, errAlreadyInitialized) {
-			writeError(w, http.StatusConflict, "WireMesh is already initialized")
+			writeError(w, http.StatusConflict, "WireMesh 已完成初始化")
 			return
 		}
 		if errors.Is(err, errDatabaseNotConfigured) {
-			writeError(w, http.StatusConflict, "configure a database before creating the administrator")
+			writeError(w, http.StatusConflict, "请先配置数据库再创建管理员")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to create administrator")
+		writeError(w, http.StatusInternalServerError, "创建管理员失败")
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"user": publicUser(user)})
@@ -232,7 +235,7 @@ func (a *App) withUser(required Role, next func(http.ResponseWriter, *http.Reque
 		header := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		c, err := a.auth.Parse(header)
 		if err != nil || !allowed(c.Role, required) {
-			writeError(w, http.StatusUnauthorized, "authentication or permission denied")
+			writeError(w, http.StatusUnauthorized, "身份验证或权限不足")
 			return
 		}
 		next(w, r, c)
@@ -246,7 +249,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	token, user, err := a.auth.Login(in.Email, in.Password)
 	if err != nil {
 		if errors.Is(err, errLoginPersistence) {
-			writeError(w, http.StatusInternalServerError, "failed to record login")
+			writeError(w, http.StatusInternalServerError, "保存登录状态失败")
 		} else {
 			writeError(w, http.StatusUnauthorized, err.Error())
 		}
@@ -269,7 +272,12 @@ func publicUser(u User) map[string]any {
 
 func (a *App) projects(w http.ResponseWriter, r *http.Request, c claims) {
 	if r.Method == http.MethodGet {
-		writeJSON(w, http.StatusOK, a.store.ListProjects(c.TenantID))
+		items, err := a.store.ListProjects(c.TenantID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "读取项目列表失败")
+			return
+		}
+		writeJSON(w, http.StatusOK, items)
 		return
 	}
 	var in struct{ Name, Description string }
@@ -277,12 +285,12 @@ func (a *App) projects(w http.ResponseWriter, r *http.Request, c claims) {
 		return
 	}
 	if strings.TrimSpace(in.Name) == "" {
-		writeError(w, 400, "name is required")
+		writeError(w, 400, "名称不能为空")
 		return
 	}
 	v := Project{ID: newID("prj"), TenantID: c.TenantID, Name: in.Name, Description: in.Description, CreatedAt: time.Now()}
 	if err := a.store.CreateProject(v); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create project")
+		writeError(w, http.StatusInternalServerError, "创建项目失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "project.create", "project", v.ID, nil)
@@ -290,7 +298,12 @@ func (a *App) projects(w http.ResponseWriter, r *http.Request, c claims) {
 }
 func (a *App) networks(w http.ResponseWriter, r *http.Request, c claims) {
 	if r.Method == http.MethodGet {
-		writeJSON(w, 200, a.store.ListNetworks(c.TenantID, r.URL.Query().Get("project_id")))
+		items, err := a.store.ListNetworks(c.TenantID, r.URL.Query().Get("project_id"))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "读取网络列表失败")
+			return
+		}
+		writeJSON(w, 200, items)
 		return
 	}
 	var in struct {
@@ -304,7 +317,7 @@ func (a *App) networks(w http.ResponseWriter, r *http.Request, c claims) {
 		return
 	}
 	if _, err := a.store.GetProject(c.TenantID, in.ProjectID); err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
+		writeError(w, http.StatusNotFound, "项目不存在")
 		return
 	}
 	if in.Topology == "" {
@@ -315,12 +328,12 @@ func (a *App) networks(w http.ResponseWriter, r *http.Request, c claims) {
 		return
 	}
 	if in.Topology != TopologyFullMesh && in.Topology != TopologyHubSpoke && in.Topology != TopologyCustom {
-		writeError(w, 400, "invalid topology")
+		writeError(w, 400, "网络拓扑类型无效")
 		return
 	}
 	v := Network{ID: newID("net"), TenantID: c.TenantID, ProjectID: in.ProjectID, Name: in.Name, CIDR: in.CIDR, DNS: in.DNS, Topology: in.Topology, CreatedAt: time.Now()}
 	if err := a.store.CreateNetwork(v); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create network")
+		writeError(w, http.StatusInternalServerError, "创建网络失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "network.create", "network", v.ID, nil)
@@ -328,7 +341,12 @@ func (a *App) networks(w http.ResponseWriter, r *http.Request, c claims) {
 }
 func (a *App) nodes(w http.ResponseWriter, r *http.Request, c claims) {
 	if r.Method == http.MethodGet {
-		writeJSON(w, 200, a.store.ListNodes(c.TenantID, r.URL.Query().Get("network_id")))
+		items, err := a.store.ListNodes(c.TenantID, r.URL.Query().Get("network_id"))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "读取节点列表失败")
+			return
+		}
+		writeJSON(w, 200, items)
 		return
 	}
 	var in struct {
@@ -345,7 +363,7 @@ func (a *App) nodes(w http.ResponseWriter, r *http.Request, c claims) {
 	}
 	network, err := a.store.GetNetwork(c.TenantID, in.NetworkID)
 	if err != nil {
-		writeError(w, 404, "network not found")
+		writeError(w, 404, "网络不存在")
 		return
 	}
 	node, err := a.createNode(c.TenantID, network, in.Name, in.Endpoint, in.Region, in.OS, in.AgentVersion, in.Labels)
@@ -361,11 +379,11 @@ func (a *App) addPeer(w http.ResponseWriter, r *http.Request, c claims) {
 	networkID := r.PathValue("id")
 	network, err := a.store.GetNetwork(c.TenantID, networkID)
 	if err != nil {
-		writeError(w, 404, "network not found")
+		writeError(w, 404, "网络不存在")
 		return
 	}
 	if network.Topology != TopologyCustom {
-		writeError(w, 409, "manual peers require custom topology")
+		writeError(w, 409, "手动 Peer 关系需要自定义拓扑")
 		return
 	}
 	var in struct {
@@ -378,12 +396,12 @@ func (a *App) addPeer(w http.ResponseWriter, r *http.Request, c claims) {
 	source, e1 := a.store.GetNode(c.TenantID, in.SourceNodeID)
 	target, e2 := a.store.GetNode(c.TenantID, in.TargetNodeID)
 	if e1 != nil || e2 != nil || source.NetworkID != networkID || target.NetworkID != networkID || source.ID == target.ID {
-		writeError(w, 400, "invalid peer relationship")
+		writeError(w, 400, "无效的 Peer 关系")
 		return
 	}
 	v := PeerRelation{ID: newID("peer"), TenantID: c.TenantID, NetworkID: networkID, SourceNodeID: source.ID, TargetNodeID: target.ID, CreatedAt: time.Now()}
 	if err := a.store.AddPeer(v); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create peer")
+		writeError(w, http.StatusInternalServerError, "创建 Peer 关系失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "peer.create", "network", networkID, nil)
@@ -393,23 +411,14 @@ func (a *App) addPeer(w http.ResponseWriter, r *http.Request, c claims) {
 func (a *App) publish(w http.ResponseWriter, r *http.Request, c claims) {
 	network, err := a.store.GetNetwork(c.TenantID, r.PathValue("id"))
 	if err != nil {
-		writeError(w, 404, "network not found")
+		writeError(w, 404, "网络不存在")
 		return
 	}
-	result, err := a.publishNetwork(c.TenantID, network)
+	result, err := a.publishAndAudit(c.TenantID, c.Subject, network, "config.publish", nil)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	action := "config.publish"
-	if result.Unchanged {
-		action = "config.publish.noop"
-	}
-	a.auditEvent(c.TenantID, c.Subject, action, "network", network.ID, map[string]string{
-		"version":       fmt.Sprint(result.Version),
-		"changed_nodes": fmt.Sprint(len(result.ChangedNodeIDs)),
-		"offline_nodes": fmt.Sprint(len(result.OfflineNodeIDs)),
-	})
 	status := http.StatusCreated
 	if result.Unchanged {
 		status = http.StatusOK
@@ -417,8 +426,34 @@ func (a *App) publish(w http.ResponseWriter, r *http.Request, c claims) {
 	writeJSON(w, status, result)
 }
 
+// publishAndAudit publishes a network and records the outcome under the given
+// action, appending ".noop" when nothing changed. It is shared by the explicit
+// publish endpoint and the automatic publish triggered by node edits.
+func (a *App) publishAndAudit(tenantID, actorID string, network Network, action string, extra map[string]string) (ConfigPublishResult, error) {
+	result, err := a.publishNetwork(tenantID, network)
+	if err != nil {
+		return ConfigPublishResult{}, err
+	}
+	if result.Unchanged {
+		action += ".noop"
+	}
+	metadata := map[string]string{
+		"version":       fmt.Sprint(result.Version),
+		"changed_nodes": fmt.Sprint(len(result.ChangedNodeIDs)),
+		"offline_nodes": fmt.Sprint(len(result.OfflineNodeIDs)),
+	}
+	for key, value := range extra {
+		metadata[key] = value
+	}
+	a.auditEvent(tenantID, actorID, action, "network", network.ID, metadata)
+	return result, nil
+}
+
 func (a *App) publishNetwork(tenantID string, network Network) (ConfigPublishResult, error) {
-	allNodes := a.store.ListNodes(tenantID, network.ID)
+	allNodes, err := a.store.ListNodes(tenantID, network.ID)
+	if err != nil {
+		return ConfigPublishResult{}, fmt.Errorf("list network nodes: %w", err)
+	}
 	nodes := make([]Node, 0, len(allNodes))
 	for _, node := range allNodes {
 		if node.Enabled {
@@ -428,7 +463,11 @@ func (a *App) publishNetwork(tenantID string, network Network) (ConfigPublishRes
 	if len(nodes) == 0 {
 		return ConfigPublishResult{}, fmt.Errorf("network has no enabled nodes")
 	}
-	configs, err := CompileTopology(network, nodes, a.store.ListPeers(tenantID, network.ID), a.box)
+	peers, err := a.store.ListPeers(tenantID, network.ID)
+	if err != nil {
+		return ConfigPublishResult{}, fmt.Errorf("list network peers: %w", err)
+	}
+	configs, err := CompileTopology(network, nodes, peers, a.box)
 	if err != nil {
 		return ConfigPublishResult{}, err
 	}
@@ -444,7 +483,13 @@ func (a *App) publishNetwork(tenantID string, network Network) (ConfigPublishRes
 			deliveryTargets[node.ID] = true
 			changedNodeIDs = append(changedNodeIDs, node.ID)
 			queuedNodeIDs = append(queuedNodeIDs, node.ID)
-		} else if !a.nodeHasAppliedConfigVersion(tenantID, node.ID, previous.Version) {
+			continue
+		}
+		applied, err := a.nodeHasAppliedConfigVersion(tenantID, node.ID, previous.Version)
+		if err != nil {
+			return ConfigPublishResult{}, fmt.Errorf("read node configuration delivery: %w", err)
+		}
+		if !applied {
 			deliveryTargets[node.ID] = true
 			queuedNodeIDs = append(queuedNodeIDs, node.ID)
 		}
@@ -481,7 +526,11 @@ func (a *App) publishNetwork(tenantID string, network Network) (ConfigPublishRes
 		if !deliveryTargets[node.ID] {
 			continue
 		}
-		if !a.nodeHasConfigDelivery(tenantID, node.ID, revision.Version) {
+		hasDelivery, err := a.nodeHasConfigDelivery(tenantID, node.ID, revision.Version)
+		if err != nil {
+			return ConfigPublishResult{}, fmt.Errorf("read node configuration delivery: %w", err)
+		}
+		if !hasDelivery {
 			if err := a.store.CreateDelivery(ConfigDelivery{ID: newID("delivery"), TenantID: tenantID, NodeID: node.ID, Version: revision.Version, State: "pending", UpdatedAt: time.Now()}); err != nil {
 				return ConfigPublishResult{}, fmt.Errorf("create configuration delivery: %w", err)
 			}
@@ -498,39 +547,60 @@ func (a *App) publishNetwork(tenantID string, network Network) (ConfigPublishRes
 	return result, nil
 }
 
-func (a *App) nodeHasAppliedConfigVersion(tenantID, nodeID string, version uint64) bool {
-	for _, delivery := range a.store.ListDeliveries(tenantID, nodeID) {
+func (a *App) nodeHasAppliedConfigVersion(tenantID, nodeID string, version uint64) (bool, error) {
+	deliveries, err := a.store.ListDeliveries(tenantID, nodeID)
+	if err != nil {
+		return false, err
+	}
+	for _, delivery := range deliveries {
 		if delivery.Version == version && delivery.State == "applied" {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
-func (a *App) nodeHasConfigDelivery(tenantID, nodeID string, version uint64) bool {
-	for _, delivery := range a.store.ListDeliveries(tenantID, nodeID) {
+func (a *App) nodeHasConfigDelivery(tenantID, nodeID string, version uint64) (bool, error) {
+	deliveries, err := a.store.ListDeliveries(tenantID, nodeID)
+	if err != nil {
+		return false, err
+	}
+	for _, delivery := range deliveries {
 		if delivery.Version == version {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
-func (a *App) nodeHasOpenConfigDelivery(tenantID, nodeID string, version uint64) bool {
-	for _, delivery := range a.store.ListDeliveries(tenantID, nodeID) {
+func (a *App) nodeHasOpenConfigDelivery(tenantID, nodeID string, version uint64) (bool, error) {
+	deliveries, err := a.store.ListDeliveries(tenantID, nodeID)
+	if err != nil {
+		return false, err
+	}
+	for _, delivery := range deliveries {
 		if delivery.Version != version {
 			continue
 		}
-		return delivery.State == "pending" || delivery.State == "failed" || delivery.State == "rolled_back"
+		return delivery.State == "pending" || delivery.State == "failed" || delivery.State == "rolled_back", nil
 	}
-	return false
+	return false, nil
 }
 func (a *App) deliveries(w http.ResponseWriter, r *http.Request, c claims) {
-	writeJSON(w, 200, a.store.ListDeliveries(c.TenantID, r.URL.Query().Get("node_id")))
+	items, err := a.store.ListDeliveries(c.TenantID, r.URL.Query().Get("node_id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取配置下发记录失败")
+		return
+	}
+	writeJSON(w, 200, items)
 }
 func (a *App) audit(w http.ResponseWriter, r *http.Request, c claims) {
 	limit, offset := parseLogPage(r)
-	items := a.store.ListAuditPage(c.TenantID, limit+1, offset)
+	items, err := a.store.ListAuditPage(c.TenantID, limit+1, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取审计日志失败")
+		return
+	}
 	hasMore := len(items) > limit
 	if hasMore {
 		items = items[:limit]
@@ -543,7 +613,7 @@ func (a *App) audit(w http.ResponseWriter, r *http.Request, c claims) {
 
 func (a *App) clearAudit(w http.ResponseWriter, r *http.Request, c claims) {
 	if err := a.store.ClearAudit(c.TenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to clear audit logs")
+		writeError(w, http.StatusInternalServerError, "清除审计日志失败")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -560,7 +630,7 @@ func (a *App) createEnrollment(w http.ResponseWriter, r *http.Request, c claims)
 	}
 	network, err := a.store.GetNetwork(c.TenantID, in.NetworkID)
 	if err != nil || network.ProjectID != in.ProjectID {
-		writeError(w, 400, "network does not belong to project")
+		writeError(w, 400, "网络不属于该项目")
 		return
 	}
 	if in.TTLMinutes <= 0 || in.TTLMinutes > 1440 {
@@ -569,7 +639,7 @@ func (a *App) createEnrollment(w http.ResponseWriter, r *http.Request, c claims)
 	token := base64.RawURLEncoding.EncodeToString(randomBytes(32))
 	v := EnrollmentToken{ID: newID("enroll"), TenantID: c.TenantID, ProjectID: in.ProjectID, NetworkID: in.NetworkID, Token: token, ExpiresAt: time.Now().Add(time.Duration(in.TTLMinutes) * time.Minute)}
 	if err := a.store.CreateEnrollment(v); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create enrollment token")
+		writeError(w, http.StatusInternalServerError, "创建接入令牌失败")
 		return
 	}
 	a.auditEvent(c.TenantID, c.Subject, "agent.enrollment_token.create", "network", in.NetworkID, nil)
@@ -662,7 +732,12 @@ func (a *App) agentConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "node not included in published configuration")
 		return
 	}
-	if !a.nodeHasOpenConfigDelivery(node.TenantID, node.ID, revision.Version) {
+	hasOpen, err := a.nodeHasOpenConfigDelivery(node.TenantID, node.ID, revision.Version)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read node configuration delivery")
+		return
+	}
+	if !hasOpen {
 		writeError(w, 404, "no pending configuration for this node")
 		return
 	}
@@ -762,7 +837,10 @@ func (a *App) createNode(tenantID string, network Network, name, endpoint, regio
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	existing := a.store.ListNodes(tenantID, network.ID)
+	existing, err := a.store.ListNodes(tenantID, network.ID)
+	if err != nil {
+		return Node{}, err
+	}
 	allocated := make([]string, 0, len(existing))
 	for _, node := range existing {
 		allocated = append(allocated, node.Address)
@@ -841,7 +919,7 @@ func (a *App) auditEvent(tenant, actor, action, resourceType, resourceID string,
 func decode(w http.ResponseWriter, r *http.Request, target any) bool {
 	defer r.Body.Close()
 	if err := json.NewDecoder(r.Body).Decode(target); err != nil {
-		writeError(w, 400, "invalid JSON request")
+		writeError(w, 400, "请求体不是有效的 JSON")
 		return false
 	}
 	return true
@@ -863,8 +941,12 @@ func newID(prefix string) string {
 }
 func randomBytes(n int) []byte { v := make([]byte, n); _, _ = rand.Read(v); return v }
 func cors(next http.Handler) http.Handler {
+	allowOrigin := strings.TrimSpace(os.Getenv("WIREMESH_CORS_ORIGIN"))
+	if allowOrigin == "" {
+		allowOrigin = "http://localhost:5173"
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+		w.Header().Set("Access-Control-Allow-Origin", allowOrigin)
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Agent-ID")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

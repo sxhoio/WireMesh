@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/wiremesh/wiremesh/internal/wireproto"
 )
@@ -16,6 +17,11 @@ var (
 	errGeoIPUnavailable = errors.New("GeoIP database is not loaded")
 	errGeoIPNotFound    = errors.New("GeoIP location was not found")
 )
+
+// geoRetryInterval bounds how often a failed GeoIP database load is retried so
+// a misconfigured or missing database does not reopen the file on every
+// heartbeat or lookup.
+const geoRetryInterval = 5 * time.Minute
 
 type geoIPLocation = wireproto.AgentLocation
 
@@ -146,9 +152,14 @@ func requestPublicIP(r *http.Request) string {
 func (a *App) geoReaderForTenant(tenant string) (*geoReaderState, error) {
 	a.geoMu.RLock()
 	state := a.geoReaders[tenant]
+	lastFailure := a.geoFailures[tenant]
 	a.geoMu.RUnlock()
 	if state != nil {
 		return state, nil
+	}
+	now := time.Now()
+	if !lastFailure.IsZero() && now.Sub(lastFailure) < geoRetryInterval {
+		return nil, errGeoIPUnavailable
 	}
 	settings, err := a.tenantSettings(tenant)
 	if err != nil {
@@ -158,8 +169,14 @@ func (a *App) geoReaderForTenant(tenant string) (*geoReaderState, error) {
 		return nil, errGeoIPUnavailable
 	}
 	if _, err := a.loadGeoIP(tenant, settings.GeoIPDBPath); err != nil {
+		a.geoMu.Lock()
+		a.geoFailures[tenant] = now
+		a.geoMu.Unlock()
 		return nil, err
 	}
+	a.geoMu.Lock()
+	delete(a.geoFailures, tenant)
+	a.geoMu.Unlock()
 	a.geoMu.RLock()
 	state = a.geoReaders[tenant]
 	a.geoMu.RUnlock()
