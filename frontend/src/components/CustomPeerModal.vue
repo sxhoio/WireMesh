@@ -9,12 +9,12 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 const app = useAppStore()
 const mesh = useMeshStore()
 
-const network = mesh.networkById(props.networkId)!
+const network = computed(() => mesh.networkById(props.networkId))
 const keyword = ref('')
 const selected = ref<Set<string>>(new Set())
 
 // 初始选中：当前 customPairs 中出现的节点
-network.customPairs.forEach(([a, b]) => {
+network.value?.customPairs.forEach(([a, b]) => {
   selected.value.add(a)
   selected.value.add(b)
 })
@@ -31,7 +31,7 @@ interface Row {
 
 const rows = computed<Row[]>(() => {
   return mesh.agents
-    .filter((agent) => agent.projectId === network.projectId)
+    .filter((agent) => agent.projectId === network.value?.projectId)
     .map((agent) => ({
       nodeId: agent.id,
       agentName: agent.name,
@@ -39,7 +39,7 @@ const rows = computed<Row[]>(() => {
       online: agent.status === 'online' && agent.enabled,
       tunnelIP: agent.address,
       networkName: mesh.networkById(agent.networkId)?.name ?? agent.networkId,
-      cross: agent.networkId !== network.id,
+      cross: agent.networkId !== network.value?.id,
     }))
 })
 
@@ -83,7 +83,7 @@ async function save() {
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/70 p-4 backdrop-blur-sm" @click.self="emit('close')">
     <div class="panel flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden">
       <div class="border-b border-ink-700 px-6 py-4">
-        <h2 class="text-base font-semibold text-white">Custom Peer 选择 · {{ network.name }}</h2>
+        <h2 class="text-base font-semibold text-white">Custom Peer 选择 · {{ network?.name }}</h2>
         <p class="mt-0.5 text-xs text-slate-500">手动选择需要互联的节点；节点尚未安装或采集到 WireGuard 接口时也可以预先配置</p>
       </div>
 

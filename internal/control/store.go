@@ -12,6 +12,7 @@ import (
 var (
 	errNotFound           = errors.New("resource not found")
 	errAlreadyInitialized = errors.New("instance already initialized")
+	errAddressConflict    = errors.New("node address is already used in this network")
 )
 
 // Store is the control-plane persistence boundary. MemoryStore is intentionally
@@ -135,7 +136,7 @@ func (s *MemoryStore) ListNetworks(t, p string) ([]Network, error) {
 	defer s.mu.RUnlock()
 	out := make([]Network, 0)
 	for _, v := range s.networks {
-		if v.TenantID == t && v.ProjectID == p {
+		if v.TenantID == t && (p == "" || v.ProjectID == p) {
 			out = append(out, v)
 		}
 	}
@@ -154,6 +155,11 @@ func (s *MemoryStore) CreateNode(v Node) error {
 	v = normalizeNodeDefaults(v)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, existing := range s.nodes {
+		if existing.NetworkID == v.NetworkID && existing.Address == v.Address && existing.ID != v.ID {
+			return errAddressConflict
+		}
+	}
 	s.nodes[v.ID] = v
 	return nil
 }

@@ -19,28 +19,42 @@ export const confirmState = reactive({
   variant: 'warning' as ConfirmVariant,
 })
 
-let resolveCurrent: ((confirmed: boolean) => void) | null = null
+interface PendingConfirm {
+  options: ConfirmOptions
+  resolve: (confirmed: boolean) => void
+}
+
+// 队列化确认请求：并发触发多个确认时按顺序逐个弹出，避免前一个请求被静默丢弃。
+const queue: PendingConfirm[] = []
+let current: PendingConfirm | null = null
+
+function showNext() {
+  const nextItem = queue.shift()
+  if (!nextItem) {
+    current = null
+    return
+  }
+  current = nextItem
+  confirmState.title = nextItem.options.title
+  confirmState.message = nextItem.options.message
+  confirmState.confirmText = nextItem.options.confirmText || '确定'
+  confirmState.cancelText = nextItem.options.cancelText || '取消'
+  confirmState.variant = nextItem.options.variant || 'warning'
+  confirmState.open = true
+}
 
 export function requestConfirm(options: ConfirmOptions) {
-  if (resolveCurrent) {
-    resolveCurrent(false)
-    resolveCurrent = null
-  }
-  confirmState.title = options.title
-  confirmState.message = options.message
-  confirmState.confirmText = options.confirmText || '确定'
-  confirmState.cancelText = options.cancelText || '取消'
-  confirmState.variant = options.variant || 'warning'
-  confirmState.open = true
   return new Promise<boolean>((resolve) => {
-    resolveCurrent = resolve
+    queue.push({ options, resolve })
+    if (!current) showNext()
   })
 }
 
 export function resolveConfirm(confirmed: boolean) {
-  if (!confirmState.open) return
+  if (!confirmState.open || !current) return
   confirmState.open = false
-  const resolve = resolveCurrent
-  resolveCurrent = null
-  resolve?.(confirmed)
+  const { resolve } = current
+  current = null
+  resolve(confirmed)
+  showNext()
 }

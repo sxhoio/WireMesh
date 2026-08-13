@@ -14,7 +14,7 @@ const emit = defineEmits<{ close: [] }>()
 
 <template>
   <div class="fixed inset-0 z-[80] flex items-center justify-center p-4" :class="overlayClass" @click.self="emit('close')">
-    <div class="panel flex w-full flex-col overflow-hidden" :class="panelClass">
+    <div role="dialog" aria-modal="true" class="panel flex w-full flex-col overflow-hidden" :class="panelClass">
       <div v-if="$slots.header || $slots.actions" class="flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-ink-700 px-6 py-5">
         <slot name="header"></slot>
         <div class="flex items-center gap-2">

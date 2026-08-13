@@ -47,7 +47,7 @@ export const useAppStore = defineStore('app', {
           this.authed = false
           return
         }
-        if (!session.token) return
+        // 依赖 HttpOnly cookie 判断登录态：未登录（无 cookie）时 me() 返回 401，走 catch。
         this.user = await api.me()
         this.settings = await api.settings()
         this.username = this.user.name || this.user.email
@@ -123,6 +123,7 @@ export const useAppStore = defineStore('app', {
       } finally { this.loading = false }
     },
     logout() {
+      void api.logout().catch(() => {})
       session.clear()
       this.user = null
       this.username = ''

@@ -34,7 +34,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         class="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
         @click.self="resolveConfirm(false)"
       >
-        <div class="w-full max-w-md overflow-hidden rounded-2xl border border-ink-600 bg-ink-900 shadow-2xl shadow-black/50 ring-1 ring-white/5">
+        <div role="dialog" aria-modal="true" class="w-full max-w-md overflow-hidden rounded-2xl border border-ink-600 bg-ink-900 shadow-2xl shadow-black/50 ring-1 ring-white/5">
           <div class="flex items-start gap-4 px-6 py-5">
             <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border ring-1" :class="toneClass">
               <svg v-if="confirmState.variant === 'danger'" viewBox="0 0 24 24" fill="none" class="h-5 w-5" stroke="currentColor" stroke-width="2">

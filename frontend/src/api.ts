@@ -1,9 +1,9 @@
 export const apiBase = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8080' : '')
-const TOKEN_KEY = 'wiremesh.token'
 
 export interface ApiUser { id: string; tenant_id: string; email: string; name: string; role: 'admin' | 'operator' | 'viewer'; last_login_at?: string | null; created_at?: string }
 export interface ApiProject { id: string; tenant_id: string; name: string; description: string; created_at: string }
 export interface ApiNetwork { id: string; tenant_id: string; project_id: string; name: string; cidr: string; dns: string; topology: 'full_mesh' | 'hub_spoke' | 'custom'; created_at: string }
+export interface ApiPeerRelation { id: string; network_id: string; source_node_id: string; target_node_id: string }
 export interface ApiWireGuardPeer { public_key: string; endpoint: string; allowed_ips: string[]; latest_handshake_at?: string; receive_bytes: number; transmit_bytes: number; persistent_keepalive?: number; location_name?: string; latitude?: number; longitude?: number }
 export interface ApiWireGuardInterface { name: string; public_key: string; listen_port: number; addresses: string[]; mtu: number; up: boolean; peers: ApiWireGuardPeer[] }
 export interface ApiNode { id: string; tenant_id: string; project_id: string; network_id: string; name: string; hostname?: string; interface_selector?: string; collection_error?: string; enabled: boolean; listen_port: number; mtu: number; address: string; endpoint: string; region: string; location_name: string; location_source: string; latitude: number; longitude: number; os: string; agent_version: string; labels: Record<string, string>; public_key: string; wireguard?: ApiWireGuardInterface[]; last_seen: string; created_at: string }
@@ -13,7 +13,11 @@ export interface ApiPeerConfigResponse { node_id: string; files: ApiPeerConfigFi
 export interface ApiPeerConfigUpdateResult { node_id: string; files: ApiPeerConfigFile[]; command: ApiAgentCommand; offline: boolean; message: string }
 export interface ApiNodeLog { id: string; level: string; source: string; message: string; created_at: string }
 export interface ApiNodeLogPage { items: ApiNodeLog[]; current_error?: string; limit: number; offset: number; has_more: boolean }
-export interface ApiAgentUpdateInfo { available: boolean; version?: string; os?: string; arch?: string; size?: number; sha256?: string; download_url?: string; min_agent_version?: string; current_compatible?: boolean; error?: string }
+export interface ApiAgentUpdateNodeStatus { node_id: string; updatable: boolean; needs_update: boolean; reason?: string }
+export interface ApiAgentUpdateInfo {
+  manifest: { available: boolean; version?: string; os?: string; arch?: string; size?: number; sha256?: string; download_url?: string; min_agent_version?: string; current_compatible?: boolean; error?: string }
+  node_status: ApiAgentUpdateNodeStatus[]
+}
 export interface ApiAgentUpdateSkippedNode { node_id: string; name: string; agent_version?: string; reason: string }
 export interface ApiAgentUpdateDispatchResult { created: number; node_ids?: string[]; skipped_node_ids?: string[]; skipped?: ApiAgentUpdateSkippedNode[] }
 export type ApiTrafficRange = '5m' | '10m' | '30m' | '1h' | '2h' | '6h' | '12h' | '24h' | '7d' | '30d'
@@ -79,10 +83,15 @@ export interface SetupStatus {
   database_driver?: DatabaseDriver
 }
 
+// 认证 token 仅保留在内存中（不写入 localStorage），浏览器认证依赖后端下发的
+// HttpOnly cookie，避免 XSS 窃取持久化 token。内存值仅作为非浏览器场景的
+// Authorization 头回退。
+let sessionToken = ''
+
 export const session = {
-  get token() { return localStorage.getItem(TOKEN_KEY) || '' },
-  set token(value: string) { value ? localStorage.setItem(TOKEN_KEY, value) : localStorage.removeItem(TOKEN_KEY) },
-  clear() { localStorage.removeItem(TOKEN_KEY) },
+  get token() { return sessionToken },
+  set token(value: string) { sessionToken = value },
+  clear() { sessionToken = '' },
 }
 
 export class ApiError extends Error {
@@ -98,7 +107,7 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (session.token) headers.set('Authorization', 'Bearer ' + session.token)
   if (init.body) headers.set('Content-Type', 'application/json')
-  const response = await fetch(apiBase + url, { ...init, headers })
+  const response = await fetch(apiBase + url, { ...init, headers, credentials: 'include' })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { error?: string }
     if (response.status === 401) session.clear()
@@ -120,10 +129,12 @@ export const api = {
   configureDatabase: (payload: DatabaseSetupConfig) => request<{ configured: boolean; driver: DatabaseDriver; initialized: boolean }>('/api/v1/setup/database', { method: 'POST', body: JSON.stringify(payload) }),
   setup: (payload: { email: string; name: string; password: string }) => request<{ user: ApiUser }>('/api/v1/setup', { method: 'POST', body: JSON.stringify(payload) }),
   login: (email: string, password: string) => request<{ token: string; user: ApiUser }>('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
   me: () => request<ApiUser>('/api/v1/auth/me'),
   projects: () => requestArray<ApiProject>('/api/v1/projects'),
   createProject: (payload: { name: string; description: string }) => request<ApiProject>('/api/v1/projects', { method: 'POST', body: JSON.stringify(payload) }),
-  networks: (projectId: string) => requestArray<ApiNetwork>('/api/v1/networks?project_id=' + encodeURIComponent(projectId)),
+  networks: (projectId?: string) => requestArray<ApiNetwork>('/api/v1/networks' + (projectId ? '?project_id=' + encodeURIComponent(projectId) : '')),
+  networkPeers: (networkId: string) => requestArray<ApiPeerRelation>('/api/v1/networks/' + encodeURIComponent(networkId) + '/peers'),
   createNetwork: (payload: { project_id: string; name: string; cidr: string; dns: string; topology: ApiNetwork['topology'] }) => request<ApiNetwork>('/api/v1/networks', { method: 'POST', body: JSON.stringify(payload) }),
   nodes: () => requestArray<ApiNode>('/api/v1/nodes'),
   node: (id: string) => request<ApiNode>('/api/v1/nodes/' + encodeURIComponent(id)),

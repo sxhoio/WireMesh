@@ -20,6 +20,20 @@ const defaultAgentUpdateMinVersion = "0.3.6"
 
 type AgentUpdateManifest = wireproto.AgentUpdateManifest
 
+// AgentUpdateInfoResponse 是用户控制台读取的 Agent 更新信息，除全局 manifest
+// 外还聚合每个节点的可更新状态，避免前端重复实现版本比较逻辑。
+type AgentUpdateInfoResponse struct {
+	Manifest   AgentUpdateManifest     `json:"manifest"`
+	NodeStatus []AgentUpdateNodeStatus `json:"node_status"`
+}
+
+type AgentUpdateNodeStatus struct {
+	NodeID      string `json:"node_id"`
+	Updatable   bool   `json:"updatable"`
+	NeedsUpdate bool   `json:"needs_update"`
+	Reason      string `json:"reason,omitempty"`
+}
+
 const agentInstallerScript = `#!/usr/bin/env bash
 set -euo pipefail
 
@@ -265,14 +279,34 @@ func shellSingleQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-func (a *App) agentUpdateInfo(w http.ResponseWriter, r *http.Request, _ claims) {
+func (a *App) agentUpdateInfo(w http.ResponseWriter, r *http.Request, c claims) {
 	requestedOS, requestedArch := requestedAgentPlatform(r, "linux", "amd64")
 	manifest, err := a.agentUpdateManifest(r, requestedOS, requestedArch, r.URL.Query().Get("current_version"))
 	if err != nil {
-		writeJSON(w, http.StatusOK, AgentUpdateManifest{Available: false, OS: requestedOS, Arch: requestedArch, Error: err.Error()})
+		writeJSON(w, http.StatusOK, AgentUpdateInfoResponse{
+			Manifest:   AgentUpdateManifest{Available: false, OS: requestedOS, Arch: requestedArch, Error: err.Error()},
+			NodeStatus: []AgentUpdateNodeStatus{},
+		})
 		return
 	}
-	writeJSON(w, http.StatusOK, manifest)
+	writeJSON(w, http.StatusOK, AgentUpdateInfoResponse{Manifest: manifest, NodeStatus: a.agentUpdateNodeStatuses(c.TenantID, r, manifest)})
+}
+
+// agentUpdateNodeStatuses 为租户内每个节点计算可更新状态，让控制台前端直接消费，
+// 避免在前端重复实现版本比较与阻塞原因判断。
+func (a *App) agentUpdateNodeStatuses(tenantID string, r *http.Request, manifest AgentUpdateManifest) []AgentUpdateNodeStatus {
+	nodes, err := a.store.ListNodeRefs(tenantID, "")
+	if err != nil {
+		return []AgentUpdateNodeStatus{}
+	}
+	out := make([]AgentUpdateNodeStatus, 0, len(nodes))
+	for _, node := range nodes {
+		reason := a.agentRemoteUpdateBlockedReason(r, node)
+		updatable := reason == ""
+		needsUpdate := updatable && manifest.Available && manifest.Version != "" && node.AgentVersion != "" && compareAgentVersions(node.AgentVersion, manifest.Version) < 0
+		out = append(out, AgentUpdateNodeStatus{NodeID: node.ID, Updatable: updatable, NeedsUpdate: needsUpdate, Reason: reason})
+	}
+	return out
 }
 
 func (a *App) agentUpdate(w http.ResponseWriter, r *http.Request) {

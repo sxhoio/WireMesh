@@ -76,7 +76,15 @@ export function validIPv4(value: string) {
 }
 
 export function validIPv6(value: string) {
-  return /^[0-9a-f:]+$/i.test(value) && value.includes(':')
+  const text = value.trim()
+  if (!text.includes(':')) return false
+  if (text.includes(':::')) return false
+  const doubleColon = (text.match(/::/g) || []).length
+  if (doubleColon > 1) return false
+  const parts = text.split(':').filter(Boolean)
+  if (doubleColon === 0 && parts.length !== 8) return false
+  if (doubleColon === 1 && parts.length >= 8) return false
+  return parts.every((part) => /^[0-9a-f]{1,4}$/i.test(part))
 }
 
 export function validPrefix(value: string) {

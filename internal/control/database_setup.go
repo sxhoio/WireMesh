@@ -327,7 +327,9 @@ func validateRemoteConfig(cfg *DatabaseConfig, defaultPort int, defaultSSL strin
 	cfg.Database = strings.TrimSpace(cfg.Database)
 	cfg.Username = strings.TrimSpace(cfg.Username)
 	cfg.SSLMode = strings.ToLower(strings.TrimSpace(cfg.SSLMode))
-	if cfg.Host == "" || strings.ContainsAny(cfg.Host, "/\\\r\n\t") {
+	// 主机名只允许主机名/IP 的合法字符，拒绝可用于 DSN 注入的字符
+	// （@ 用户信息、? 查询串、# 片段、& 参数分隔、; 语句分隔、% 编码、空白）。
+	if cfg.Host == "" || strings.ContainsAny(cfg.Host, "/\\\r\n\t@#?&;% ") {
 		return errors.New("database host is required")
 	}
 	if cfg.Port == 0 {

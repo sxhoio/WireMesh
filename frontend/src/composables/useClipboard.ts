@@ -1,4 +1,4 @@
-import { ref, type Ref } from 'vue'
+import { onUnmounted, ref, type Ref } from 'vue'
 
 export function useClipboard<T>(resetValue: T, clearAfterMs = 1400) {
   const copied = ref(resetValue) as Ref<T>
@@ -21,6 +21,11 @@ export function useClipboard<T>(resetValue: T, clearAfterMs = 1400) {
     }, clearAfterMs)
     return true
   }
+
+  onUnmounted(() => {
+    if (clearTimer) window.clearTimeout(clearTimer)
+    clearTimer = undefined
+  })
 
   return { copied, copyText, clearCopied }
 }

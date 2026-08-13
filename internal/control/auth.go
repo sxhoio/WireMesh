@@ -14,6 +14,11 @@ import (
 
 var errLoginPersistence = errors.New("failed to record login time")
 
+// authCookieName is the HttpOnly cookie used to carry the session token in
+// browser requests. The Authorization header remains supported as a fallback
+// for the Agent protocol, tests, and non-browser clients.
+const authCookieName = "wiremesh_token"
+
 type claims struct {
 	Subject, TenantID string
 	Role              Role

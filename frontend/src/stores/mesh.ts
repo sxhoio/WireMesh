@@ -357,7 +357,7 @@ export const useMeshStore = defineStore('mesh', {
     auditLoading: false,
     users: [] as UserAccount[],
     geoip: { dbPath: '', version: '', updatedAt: 0, entryCount: 0 } as GeoIPInfo,
-    agentUpdate: { available: false, version: '', error: '' } as ApiAgentUpdateInfo,
+    agentUpdate: { manifest: { available: false, version: '', error: '' }, node_status: [] } as ApiAgentUpdateInfo,
     notifyChannels: [] as NotifyChannel[],
     notifyLogs: [] as NotifyLog[],
     revisions: [] as ConfigRevision[],
@@ -441,9 +441,22 @@ export const useMeshStore = defineStore('mesh', {
         if (projectsResult.status === 'fulfilled') {
           const projects = projectsResult.value
           this.projects = projects.map((project) => ({ id: project.id, name: project.name, desc: project.description || '' }))
-          const networkResults = await Promise.allSettled(projects.map((project) => api.networks(project.id)))
-          this.networks = networkResults.flatMap((result) => result.status === 'fulfilled' ? result.value : []).map((network) => ({ id: network.id, projectId: network.project_id, name: network.name, cidr: network.cidr, topology: topology(network.topology), customPairs: [] }))
-          failures.push(...networkResults.filter((result) => result.status === 'rejected').map((result) => result.reason))
+          try {
+            const networks = await api.networks()
+            this.networks = networks.map((network) => ({ id: network.id, projectId: network.project_id, name: network.name, cidr: network.cidr, topology: topology(network.topology), customPairs: [] as [string, string][] }))
+            const customNetworks = networks.filter((network) => network.topology === 'custom')
+            if (customNetworks.length) {
+              const peerResults = await Promise.allSettled(customNetworks.map((network) => api.networkPeers(network.id)))
+              peerResults.forEach((result, index) => {
+                if (result.status !== 'fulfilled') return
+                const target = this.networks.find((network) => network.id === customNetworks[index].id)
+                if (target) target.customPairs = result.value.map((peer) => [peer.source_node_id, peer.target_node_id] as [string, string])
+              })
+            }
+          } catch (reason) {
+            failures.push(reason)
+            this.networks = []
+          }
         } else {
           failures.push(projectsResult.reason)
           this.projects = []

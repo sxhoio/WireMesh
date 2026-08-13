@@ -38,9 +38,8 @@ func collectPeerConfigFiles(selector, configDir string, observed []wireGuardInte
 			}
 			continue
 		}
-		info, _ := os.Stat(path)
 		updatedAt := ""
-		if info != nil {
+		if info, statErr := os.Stat(path); statErr == nil {
 			updatedAt = info.ModTime().UTC().Format(time.RFC3339Nano)
 		}
 		files = append(files, peerConfigFile{

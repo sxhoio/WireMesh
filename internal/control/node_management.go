@@ -296,6 +296,10 @@ func (a *App) deleteNode(w http.ResponseWriter, r *http.Request, c claims) {
 		writeError(w, http.StatusInternalServerError, "删除节点失败")
 		return
 	}
+	// 清理命令长轮询的唤醒通道，避免节点删除后残留。
+	a.commandMu.Lock()
+	delete(a.commandWakeups, node.ID)
+	a.commandMu.Unlock()
 	a.auditEvent(c.TenantID, c.Subject, "node.delete", "node", node.ID, map[string]string{"name": node.Name})
 	w.WriteHeader(http.StatusNoContent)
 }

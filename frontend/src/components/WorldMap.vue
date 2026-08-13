@@ -322,10 +322,11 @@ onBeforeUnmount(() => {
   map = null
 })
 
+// store 采用 immutable 重新赋值（整数组替换），浅比较引用即可感知数据变化；
+// deep watch 会对大数组的每个嵌套字段做递归依赖追踪，开销显著且无必要。
 watch(
   () => [props.agents, props.links, props.tempPeers, props.linkFilter, props.onlyErrors],
   () => render(),
-  { deep: true },
 )
 </script>
 

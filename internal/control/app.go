@@ -90,6 +90,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("POST /api/v1/setup/database", a.configureDatabase)
 	mux.HandleFunc("POST /api/v1/setup", a.setup)
 	mux.HandleFunc("POST /api/v1/auth/login", a.login)
+	mux.HandleFunc("POST /api/v1/auth/logout", a.logout)
 	mux.HandleFunc("GET /api/v1/auth/me", a.withUser(RoleViewer, a.me))
 	mux.HandleFunc("GET /api/v1/projects", a.withUser(RoleViewer, a.projects))
 	mux.HandleFunc("POST /api/v1/projects", a.withUser(RoleAdmin, a.projects))
@@ -110,6 +111,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /api/v1/nodes/{id}/logs", a.withUser(RoleViewer, a.nodeLogs))
 	mux.HandleFunc("DELETE /api/v1/nodes/{id}/logs", a.withUser(RoleOperator, a.clearNodeLogs))
 	mux.HandleFunc("GET /api/v1/nodes/{id}/traffic", a.withUser(RoleViewer, a.nodeTraffic))
+	mux.HandleFunc("GET /api/v1/networks/{id}/peers", a.withUser(RoleViewer, a.networkPeers))
 	mux.HandleFunc("POST /api/v1/networks/{id}/peers", a.withUser(RoleOperator, a.addPeer))
 	mux.HandleFunc("POST /api/v1/networks/{id}/publish", a.withUser(RoleOperator, a.publish))
 	mux.HandleFunc("GET /api/v1/deliveries", a.withUser(RoleViewer, a.deliveries))
@@ -232,14 +234,23 @@ func (a *App) setup(w http.ResponseWriter, r *http.Request) {
 }
 func (a *App) withUser(required Role, next func(http.ResponseWriter, *http.Request, claims)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		header := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		c, err := a.auth.Parse(header)
+		token := requestToken(r)
+		c, err := a.auth.Parse(token)
 		if err != nil || !allowed(c.Role, required) {
 			writeError(w, http.StatusUnauthorized, "身份验证或权限不足")
 			return
 		}
 		next(w, r, c)
 	}
+}
+
+// requestToken 优先读取 HttpOnly cookie（浏览器），回退到 Authorization 头
+// （Agent 协议、测试与非浏览器客户端）。
+func requestToken(r *http.Request) string {
+	if cookie, err := r.Cookie(authCookieName); err == nil && cookie.Value != "" {
+		return cookie.Value
+	}
+	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
 func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	var in struct{ Email, Password string }
@@ -256,7 +267,14 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.auditEvent(user.TenantID, user.ID, "auth.login", "user", user.ID, nil)
+	// 设置 HttpOnly + SameSite cookie，浏览器后续请求自动携带；Authorization 头仍作为非浏览器客户端的回退。
+	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int((12 * time.Hour).Seconds())})
 	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": publicUser(user)})
+}
+
+func (a *App) logout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	w.WriteHeader(http.StatusNoContent)
 }
 func (a *App) me(w http.ResponseWriter, r *http.Request, c claims) {
 	user, _ := a.store.GetUser(c.Subject)
@@ -373,6 +391,20 @@ func (a *App) nodes(w http.ResponseWriter, r *http.Request, c claims) {
 	}
 	a.auditEvent(c.TenantID, c.Subject, "node.create", "node", node.ID, nil)
 	writeJSON(w, 201, node)
+}
+
+func (a *App) networkPeers(w http.ResponseWriter, r *http.Request, c claims) {
+	network, err := a.store.GetNetwork(c.TenantID, r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "network not found")
+		return
+	}
+	items, err := a.store.ListPeers(c.TenantID, network.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list network peers")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (a *App) addPeer(w http.ResponseWriter, r *http.Request, c claims) {
@@ -837,18 +869,6 @@ func (a *App) createNode(tenantID string, network Network, name, endpoint, regio
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	existing, err := a.store.ListNodes(tenantID, network.ID)
-	if err != nil {
-		return Node{}, err
-	}
-	allocated := make([]string, 0, len(existing))
-	for _, node := range existing {
-		allocated = append(allocated, node.Address)
-	}
-	address, err := AllocateAddress(network.CIDR, allocated)
-	if err != nil {
-		return Node{}, err
-	}
 	curve := ecdh.X25519()
 	private, err := curve.GenerateKey(rand.Reader)
 	if err != nil {
@@ -859,11 +879,31 @@ func (a *App) createNode(tenantID string, network Network, name, endpoint, regio
 	if err != nil {
 		return Node{}, err
 	}
-	node := Node{ID: newID("node"), TenantID: tenantID, ProjectID: network.ProjectID, NetworkID: network.ID, Name: name, Enabled: true, ListenPort: defaultNodeListenPort, MTU: defaultNodeMTU, Address: address, Endpoint: endpoint, Region: region, OS: os, AgentVersion: agentVersion, Labels: labels, PublicKey: base64.StdEncoding.EncodeToString(private.PublicKey().Bytes()), PrivateKey: secret, WireGuard: []WireGuardInterfaceStatus{}, CreatedAt: time.Now()}
-	if err := a.store.CreateNode(node); err != nil {
-		return Node{}, err
+	// 地址分配可能与并发 enroll 竞争；唯一约束冲突时重新分配重试一次。
+	var node Node
+	for attempt := 0; attempt < 2; attempt++ {
+		existing, listErr := a.store.ListNodes(tenantID, network.ID)
+		if listErr != nil {
+			return Node{}, listErr
+		}
+		allocated := make([]string, 0, len(existing))
+		for _, existingNode := range existing {
+			allocated = append(allocated, existingNode.Address)
+		}
+		address, allocErr := AllocateAddress(network.CIDR, allocated)
+		if allocErr != nil {
+			return Node{}, allocErr
+		}
+		node = Node{ID: newID("node"), TenantID: tenantID, ProjectID: network.ProjectID, NetworkID: network.ID, Name: name, Enabled: true, ListenPort: defaultNodeListenPort, MTU: defaultNodeMTU, Address: address, Endpoint: endpoint, Region: region, OS: os, AgentVersion: agentVersion, Labels: labels, PublicKey: base64.StdEncoding.EncodeToString(private.PublicKey().Bytes()), PrivateKey: secret, WireGuard: []WireGuardInterfaceStatus{}, CreatedAt: time.Now()}
+		createErr := a.store.CreateNode(node)
+		if createErr == nil {
+			return node, nil
+		}
+		if !errors.Is(createErr, errAddressConflict) {
+			return Node{}, createErr
+		}
 	}
-	return node, nil
+	return Node{}, errors.New("node address allocation conflicted with a concurrent enrollment")
 }
 
 func (a *App) newCertificateAuthority() error {
@@ -939,7 +979,15 @@ func writeError(w http.ResponseWriter, status int, message string) {
 func newID(prefix string) string {
 	return prefix + "_" + base64.RawURLEncoding.EncodeToString(randomBytes(12))
 }
-func randomBytes(n int) []byte { v := make([]byte, n); _, _ = rand.Read(v); return v }
+func randomBytes(n int) []byte {
+	v := make([]byte, n)
+	if _, err := rand.Read(v); err != nil {
+		// crypto/rand 失败意味着无法产生安全随机数，继续使用部分填充的字节
+		// 会导致 ID 与一次性令牌可被预测，属于不可恢复的安全问题。
+		panic("crypto/rand read failed: " + err.Error())
+	}
+	return v
+}
 func cors(next http.Handler) http.Handler {
 	allowOrigin := strings.TrimSpace(os.Getenv("WIREMESH_CORS_ORIGIN"))
 	if allowOrigin == "" {
@@ -947,6 +995,7 @@ func cors(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", allowOrigin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Agent-ID")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

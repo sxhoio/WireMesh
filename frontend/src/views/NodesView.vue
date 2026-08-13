@@ -8,7 +8,7 @@ import PeerConfigEditorModal from '../components/PeerConfigEditorModal.vue'
 import TrafficChart from '../components/TrafficChart.vue'
 import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
-import type { Agent, WGInterface } from '../types'
+import type { Agent, PeerLink, PeerState, WGInterface, WGObservedPeer } from '../types'
 import { stateMeta } from '../types'
 import { useClipboard } from '../composables/useClipboard'
 import { requestConfirm } from '../utils/confirm'
@@ -130,41 +130,20 @@ function checkboxChecked(event: Event) {
   return (event.target as HTMLInputElement).checked
 }
 
-function parseVersion(value: string) {
-  const parts = value.trim().replace(/^v/i, '').split('.')
-  if (parts.length < 2) return null
-  const parsed = parts.slice(0, 3).map((part) => {
-    const match = part.match(/^\d+/)
-    return match ? Number(match[0]) : Number.NaN
-  })
-  if (parsed.some((part) => !Number.isFinite(part))) return null
-  while (parsed.length < 3) parsed.push(0)
-  return parsed
-}
-
-function compareVersion(a: string, b: string) {
-  const left = parseVersion(a)
-  const right = parseVersion(b)
-  if (!left || !right) return 0
-  for (let index = 0; index < 3; index++) {
-    if (left[index] > right[index]) return 1
-    if (left[index] < right[index]) return -1
-  }
-  return 0
+// 节点可更新状态由后端聚合返回，前端不再重复实现版本比较与阻塞原因判断。
+function agentUpdateStatus(id: string) {
+  return mesh.agentUpdate.node_status.find((status) => status.node_id === id)
 }
 
 function agentRemoteUpdateBlockedReason(agent: Agent) {
-  if (!mesh.agentUpdate.available) return mesh.agentUpdate.error || '服务端未配置 Agent 更新包'
-  const minVersion = mesh.agentUpdate.min_agent_version || '0.3.6'
-  if (!agent.version || !parseVersion(agent.version)) return '当前 Agent 版本未知，无法确认是否支持远程更新；请先在节点机器上重新执行接入脚本手动升级一次'
-  if (parseVersion(minVersion) && compareVersion(agent.version, minVersion) < 0) return `当前 Agent ${agent.version} 不支持远程更新，请先手动升级到 ${minVersion} 或更高版本`
-  if (agent.osInfo && !agent.osInfo.toLowerCase().startsWith('linux')) return 'Agent 远程自更新目前仅支持 Linux + systemd'
+  const status = agentUpdateStatus(agent.id)
+  if (status?.reason) return status.reason
+  if (!mesh.agentUpdate.manifest.available) return mesh.agentUpdate.manifest.error || '服务端未配置 Agent 更新包'
   return ''
 }
 
 function agentNeedsUpdate(agent: Agent) {
-  const latest = mesh.agentUpdate.version || ''
-  return Boolean(!agentRemoteUpdateBlockedReason(agent) && latest && agent.version && compareVersion(agent.version, latest) < 0)
+  return agentUpdateStatus(agent.id)?.needs_update || false
 }
 
 async function updateAgent(agent: Agent) {
@@ -202,17 +181,40 @@ function toggleExpand(id: string) {
   expanded.value = new Set(expanded.value)
 }
 
+type PeerRow = {
+  link: PeerLink & { displayState: PeerState }
+  other: { iface: WGInterface; agent: Agent } | undefined
+  otherId: string
+  observed: WGObservedPeer | undefined
+}
+
+// 预计算每个接口的 Peer 行，避免在表格渲染时对每个节点/接口重复做 O(links) 的 filter + map。
+const peersByIface = computed(() => {
+  const ifaceOwner = new Map<string, { iface: WGInterface; agent: Agent }>()
+  for (const agent of mesh.agents) {
+    for (const iface of agent.interfaces) ifaceOwner.set(iface.id, { iface, agent })
+  }
+  const map = new Map<string, PeerRow[]>()
+  for (const agent of mesh.agents) {
+    for (const iface of agent.interfaces) {
+      const rows: PeerRow[] = []
+      for (const l of mesh.scopedLinks) {
+        if (l.a !== iface.id && l.b !== iface.id) continue
+        const otherId = l.a === iface.id ? l.b : l.a
+        const other = ifaceOwner.get(otherId)
+        // 当前接口上观测到的该对端记录（receive_bytes/transmit_bytes 为自接口启用以来的累计值）
+        const observed = iface.peers.find((peer) => peer.publicKey === other?.iface.publicKey)
+        rows.push({ link: l, other, otherId, observed })
+      }
+      map.set(iface.id, rows)
+    }
+  }
+  return map
+})
+
 function peersOf(iface?: WGInterface) {
   if (!iface) return []
-  return mesh.scopedLinks
-    .filter((l) => l.a === iface.id || l.b === iface.id)
-    .map((l) => {
-      const otherId = l.a === iface.id ? l.b : l.a
-      const other = mesh.ifaceWithAgent(otherId)
-      // 当前接口上观测到的该对端记录（receive_bytes/transmit_bytes 为自接口启用以来的累计值）
-      const observed = iface.peers.find((peer) => peer.publicKey === other?.iface.publicKey)
-      return { link: l, other, otherId, observed }
-    })
+  return peersByIface.value.get(iface.id) || []
 }
 
 /** 节点自连接启用以来的累计流量字节数（接收 + 发送） */
@@ -220,11 +222,23 @@ function agentTotalBytes(a: Agent) {
   return (a.totalRxGB + a.totalTxGB) * 1024 ** 3
 }
 
+// 预计算每个节点的真实异常（down）链路数，避免模板中对每个节点重复扫描 links。
+const agentErrorCounts = computed(() => {
+  const map = new Map<string, number>()
+  for (const agent of mesh.agents) {
+    const ids = new Set(agent.interfaces.map((i) => i.id))
+    let count = 0
+    for (const l of mesh.links) {
+      if ((ids.has(l.a) || ids.has(l.b)) && l.state === 'down') count++
+    }
+    map.set(agent.id, count)
+  }
+  return map
+})
+
 function peerErrorCount(a: Agent) {
   // 只统计真实异常（down）的链路；波动（degraded）不标记为异常。
-  return mesh.links.filter(
-    (l) => (a.interfaces.some((i) => i.id === l.a || i.id === l.b)) && l.state === 'down',
-  ).length
+  return agentErrorCounts.value.get(a.id) || 0
 }
 
 

@@ -25,6 +25,7 @@ const form = reactive({
 
 const networks = computed(() => mesh.networks.filter((network) => network.projectId === form.projectId))
 const serverUrl = computed(() => (apiBase || location.origin).replace(/\/$/, ''))
+const isInsecure = computed(() => serverUrl.value.toLowerCase().startsWith('http://'))
 
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'"'"'`)}'`
@@ -197,6 +198,9 @@ async function copy(kind: 'script' | 'manual' | 'uninstall') {
           </div>
 
           <p v-if="error" class="mb-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300 ring-1 ring-red-500/30">{{ error }}</p>
+          <p v-if="isInsecure" class="mb-4 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-300 ring-1 ring-amber-500/30">
+            当前服务地址为 HTTP（明文传输），安装命令与一次性注册令牌可能在网络中泄露；生产环境请使用 HTTPS 部署。
+          </p>
           <div v-if="enrollmentToken" class="mb-4 rounded-xl bg-emerald-500/10 p-3 text-xs text-emerald-300 ring-1 ring-emerald-500/30">
             接入命令已生成<span v-if="expiresAt">，有效至 {{ new Date(expiresAt).toLocaleString() }}</span>。令牌仅在当前窗口显示。
           </div>

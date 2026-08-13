@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -161,6 +162,10 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// heartbeatMu 串行化心跳上报；configMu 串行化 WireGuard 配置应用，避免探测
+	// 与命令工作 goroutine 并发执行 wg-quick 操作。
+	var heartbeatMu sync.Mutex
+	var configMu sync.Mutex
 	heartbeatAccepted := false
 	lastCollectionError := ""
 	lastLocationAttempt := time.Time{}
@@ -191,6 +196,8 @@ func main() {
 		baseHeartbeat.Location = &location
 	}
 	sendHeartbeat := func() (int, string, error) {
+		heartbeatMu.Lock()
+		defer heartbeatMu.Unlock()
 		refreshLocation()
 		heartbeat := baseHeartbeat
 		heartbeat.WireGuard, heartbeat.CollectionError = collectWireGuard(ctx, *interfaces, manager.runner)
@@ -222,6 +229,8 @@ func main() {
 	}
 	configurationChecked := false
 	reconcileConfiguration := func() (string, error) {
+		configMu.Lock()
+		defer configMu.Unlock()
 		payload, found, err := agentAPI.PollConfig(ctx)
 		if err != nil {
 			log.Printf("configuration check failed: %v", err)
@@ -281,6 +290,7 @@ func main() {
 			case "apply_config":
 				result, commandErr = reconcileConfiguration()
 			case "apply_peer_config":
+				configMu.Lock()
 				payload, found, err := agentAPI.PollPeerConfig(ctx)
 				if err != nil {
 					commandErr = err
@@ -289,9 +299,10 @@ func main() {
 					result = "no pending peer config"
 				} else {
 					result, commandErr = manager.ApplyPeerConfigFiles(ctx, payload.Files)
-					if commandErr == nil {
-						_, _, _ = sendHeartbeat()
-					}
+				}
+				configMu.Unlock()
+				if commandErr == nil {
+					_, _, _ = sendHeartbeat()
 				}
 			case "update_agent":
 				result, commandErr = performAgentUpdate(ctx, agentAPI, statePath, *stateDir, *useMTLS, command.ID)
@@ -357,6 +368,18 @@ func main() {
 			}
 		}
 	}()
+	// 命令在工作 goroutine 中串行执行，长命令（下载更新、连通性检测）不再阻塞
+	// 心跳上报与配置探测；WireGuard 配置操作由 configMu 串行化。
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case commands := <-commandBatches:
+				processCommands(commands)
+			}
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -366,8 +389,6 @@ func main() {
 			sendHeartbeat()
 		case <-probeTicker.C:
 			reconcileConfiguration()
-		case commands := <-commandBatches:
-			processCommands(commands)
 		}
 	}
 }

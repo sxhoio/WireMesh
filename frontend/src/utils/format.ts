@@ -10,7 +10,9 @@ export function ago(ts: number): string {
 export function fmtDateTime(ts: number): string {
   if (!ts) return '—'
   const d = new Date(ts)
-  return `${d.getMonth() + 1}-${d.getDate()} ${d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })}`
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${month}-${day} ${d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' })}`
 }
 
 export function fmtHandshake(secAgo: number): string {

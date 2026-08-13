@@ -61,6 +61,15 @@ const networkOptions = computed(() =>
 
 const sidebarOpen = ref(false)
 
+const roleLabel = computed(() => {
+  switch (app.user?.role) {
+    case 'admin': return '管理员'
+    case 'operator': return '操作员'
+    case 'viewer': return '只读'
+    default: return ''
+  }
+})
+
 function logout() {
   app.logout()
   router.push({ name: 'login' })
@@ -86,7 +95,7 @@ function logout() {
         </div>
         <div>
           <p class="text-sm font-bold leading-tight text-white">{{ app.settings.dashboardName }}</p>
-          <p class="text-[11px] text-slate-500">WireMesh v2</p>
+          <p class="text-[11px] text-slate-500">WireMesh</p>
         </div>
       </div>
 
@@ -114,7 +123,7 @@ function logout() {
           </div>
           <div class="min-w-0 flex-1">
             <p class="truncate text-sm font-medium text-white">{{ app.username }}</p>
-            <p class="text-[11px] text-slate-500">Admin</p>
+            <p class="text-[11px] text-slate-500">{{ roleLabel }}</p>
           </div>
           <button class="rounded-lg p-2 text-slate-500 transition hover:bg-ink-800 hover:text-red-400" title="退出登录" @click="logout">
             <svg viewBox="0 0 24 24" fill="none" class="h-5 w-5" stroke="currentColor" stroke-width="1.8">

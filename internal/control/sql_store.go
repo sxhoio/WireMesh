@@ -269,7 +269,14 @@ func (s *SQLStore) CreateNetwork(v Network) error {
 	return err
 }
 func (s *SQLStore) ListNetworks(tenant, project string) ([]Network, error) {
-	return queryList(s, `SELECT id, tenant_id, project_id, name, cidr, dns, topology, created_at FROM networks WHERE tenant_id = ? AND project_id = ? ORDER BY created_at`, scanNetwork, tenant, project)
+	query := `SELECT id, tenant_id, project_id, name, cidr, dns, topology, created_at FROM networks WHERE tenant_id = ?`
+	args := []any{tenant}
+	if project != "" {
+		query += ` AND project_id = ?`
+		args = append(args, project)
+	}
+	query += ` ORDER BY created_at`
+	return queryList(s, query, scanNetwork, args...)
 }
 func (s *SQLStore) GetNetwork(tenant, id string) (Network, error) {
 	return scanNetwork(s.db.QueryRow(s.query(`SELECT id, tenant_id, project_id, name, cidr, dns, topology, created_at FROM networks WHERE tenant_id = ? AND id = ?`), tenant, id))
@@ -282,7 +289,22 @@ func (s *SQLStore) CreateNode(v Node) error {
 		return err
 	}
 	_, err = s.db.Exec(s.query(`INSERT INTO nodes (id, tenant_id, project_id, network_id, name, hostname, interface_selector, collection_error, enabled, listen_port, mtu, address, endpoint, region, location_name, location_source, latitude, longitude, os, agent_version, labels_json, public_key, private_key_json, wireguard_json, peer_config_json, desired_peer_config_json, last_seen, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ProjectID, v.NetworkID, v.Name, v.Hostname, v.InterfaceSelector, v.CollectionError, v.Enabled, v.ListenPort, v.MTU, v.Address, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.OS, v.AgentVersion, labels, v.PublicKey, secret, wireGuard, peerConfig, desiredPeerConfig, timeText(v.LastSeen), timeText(v.CreatedAt))
+	if err != nil && isAddressConflictError(err) {
+		return errAddressConflict
+	}
 	return err
+}
+
+// isAddressConflictError 识别三驱动对 nodes(network_id, address) 唯一约束冲突
+// 的错误，用于把并发 enroll 的地址竞争转换为可重试的哨兵错误。
+func isAddressConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := err.Error()
+	return strings.Contains(text, "UNIQUE constraint failed: nodes.address") ||
+		strings.Contains(text, "Duplicate entry") ||
+		strings.Contains(text, "duplicate key value violates unique constraint")
 }
 func (s *SQLStore) GetNode(tenant, id string) (Node, error) {
 	return scanNode(s.db.QueryRow(s.query(nodeSelect+` WHERE tenant_id = ? AND id = ?`), tenant, id))
@@ -413,7 +435,10 @@ func (s *SQLStore) UpdateDelivery(v ConfigDelivery) error {
 	if err != nil {
 		return err
 	}
-	count, _ := result.RowsAffected()
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
 	if count > 0 {
 		return nil
 	}
@@ -544,7 +569,10 @@ func (s *SQLStore) ConsumeEnrollment(token string) (EnrollmentToken, error) {
 	if err != nil {
 		return EnrollmentToken{}, err
 	}
-	count, _ := result.RowsAffected()
+	count, err := result.RowsAffected()
+	if err != nil {
+		return EnrollmentToken{}, err
+	}
 	if count != 1 {
 		return EnrollmentToken{}, errNotFound
 	}
