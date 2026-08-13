@@ -8,7 +8,7 @@ import VectorSource from 'ol/source/Vector'
 import { Point, LineString } from 'ol/geom'
 import { Style, Circle as CircleStyle, Fill, Stroke, Text } from 'ol/style'
 import { fromLonLat, toLonLat } from 'ol/proj'
-import { defaults as defaultControls } from 'ol/control'
+import { defaults as defaultControls, ScaleLine } from 'ol/control'
 import { boundingExtent } from 'ol/extent'
 import countryRegionData from '../assets/country-regions.json'
 import 'ol/ol.css'
@@ -36,6 +36,7 @@ const selectedCountryName = ref('')
 const emit = defineEmits<{
   (e: 'agent-click', agent: Agent): void
   (e: 'link-click', link: MapLink): void
+  (e: 'map-blank-click'): void
 }>()
 
 const stateColor: Record<PeerState, string> = {
@@ -289,7 +290,7 @@ onMounted(() => {
   markerSource = new VectorSource()
   map = new OlMap({
     target: el.value!,
-    controls: defaultControls({ zoom: false, rotate: false, attribution: false }),
+    controls: defaultControls({ zoom: false, rotate: false, attribution: false }).extend([new ScaleLine({ units: 'metric' })]),
     layers: [
       new TileLayer({
         source: new XYZ({
@@ -330,6 +331,7 @@ onMounted(() => {
       return true
     }, { hitTolerance: 6 })
     if (!hit) {
+      emit('map-blank-click')
       const [lng, lat] = toLonLat(evt.coordinate)
       zoomToCountry(lng, lat)
     }
