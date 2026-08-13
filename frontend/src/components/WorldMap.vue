@@ -242,11 +242,31 @@ function countryAtCoordinate(lng: number, lat: number) {
 
 /** 中国地理中心（经度 104°E、纬度 35°N），作为默认地图中心 */
 const chinaCenter: [number, number] = [104, 35]
+const chinaRegion = countryRegions.find((country) => country.code === 'CN')
 
 function showGlobalView() {
   if (!map) return
   selectedCountryName.value = ''
   map.getView().animate({ center: toMapProjection(chinaCenter), zoom: 2, duration: 450 })
+}
+
+/** 初始视觉：聚焦中国全境（未找到中国条目时回退到 zoom 3.8 的中国中心）。 */
+function showChinaView() {
+  if (!map) return
+  if (chinaRegion) {
+    const [minLng, minLat, maxLng, maxLat] = chinaRegion.bounds
+    const extent = boundingExtent([
+      toMapProjection([minLng, minLat]),
+      toMapProjection([minLng, maxLat]),
+      toMapProjection([maxLng, minLat]),
+      toMapProjection([maxLng, maxLat]),
+    ])
+    selectedCountryName.value = chinaRegion.name || chinaRegion.code
+    map.getView().fit(extent, { padding: [42, 42, 42, 42], duration: 0, maxZoom: 6 })
+  } else {
+    selectedCountryName.value = ''
+    map.getView().setZoom(3.8)
+  }
 }
 
 function zoomToCountry(lng: number, lat: number) {
@@ -289,6 +309,8 @@ onMounted(() => {
       maxZoom: 12,
     }),
   })
+  // 默认以中国为初始视觉：挂载后立即聚焦中国全境。
+  showChinaView()
 
   // 矢量要素是地理定位的，平移/缩放时由 OpenLayers 自动跟随地图，无需重建。
   // 只在数据变化（下方 watch）或首次挂载时 render；在 change:resolution /
