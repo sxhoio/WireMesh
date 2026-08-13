@@ -65,8 +65,8 @@ export interface ApiNotificationChannel {
   config: ApiNotificationConfig; template: string; subjectTemplate?: string; enabled: boolean; agents: 'all' | string[]; createdAt: string; updatedAt: string
 }
 export interface ApiNotificationLog { id: string; channelId: string; channelName: string; channelType: ApiNotificationChannel['type']; agentName: string; message: string; status: 'sent' | 'failed' | 'test'; createdAt: string }
-export interface ApiAlertRule { id: string; name: string; type: 'node_offline' | 'link_down' | 'config_failed'; threshold_sec: number; channel_ids: string[]; enabled: boolean; quiet_sec: number; created_at: string; updated_at: string }
-export interface ApiAlertEvent { id: string; rule_id: string; rule_name: string; node_id: string; node_name: string; message: string; status: 'sent' | 'failed'; created_at: string }
+export interface ApiAlertRule { id: string; name: string; type: 'node_offline' | 'link_down' | 'config_failed'; threshold_sec: number; channel_ids: string[]; enabled: boolean; quiet_sec: number; scope_type: 'all' | 'network' | 'node'; scope_ids: string[]; created_at: string; updated_at: string }
+export interface ApiAlertEvent { id: string; rule_id: string; rule_name: string; node_id: string; node_name: string; message: string; status: 'sent' | 'failed' | 'recorded' | 'recovered'; created_at: string }
 export interface ApiAccessResource { id: string; network_id: string; name: string; gateway_node_id: string; target: string; port?: number; protocol?: string; description?: string; created_at: string }
 export interface ApiAccessPolicy { id: string; network_id: string; name: string; source_label?: string; source_node_ids: string[]; resource_ids: string[]; enabled: boolean; created_at: string; updated_at: string }
 export interface ApiDNSRecord { id: string; network_id: string; name: string; address: string; description?: string; created_at: string }
@@ -193,6 +193,8 @@ export const api = {
   updateAlertRule: (id: string, payload: Omit<ApiAlertRule, 'id' | 'created_at' | 'updated_at'>) => request<ApiAlertRule>('/api/v1/settings/alert-rules/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify(payload) }),
   deleteAlertRule: (id: string) => request<void>('/api/v1/settings/alert-rules/' + encodeURIComponent(id), { method: 'DELETE' }),
   alertEvents: () => requestArray<ApiAlertEvent>('/api/v1/settings/alert-events'),
+  clearAlertEvents: () => request<void>('/api/v1/settings/alert-events', { method: 'DELETE' }),
+  evaluateAlertRule: (id: string) => request<{ evaluated: number; triggered: number }>('/api/v1/settings/alert-rules/' + encodeURIComponent(id) + '/evaluate', { method: 'POST' }),
   accessResources: (networkId: string) => requestArray<ApiAccessResource>('/api/v1/networks/' + encodeURIComponent(networkId) + '/access-resources'),
   createAccessResource: (networkId: string, payload: Omit<ApiAccessResource, 'id' | 'network_id' | 'created_at'>) => request<ApiAccessResource>('/api/v1/networks/' + encodeURIComponent(networkId) + '/access-resources', { method: 'POST', body: JSON.stringify(payload) }),
   deleteAccessResource: (networkId: string, resourceId: string) => request<void>('/api/v1/networks/' + encodeURIComponent(networkId) + '/access-resources/' + encodeURIComponent(resourceId), { method: 'DELETE' }),

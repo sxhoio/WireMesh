@@ -79,6 +79,9 @@ type Store interface {
 	AllAlertRules() ([]AlertRule, error)
 	AddAlertEvent(AlertEvent) error
 	ListAlertEvents(string) ([]AlertEvent, error)
+	ClearAlertEvents(string) error
+	GetAlertFired(string, string) (AlertFired, error)
+	PutAlertFired(AlertFired) error
 	CreateAccessResource(AccessResource) error
 	DeleteAccessResource(string, string) error
 	ListAccessResources(string, string) ([]AccessResource, error)
@@ -123,6 +126,7 @@ type MemoryStore struct {
 	trafficSamples   []TrafficSample
 	alertRules       map[string]AlertRule
 	alertEvents      []AlertEvent
+	alertFired       map[string]AlertFired
 	accessResources  map[string]AccessResource
 	accessPolicies   map[string]AccessPolicy
 	dnsRecords       map[string]DNSRecord
@@ -134,7 +138,7 @@ type MemoryStore struct {
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		projects: map[string]Project{}, networks: map[string]Network{}, nodes: map[string]Node{}, peers: map[string]PeerRelation{}, revisions: map[string][]ConfigRevision{}, deliveries: map[string]ConfigDelivery{}, commands: map[string]AgentCommand{}, enrollments: map[string]EnrollmentToken{}, identities: map[string]AgentIdentity{}, users: map[string]User{}, settings: map[string]SystemSettings{}, notifications: map[string]NotificationChannel{}, alertRules: map[string]AlertRule{}, accessResources: map[string]AccessResource{}, accessPolicies: map[string]AccessPolicy{}, dnsRecords: map[string]DNSRecord{}, apiTokens: map[string]APIToken{}, apiTokenByHash: map[string]string{}, egressConfigs: map[string]EgressConfig{}, ssoConfigs: map[string]SSOConfig{},
+		projects: map[string]Project{}, networks: map[string]Network{}, nodes: map[string]Node{}, peers: map[string]PeerRelation{}, revisions: map[string][]ConfigRevision{}, deliveries: map[string]ConfigDelivery{}, commands: map[string]AgentCommand{}, enrollments: map[string]EnrollmentToken{}, identities: map[string]AgentIdentity{}, users: map[string]User{}, settings: map[string]SystemSettings{}, notifications: map[string]NotificationChannel{}, alertRules: map[string]AlertRule{}, alertFired: map[string]AlertFired{}, accessResources: map[string]AccessResource{}, accessPolicies: map[string]AccessPolicy{}, dnsRecords: map[string]DNSRecord{}, apiTokens: map[string]APIToken{}, apiTokenByHash: map[string]string{}, egressConfigs: map[string]EgressConfig{}, ssoConfigs: map[string]SSOConfig{},
 	}
 }
 func (s *MemoryStore) CreateProject(v Project) error {
@@ -612,6 +616,32 @@ func (s *MemoryStore) ListAlertEvents(tenant string) ([]AlertEvent, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
+}
+
+func (s *MemoryStore) ClearAlertEvents(tenant string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.alertEvents = slices.DeleteFunc(s.alertEvents, func(event AlertEvent) bool {
+		return event.TenantID == tenant
+	})
+	return nil
+}
+
+func (s *MemoryStore) GetAlertFired(tenant, key string) (AlertFired, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.alertFired[tenant+"\x00"+key]
+	if !ok {
+		return AlertFired{}, errNotFound
+	}
+	return v, nil
+}
+
+func (s *MemoryStore) PutAlertFired(v AlertFired) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.alertFired[v.TenantID+"\x00"+v.AlertKey] = v
+	return nil
 }
 
 func (s *MemoryStore) CreateAccessResource(v AccessResource) error {

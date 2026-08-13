@@ -49,8 +49,6 @@ type App struct {
 	geoLookup       func(string, string) (geoIPLocation, error)
 	commandMu       sync.Mutex
 	commandWakeups  map[string]chan struct{}
-	alertMu         sync.Mutex
-	alertFiredAt    map[string]time.Time
 	sessionMu       sync.Mutex
 	sessions        map[string]UserSession
 	revokedTokens   map[string]time.Time
@@ -77,7 +75,6 @@ func NewApp(cfg Config) (*App, error) {
 		geoReaders:      map[string]*geoReaderState{},
 		geoFailures:     map[string]time.Time{},
 		commandWakeups:  map[string]chan struct{}{},
-		alertFiredAt:    map[string]time.Time{},
 		sessions:        map[string]UserSession{},
 		revokedTokens:   map[string]time.Time{},
 		ssoStates:       map[string]ssoState{},
@@ -170,6 +167,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("PUT /api/v1/settings/alert-rules/{id}", a.withUser(RoleAdmin, a.updateAlertRule))
 	mux.HandleFunc("DELETE /api/v1/settings/alert-rules/{id}", a.withUser(RoleAdmin, a.deleteAlertRule))
 	mux.HandleFunc("GET /api/v1/settings/alert-events", a.withUser(RoleViewer, a.alertEvents))
+	mux.HandleFunc("DELETE /api/v1/settings/alert-events", a.withUser(RoleAdmin, a.clearAlertEvents))
+	mux.HandleFunc("POST /api/v1/settings/alert-rules/{id}/evaluate", a.withUser(RoleAdmin, a.evaluateAlertRuleNow))
 	mux.HandleFunc("GET /api/v1/settings/api-tokens", a.withUser(RoleAdmin, a.apiTokens))
 	mux.HandleFunc("POST /api/v1/settings/api-tokens", a.withUser(RoleAdmin, a.apiTokens))
 	mux.HandleFunc("DELETE /api/v1/settings/api-tokens/{id}", a.withUser(RoleAdmin, a.deleteAPIToken))

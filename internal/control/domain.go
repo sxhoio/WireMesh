@@ -30,14 +30,14 @@ type Project struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 type User struct {
-	ID           string    `json:"id"`
-	TenantID     string    `json:"tenant_id"`
-	Email        string    `json:"email"`
-	PasswordHash string    `json:"-"`
-	Name         string    `json:"name"`
-	Role         Role      `json:"role"`
-	LastLoginAt  time.Time `json:"last_login_at"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID           string          `json:"id"`
+	TenantID     string          `json:"tenant_id"`
+	Email        string          `json:"email"`
+	PasswordHash string          `json:"-"`
+	Name         string          `json:"name"`
+	Role         Role            `json:"role"`
+	LastLoginAt  time.Time       `json:"last_login_at"`
+	CreatedAt    time.Time       `json:"created_at"`
 	TotpSecret   EncryptedSecret `json:"-"`
 	TotpEnabled  bool            `json:"-"`
 }
@@ -293,8 +293,19 @@ type AlertRule struct {
 	ChannelIDs   []string  `json:"channel_ids"`
 	Enabled      bool      `json:"enabled"`
 	QuietSec     int       `json:"quiet_sec"`
+	ScopeType    string    `json:"scope_type"` // all | network | node
+	ScopeIDs     []string  `json:"scope_ids"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// AlertFired 记录规则×节点的触发状态：FiredAt 为最近一次告警时间（静默期判断用），
+// Active 表示当前仍处于故障状态（用于故障恢复时发送恢复通知）。
+type AlertFired struct {
+	TenantID string    `json:"-"`
+	AlertKey string    `json:"alert_key"`
+	FiredAt  time.Time `json:"fired_at"`
+	Active   bool      `json:"active"`
 }
 
 type AlertEvent struct {

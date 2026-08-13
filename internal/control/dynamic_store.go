@@ -84,7 +84,9 @@ func (s *SwitchableStore) ClaimCommands(node string) []AgentCommand {
 	return s.store().ClaimCommands(node)
 }
 func (s *SwitchableStore) UpdateCommand(v AgentCommand) error { return s.store().UpdateCommand(v) }
-func (s *SwitchableStore) GetCommand(id string) (AgentCommand, error) { return s.store().GetCommand(id) }
+func (s *SwitchableStore) GetCommand(id string) (AgentCommand, error) {
+	return s.store().GetCommand(id)
+}
 func (s *SwitchableStore) ListCommands(tenant, node string) ([]AgentCommand, error) {
 	return s.store().ListCommands(tenant, node)
 }
@@ -104,7 +106,7 @@ func (s *SwitchableStore) CreateIdentity(v AgentIdentity) error { return s.store
 func (s *SwitchableStore) GetIdentity(node string) (AgentIdentity, error) {
 	return s.store().GetIdentity(node)
 }
-func (s *SwitchableStore) AddAudit(v AuditEvent) error          { return s.store().AddAudit(v) }
+func (s *SwitchableStore) AddAudit(v AuditEvent) error { return s.store().AddAudit(v) }
 func (s *SwitchableStore) ListAudit(tenant string) ([]AuditEvent, error) {
 	return s.store().ListAudit(tenant)
 }
@@ -121,8 +123,10 @@ func (s *SwitchableStore) UpdateUserLastLogin(id string, at time.Time) error {
 func (s *SwitchableStore) HasUsers() (bool, error)         { return s.store().HasUsers() }
 func (s *SwitchableStore) CreateInitialAdmin(v User) error { return s.store().CreateInitialAdmin(v) }
 
-func (s *SwitchableStore) ListUsers(tenant string) ([]User, error) { return s.store().ListUsers(tenant) }
-func (s *SwitchableStore) CreateUser(v User) error        { return s.store().CreateUser(v) }
+func (s *SwitchableStore) ListUsers(tenant string) ([]User, error) {
+	return s.store().ListUsers(tenant)
+}
+func (s *SwitchableStore) CreateUser(v User) error { return s.store().CreateUser(v) }
 func (s *SwitchableStore) GetSettings(tenant string) (SystemSettings, error) {
 	return s.store().GetSettings(tenant)
 }
@@ -174,6 +178,15 @@ func (s *SwitchableStore) AddAlertEvent(v AlertEvent) error {
 }
 func (s *SwitchableStore) ListAlertEvents(tenant string) ([]AlertEvent, error) {
 	return s.store().ListAlertEvents(tenant)
+}
+func (s *SwitchableStore) ClearAlertEvents(tenant string) error {
+	return s.store().ClearAlertEvents(tenant)
+}
+func (s *SwitchableStore) GetAlertFired(tenant, key string) (AlertFired, error) {
+	return s.store().GetAlertFired(tenant, key)
+}
+func (s *SwitchableStore) PutAlertFired(v AlertFired) error {
+	return s.store().PutAlertFired(v)
 }
 func (s *SwitchableStore) CreateAccessResource(v AccessResource) error {
 	return s.store().CreateAccessResource(v)

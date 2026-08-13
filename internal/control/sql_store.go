@@ -103,7 +103,29 @@ func (s *SQLStore) migrate(ctx context.Context) error {
 	if err := s.ensureNodeAgentStatusColumns(ctx); err != nil {
 		return err
 	}
-	return s.ensureNodeConfigColumns(ctx)
+	if err := s.ensureNodeConfigColumns(ctx); err != nil {
+		return err
+	}
+	return s.ensureAlertRuleScopeColumns(ctx)
+}
+
+func (s *SQLStore) ensureAlertRuleScopeColumns(ctx context.Context) error {
+	if err := s.ensureSchemaColumn(
+		ctx,
+		"alert_rules",
+		schemaColumn{name: "scope_type", definition: "TEXT NOT NULL DEFAULT 'all'", mysqlDefinition: "VARCHAR(16) NOT NULL DEFAULT 'all'"},
+		"inspect alert rules schema",
+		"add alert rules scope type column",
+	); err != nil {
+		return err
+	}
+	return s.ensureSchemaColumn(
+		ctx,
+		"alert_rules",
+		schemaColumn{name: "scope_ids_json", definition: "TEXT NOT NULL DEFAULT '[]'", mysqlDefinition: "LONGTEXT NULL"},
+		"inspect alert rules schema",
+		"add alert rules scope ids column",
+	)
 }
 
 func (s *SQLStore) ensureUserLastLoginColumn(ctx context.Context) error {
@@ -238,6 +260,7 @@ func (s *SQLStore) CreateInitialAdmin(v User) error {
 	}
 	return tx.Commit()
 }
+
 const userSelect = `SELECT id, tenant_id, email, password_hash, name, role, COALESCE(last_login_at, ''), COALESCE(totp_secret_json, ''), COALESCE(totp_enabled, FALSE), created_at FROM users`
 
 func (s *SQLStore) GetUserByEmail(email string) (User, error) {
@@ -988,7 +1011,11 @@ func (s *SQLStore) CreateAlertRule(v AlertRule) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(s.query(`INSERT INTO alert_rules (id, tenant_id, name, type, threshold_sec, channel_ids_json, enabled, quiet_sec, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.Name, v.Type, v.ThresholdSec, channels, v.Enabled, v.QuietSec, timeText(v.CreatedAt), timeText(v.UpdatedAt))
+	scope, err := marshalColumn(v.ScopeIDs)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(s.query(`INSERT INTO alert_rules (id, tenant_id, name, type, threshold_sec, channel_ids_json, enabled, quiet_sec, scope_type, scope_ids_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.Name, v.Type, v.ThresholdSec, channels, v.Enabled, v.QuietSec, v.ScopeType, scope, timeText(v.CreatedAt), timeText(v.UpdatedAt))
 	return err
 }
 func (s *SQLStore) UpdateAlertRule(v AlertRule) error {
@@ -996,16 +1023,20 @@ func (s *SQLStore) UpdateAlertRule(v AlertRule) error {
 	if err != nil {
 		return err
 	}
-	return changed(s.db.Exec(s.query(`UPDATE alert_rules SET name=?, type=?, threshold_sec=?, channel_ids_json=?, enabled=?, quiet_sec=?, updated_at=? WHERE tenant_id=? AND id=?`), v.Name, v.Type, v.ThresholdSec, channels, v.Enabled, v.QuietSec, timeText(v.UpdatedAt), v.TenantID, v.ID))
+	scope, err := marshalColumn(v.ScopeIDs)
+	if err != nil {
+		return err
+	}
+	return changed(s.db.Exec(s.query(`UPDATE alert_rules SET name=?, type=?, threshold_sec=?, channel_ids_json=?, enabled=?, quiet_sec=?, scope_type=?, scope_ids_json=?, updated_at=? WHERE tenant_id=? AND id=?`), v.Name, v.Type, v.ThresholdSec, channels, v.Enabled, v.QuietSec, v.ScopeType, scope, timeText(v.UpdatedAt), v.TenantID, v.ID))
 }
 func (s *SQLStore) DeleteAlertRule(tenant, id string) error {
 	return changed(s.db.Exec(s.query(`DELETE FROM alert_rules WHERE tenant_id=? AND id=?`), tenant, id))
 }
 func (s *SQLStore) ListAlertRules(tenant string) ([]AlertRule, error) {
-	return queryList(s, `SELECT id, tenant_id, name, type, threshold_sec, channel_ids_json, enabled, quiet_sec, created_at, updated_at FROM alert_rules WHERE tenant_id = ? ORDER BY created_at`, scanAlertRule, tenant)
+	return queryList(s, `SELECT id, tenant_id, name, type, threshold_sec, channel_ids_json, enabled, quiet_sec, scope_type, scope_ids_json, created_at, updated_at FROM alert_rules WHERE tenant_id = ? ORDER BY created_at`, scanAlertRule, tenant)
 }
 func (s *SQLStore) AllAlertRules() ([]AlertRule, error) {
-	return queryList(s, `SELECT id, tenant_id, name, type, threshold_sec, channel_ids_json, enabled, quiet_sec, created_at, updated_at FROM alert_rules ORDER BY created_at`, scanAlertRule)
+	return queryList(s, `SELECT id, tenant_id, name, type, threshold_sec, channel_ids_json, enabled, quiet_sec, scope_type, scope_ids_json, created_at, updated_at FROM alert_rules ORDER BY created_at`, scanAlertRule)
 }
 func (s *SQLStore) AddAlertEvent(v AlertEvent) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO alert_events (id, tenant_id, rule_id, rule_name, node_id, node_name, message, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.RuleID, v.RuleName, v.NodeID, v.NodeName, v.Message, v.Status, timeText(v.CreatedAt))
@@ -1014,11 +1045,32 @@ func (s *SQLStore) AddAlertEvent(v AlertEvent) error {
 func (s *SQLStore) ListAlertEvents(tenant string) ([]AlertEvent, error) {
 	return queryList(s, `SELECT id, tenant_id, rule_id, rule_name, node_id, node_name, message, status, created_at FROM alert_events WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200`, scanAlertEvent, tenant)
 }
+func (s *SQLStore) ClearAlertEvents(tenant string) error {
+	_, err := s.db.Exec(s.query(`DELETE FROM alert_events WHERE tenant_id = ?`), tenant)
+	return err
+}
+func (s *SQLStore) GetAlertFired(tenant, key string) (AlertFired, error) {
+	var v AlertFired
+	var fired string
+	if err := s.db.QueryRow(s.query(`SELECT tenant_id, alert_key, fired_at, active FROM alert_fired WHERE tenant_id = ? AND alert_key = ?`), tenant, key).Scan(&v.TenantID, &v.AlertKey, &fired, &v.Active); err != nil {
+		return AlertFired{}, notFound(err)
+	}
+	v.FiredAt = parseTime(fired)
+	return v, nil
+}
+func (s *SQLStore) PutAlertFired(v AlertFired) error {
+	query := `INSERT INTO alert_fired (tenant_id, alert_key, fired_at, active) VALUES (?, ?, ?, ?) ON CONFLICT (tenant_id, alert_key) DO UPDATE SET fired_at=excluded.fired_at, active=excluded.active`
+	if s.driver == "mysql" {
+		query = `INSERT INTO alert_fired (tenant_id, alert_key, fired_at, active) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE fired_at=VALUES(fired_at), active=VALUES(active)`
+	}
+	_, err := s.db.Exec(s.query(query), v.TenantID, v.AlertKey, timeText(v.FiredAt), v.Active)
+	return err
+}
 
 func scanAlertRule(row scanner) (AlertRule, error) {
 	var v AlertRule
-	var channels, created, updated string
-	if err := row.Scan(&v.ID, &v.TenantID, &v.Name, &v.Type, &v.ThresholdSec, &channels, &v.Enabled, &v.QuietSec, &created, &updated); err != nil {
+	var channels, scope, created, updated string
+	if err := row.Scan(&v.ID, &v.TenantID, &v.Name, &v.Type, &v.ThresholdSec, &channels, &v.Enabled, &v.QuietSec, &v.ScopeType, &scope, &created, &updated); err != nil {
 		return AlertRule{}, notFound(err)
 	}
 	if err := json.Unmarshal([]byte(channels), &v.ChannelIDs); err != nil {
@@ -1026,6 +1078,15 @@ func scanAlertRule(row scanner) (AlertRule, error) {
 	}
 	if v.ChannelIDs == nil {
 		v.ChannelIDs = []string{}
+	}
+	if err := json.Unmarshal([]byte(scope), &v.ScopeIDs); err != nil {
+		return AlertRule{}, err
+	}
+	if v.ScopeIDs == nil {
+		v.ScopeIDs = []string{}
+	}
+	if v.ScopeType == "" {
+		v.ScopeType = "all"
 	}
 	v.CreatedAt = parseTime(created)
 	v.UpdatedAt = parseTime(updated)
