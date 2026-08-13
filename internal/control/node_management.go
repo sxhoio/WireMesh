@@ -295,10 +295,10 @@ func (a *App) deleteNode(w http.ResponseWriter, r *http.Request, c claims) {
 		writeError(w, http.StatusNotFound, "节点不存在")
 		return
 	}
-	// 清理以该节点为网关的访问资源，并同步从策略中移除引用，避免策略静默失效。
+	// 清理以该节点为网关的访问资源，并同步从策略中移除资源引用与源节点引用，避免策略静默失效。
 	networkResources, listErr := a.store.ListAccessResources(c.TenantID, node.NetworkID)
+	removed := map[string]bool{}
 	if listErr == nil {
-		removed := map[string]bool{}
 		for _, resource := range networkResources {
 			if resource.GatewayNodeID == node.ID {
 				if delErr := a.store.DeleteAccessResource(c.TenantID, resource.ID); delErr == nil {
@@ -306,24 +306,32 @@ func (a *App) deleteNode(w http.ResponseWriter, r *http.Request, c claims) {
 				}
 			}
 		}
-		if len(removed) > 0 {
-			if policies, policyErr := a.store.ListAccessPolicies(c.TenantID, node.NetworkID); policyErr == nil {
-				for _, policy := range policies {
-					next := make([]string, 0, len(policy.ResourceIDs))
-					changed := false
-					for _, resourceID := range policy.ResourceIDs {
-						if removed[resourceID] {
-							changed = true
-							continue
-						}
-						next = append(next, resourceID)
-					}
-					if changed {
-						policy.ResourceIDs = next
-						policy.UpdatedAt = time.Now().UTC()
-						_ = a.store.UpdateAccessPolicy(policy)
-					}
+	}
+	if policies, policyErr := a.store.ListAccessPolicies(c.TenantID, node.NetworkID); policyErr == nil {
+		for _, policy := range policies {
+			nextResources := make([]string, 0, len(policy.ResourceIDs))
+			resourceChanged := false
+			for _, resourceID := range policy.ResourceIDs {
+				if removed[resourceID] {
+					resourceChanged = true
+					continue
 				}
+				nextResources = append(nextResources, resourceID)
+			}
+			nextSources := make([]string, 0, len(policy.SourceNodeIDs))
+			sourceChanged := false
+			for _, sourceID := range policy.SourceNodeIDs {
+				if sourceID == node.ID {
+					sourceChanged = true
+					continue
+				}
+				nextSources = append(nextSources, sourceID)
+			}
+			if resourceChanged || sourceChanged {
+				policy.ResourceIDs = nextResources
+				policy.SourceNodeIDs = nextSources
+				policy.UpdatedAt = time.Now().UTC()
+				_ = a.store.UpdateAccessPolicy(policy)
 			}
 		}
 	}

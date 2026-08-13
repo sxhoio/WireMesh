@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { api, type ApiAccessPolicy, type ApiAccessResource, type ApiEgressConfig } from '../api'
 import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
+import type { Agent } from '../types'
 import { requestConfirm } from '../utils/confirm'
 
 const app = useAppStore()
@@ -19,6 +20,7 @@ const notice = ref('')
 const publishing = ref(false)
 const pendingChanges = ref(0)
 const egressDirty = ref(false)
+const togglingPolicyId = ref<string | null>(null)
 
 const resourceForm = reactive({
   name: '',
@@ -49,6 +51,9 @@ const egressCIDRsText = ref('')
 const savingEgress = ref(false)
 
 const networkNodes = computed(() => mesh.agents.filter((agent) => agent.networkId === selectedNetworkId.value))
+const selectedNetwork = computed(() => (selectedNetworkId.value ? mesh.networkById(selectedNetworkId.value) : undefined))
+const agentNodes = computed(() => networkNodes.value.filter((agent) => !agent.labels.includes('wiremesh.client=true')))
+const clientNodes = computed(() => networkNodes.value.filter((agent) => agent.labels.includes('wiremesh.client=true')))
 
 /** 目标 CIDR 留空时预览将要使用的默认值（网关节点地址/32） */
 const defaultTargetPreview = computed(() => {
@@ -72,14 +77,73 @@ function resourceDetail(id: string) {
   return resources.value.find((resource) => resource.id === id)
 }
 
+function gatewayAgent(resource: ApiAccessResource) {
+  return mesh.agentById(resource.gateway_node_id)
+}
+
 function gatewayLabel(resource: ApiAccessResource) {
-  const node = mesh.agentById(resource.gateway_node_id)
+  const node = gatewayAgent(resource)
   return node ? node.name : '已删除的节点'
+}
+
+function agentRoleLabel(agent: Agent | undefined) {
+  const role = agent?.labels.find((label) => label.startsWith('wiremesh.role='))?.split('=')[1]
+  if (role === 'hub') return 'Hub'
+  if (role === 'spoke') return 'Spoke'
+  return 'Mesh'
+}
+
+function agentStatusText(agent: Agent) {
+  if (!agent.enabled) return '停用'
+  return agent.status === 'online' ? '在线' : '离线'
 }
 
 function resourceChip(resource: ApiAccessResource) {
   const base = resource.target
   return resource.port ? `${base}:${resource.port}/${resource.protocol || 'any'}` : base
+}
+
+function topologyLabel() {
+  const topology = selectedNetwork.value?.topology
+  if (topology === 'full-mesh') return '全互联（Full Mesh）'
+  if (topology === 'hub-spoke') return '中心辐射（Hub-Spoke）'
+  if (topology === 'custom') return '自定义（Custom）'
+  return ''
+}
+
+/** 两个节点在当前拓扑中是否存在 Peer 链路（决定策略路由能否下发） */
+function pairLinked(aId: string, bId: string) {
+  const topology = selectedNetwork.value?.topology
+  if (topology === 'full-mesh') return true
+  if (topology === 'custom') {
+    const pairs = selectedNetwork.value?.customPairs || []
+    return pairs.some(([x, y]) => (x === aId && y === bId) || (x === bId && y === aId))
+  }
+  if (topology === 'hub-spoke') {
+    const isHub = (id: string) => mesh.agentById(id)?.labels.includes('wiremesh.role=hub') || false
+    return isHub(aId) || isHub(bId)
+  }
+  return true
+}
+
+/** 策略中「源 ↔ 网关」未互联的组合数：这些路由在拓扑中落不到 Peer 配置，不会生效 */
+function policyUnlinkedCount(policy: ApiAccessPolicy) {
+  const topology = selectedNetwork.value?.topology
+  if (!topology || topology === 'full-mesh') return 0
+  const sources = policy.source_label
+    ? networkNodes.value.filter((agent) => agent.labels.includes(policy.source_label || '')).map((agent) => agent.id)
+    : policy.source_node_ids.length
+      ? policy.source_node_ids
+      : networkNodes.value.map((agent) => agent.id)
+  let count = 0
+  for (const sourceID of sources) {
+    for (const resourceID of policy.resource_ids) {
+      const resource = resourceDetail(resourceID)
+      if (!resource || resource.gateway_node_id === sourceID) continue
+      if (!pairLinked(sourceID, resource.gateway_node_id)) count++
+    }
+  }
+  return count
 }
 
 /** 后端 409 引用保护错误映射为可操作的中文提示 */
@@ -93,8 +157,11 @@ function friendlyReferenceError(message: string) {
 
 async function load(silent = false) {
   if (!selectedNetworkId.value) return
-  if (!silent) loading.value = true
-  error.value = ''
+  if (!silent) {
+    loading.value = true
+    // 静默自动刷新不清空用户正在查看的错误提示，只有显式加载才重置
+    error.value = ''
+  }
   if (!silent || !egressDirty.value) {
     const [resourceResult, policyResult, egressResult] = await Promise.allSettled([
       api.accessResources(selectedNetworkId.value),
@@ -148,8 +215,15 @@ watch(selectedNetworkId, () => {
   resetPolicyForm()
   pendingChanges.value = 0
   egressDirty.value = false
+  notice.value = ''
   void load()
 })
+
+function restoreEgress() {
+  egressNodeId.value = egress.value.egress_node_id
+  egressCIDRsText.value = (egress.value.cidrs || []).join(', ')
+  egressDirty.value = false
+}
 
 function resetResourceForm() {
   editingResourceId.value = null
@@ -217,6 +291,8 @@ async function saveResource() {
     error.value = '请选择网关节点'
     return
   }
+  // 先捕获编辑状态：resetResourceForm 会清空 editingResourceId，避免提示文案误判
+  const isEdit = Boolean(editingResourceId.value)
   savingResource.value = true
   error.value = ''
   const payload = {
@@ -228,11 +304,11 @@ async function saveResource() {
     description: resourceForm.description.trim(),
   }
   try {
-    if (editingResourceId.value) await api.updateAccessResource(selectedNetworkId.value, editingResourceId.value, payload)
+    if (isEdit) await api.updateAccessResource(selectedNetworkId.value, editingResourceId.value!, payload)
     else await api.createAccessResource(selectedNetworkId.value, payload)
     resetResourceForm()
     markDirty()
-    notice.value = editingResourceId.value ? '资源已更新，点「保存并发布」后生效' : '资源已创建，点「保存并发布」后生效'
+    notice.value = isEdit ? '资源已更新，点「保存并发布」后生效' : '资源已创建，点「保存并发布」后生效'
     await load(true)
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '保存资源失败'
@@ -252,6 +328,7 @@ async function removeResource(resource: ApiAccessResource) {
   try {
     await api.deleteAccessResource(selectedNetworkId.value, resource.id)
     markDirty()
+    notice.value = '资源已删除，点「保存并发布」后生效'
     await load(true)
   } catch (reason) {
     error.value = friendlyReferenceError(reason instanceof Error ? reason.message : '删除资源失败')
@@ -262,6 +339,10 @@ async function savePolicy() {
   if (!selectedNetworkId.value || savingPolicy.value) return
   if (!policyForm.name.trim()) {
     error.value = '请输入策略名称'
+    return
+  }
+  if (policyForm.source_label.trim() && !policyForm.source_label.trim().includes('=')) {
+    error.value = '源标签选择器必须为 key=value 格式'
     return
   }
   if (!policyForm.resource_ids.length) {
@@ -303,14 +384,45 @@ async function removePolicy(policy: ApiAccessPolicy) {
     await api.deleteAccessPolicy(selectedNetworkId.value, policy.id)
     if (editingPolicyId.value === policy.id) resetPolicyForm()
     markDirty()
+    notice.value = '策略已删除，点「保存并发布」后生效'
     await load(true)
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '删除策略失败'
   }
 }
 
+async function togglePolicy(policy: ApiAccessPolicy) {
+  if (togglingPolicyId.value) return
+  togglingPolicyId.value = policy.id
+  try {
+    await api.updateAccessPolicy(selectedNetworkId.value, policy.id, {
+      name: policy.name,
+      source_label: policy.source_label || '',
+      source_node_ids: policy.source_node_ids,
+      resource_ids: policy.resource_ids,
+      enabled: !policy.enabled,
+    })
+    markDirty()
+    notice.value = policy.enabled ? '策略已停用，点「保存并发布」后生效' : '策略已启用，点「保存并发布」后生效'
+    await load(true)
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '切换策略状态失败'
+  } finally {
+    togglingPolicyId.value = null
+  }
+}
+
 async function publishChanges() {
   if (!selectedNetworkId.value || publishing.value) return
+  if (pendingChanges.value > 0) {
+    const confirmed = await requestConfirm({
+      title: '发布网络配置',
+      message: `将把当前网络的 ${pendingChanges.value} 项资源/策略变更发布到全部节点，继续吗？`,
+      confirmText: '发布',
+      variant: 'warning',
+    })
+    if (!confirmed) return
+  }
   publishing.value = true
   error.value = ''
   try {
@@ -353,6 +465,7 @@ onUnmounted(() => window.clearInterval(refreshTimer))
           <option v-for="n in mesh.networks" :key="n.id" :value="n.id">{{ n.name }}（{{ n.cidr }}）</option>
         </select>
       </div>
+      <span v-if="selectedNetwork" class="chip mb-2 bg-cyan-500/10 text-cyan-300 ring-1 ring-cyan-500/30">{{ topologyLabel() }}</span>
       <p class="mb-2 text-xs text-slate-500">访问策略在发布网络配置时生效：策略允许的资源目标 CIDR 会加入源节点对应网关 Peer 的 AllowedIPs（IP 级路由控制），端口作为元数据保存。</p>
       <div class="ml-auto flex gap-2">
         <p v-if="notice" class="mb-2 self-end text-xs text-emerald-300">{{ notice }}</p>
@@ -373,6 +486,12 @@ onUnmounted(() => window.clearInterval(refreshTimer))
     <div v-if="pendingChanges > 0" class="flex items-center gap-3 rounded-xl bg-amber-500/10 px-4 py-2.5 ring-1 ring-amber-500/30">
       <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4 shrink-0 text-amber-400" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
       <p class="text-xs text-amber-300">有 {{ pendingChanges }} 项资源/策略变更尚未发布到节点，点击右上角「保存并发布」生效。</p>
+    </div>
+
+    <!-- 自定义拓扑提示 -->
+    <div v-if="selectedNetwork && selectedNetwork.topology === 'custom'" class="flex items-center gap-3 rounded-xl bg-cyan-500/10 px-4 py-2.5 ring-1 ring-cyan-500/30">
+      <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4 shrink-0 text-cyan-400" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" /></svg>
+      <p class="text-xs leading-relaxed text-cyan-300">自定义拓扑：策略路由只会下发到「源 ↔ 网关」已配对的节点组合，未配对组合不会生效。请到「系统设置 → 网络 → 自定义 Peer」维护配对关系。</p>
     </div>
 
     <p v-if="error" class="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300 ring-1 ring-red-500/30">{{ error }}</p>
@@ -402,11 +521,19 @@ onUnmounted(() => window.clearInterval(refreshTimer))
             <div v-for="resource in resources" :key="resource.id" class="rounded-xl bg-ink-800/60 p-3.5 ring-1 ring-ink-600">
               <div class="flex items-center gap-2.5">
                 <p class="min-w-0 flex-1 truncate text-sm font-medium text-slate-200">{{ resource.name }}</p>
-                <span class="chip shrink-0 bg-cyan-500/10 font-mono text-cyan-300 ring-1 ring-cyan-500/30">{{ resourceChip(resource) }}</span>
+                <span class="chip max-w-[14rem] shrink-0 truncate bg-cyan-500/10 font-mono text-cyan-300 ring-1 ring-cyan-500/30" :title="resourceChip(resource)">{{ resourceChip(resource) }}</span>
                 <button v-if="app.canOperate" class="chip shrink-0 bg-slate-500/10 text-slate-300 ring-1 ring-slate-500/30" @click="editResource(resource)">编辑</button>
                 <button v-if="app.canOperate" class="chip shrink-0 bg-red-500/10 text-red-300 ring-1 ring-red-500/30" @click="removeResource(resource)">删除</button>
               </div>
-              <p class="mt-1 truncate text-[11px] text-slate-500">网关：{{ gatewayLabel(resource) }}<span v-if="resource.description"> · {{ resource.description }}</span></p>
+              <p class="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500">
+                <span class="truncate">网关：{{ gatewayLabel(resource) }}</span>
+                <template v-if="gatewayAgent(resource)">
+                  <span class="chip shrink-0 bg-violet-500/10 text-violet-300 ring-1 ring-violet-500/30">{{ agentRoleLabel(gatewayAgent(resource)) }}</span>
+                  <span v-if="!gatewayAgent(resource)!.enabled" class="shrink-0 text-amber-400">已停用</span>
+                  <span v-else-if="gatewayAgent(resource)!.status === 'offline'" class="shrink-0 text-amber-400">离线</span>
+                </template>
+                <span v-if="resource.description" class="truncate text-slate-600">· {{ resource.description }}</span>
+              </p>
             </div>
             <p v-if="!resources.length" class="py-5 text-center text-xs text-slate-500">暂无资源</p>
           </div>
@@ -421,7 +548,12 @@ onUnmounted(() => window.clearInterval(refreshTimer))
                 <label class="label">网关节点（资源所在节点）</label>
                 <select v-model="resourceForm.gateway_node_id" class="input">
                   <option value="">选择节点</option>
-                  <option v-for="a in networkNodes" :key="a.id" :value="a.id">{{ a.name }}（{{ a.address }}）</option>
+                  <optgroup v-if="agentNodes.length" label="节点（Agent）">
+                    <option v-for="a in agentNodes" :key="a.id" :value="a.id">[{{ agentStatusText(a) }}] {{ a.name }}（{{ a.address }}）</option>
+                  </optgroup>
+                  <optgroup v-if="clientNodes.length" label="客户端设备">
+                    <option v-for="a in clientNodes" :key="a.id" :value="a.id">[{{ agentStatusText(a) }}] {{ a.name }}（{{ a.address }}）</option>
+                  </optgroup>
                 </select>
                 <p v-if="!networkNodes.length" class="mt-1 text-[11px] text-amber-400">该网络暂无节点，接入节点后再配置资源。</p>
               </div>
@@ -462,6 +594,9 @@ onUnmounted(() => window.clearInterval(refreshTimer))
               <div class="flex flex-wrap items-center gap-2.5">
                 <p class="min-w-0 flex-1 truncate text-sm font-medium text-slate-200">{{ policy.name }}</p>
                 <span class="chip shrink-0 ring-1" :class="policy.enabled ? 'bg-emerald-500/10 text-emerald-300 ring-emerald-500/30' : 'bg-slate-500/10 text-slate-400 ring-slate-500/30'">{{ policy.enabled ? '已启用' : '已停用' }}</span>
+                <button class="relative h-5 w-9 shrink-0 rounded-full transition" :class="policy.enabled ? 'bg-emerald-500' : 'bg-ink-600'" :disabled="!app.canOperate || togglingPolicyId === policy.id" :title="policy.enabled ? '点击停用' : '点击启用'" @click="togglePolicy(policy)">
+                  <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" :class="policy.enabled ? 'left-[18px]' : 'left-0.5'"></span>
+                </button>
                 <button v-if="app.canOperate" class="chip shrink-0 bg-slate-500/10 text-slate-300 ring-1 ring-slate-500/30" @click="editPolicy(policy)">编辑</button>
                 <button v-if="app.canOperate" class="chip shrink-0 bg-red-500/10 text-red-300 ring-1 ring-red-500/30" @click="removePolicy(policy)">删除</button>
               </div>
@@ -476,6 +611,9 @@ onUnmounted(() => window.clearInterval(refreshTimer))
                 </span>
                 <span v-if="!policy.resource_ids.length" class="text-[11px] text-amber-400">未选择资源（策略不生效）</span>
               </div>
+              <p v-if="policy.enabled && policyUnlinkedCount(policy)" class="mt-1.5 rounded-lg bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-300 ring-1 ring-amber-500/20">
+                {{ policyUnlinkedCount(policy) }} 对「源 ↔ 网关」在当前拓扑中未互联，对应路由不会下发{{ selectedNetwork?.topology === 'custom' ? '；请在 系统设置 → 自定义 Peer 中添加配对' : '；Hub-Spoke 拓扑请确保一方为 Hub' }}
+              </p>
             </div>
             <p v-if="!policies.length" class="py-5 text-center text-xs text-slate-500">暂无策略</p>
           </div>
@@ -540,12 +678,18 @@ onUnmounted(() => window.clearInterval(refreshTimer))
       <div class="mt-4 flex flex-wrap items-end gap-3">
         <div>
           <label class="label">出口网关节点</label>
-          <select v-model="egressNodeId" class="input !w-56" @change="egressDirty = true">
+          <select v-model="egressNodeId" class="input !w-64" @change="egressDirty = true">
             <option value="">不启用出口网关</option>
-            <option v-for="a in networkNodes" :key="a.id" :value="a.id">{{ a.name }}（{{ a.address }}）</option>
+            <optgroup v-if="agentNodes.length" label="节点（Agent）">
+              <option v-for="a in agentNodes" :key="a.id" :value="a.id">[{{ agentStatusText(a) }}] {{ a.name }}（{{ a.address }}）</option>
+            </optgroup>
+            <optgroup v-if="clientNodes.length" label="客户端设备">
+              <option v-for="a in clientNodes" :key="a.id" :value="a.id">[{{ agentStatusText(a) }}] {{ a.name }}（{{ a.address }}）</option>
+            </optgroup>
           </select>
         </div>
         <div class="min-w-64 flex-1"><label class="label">转发 CIDR（逗号分隔）</label><input v-model="egressCIDRsText" class="input font-mono" placeholder="0.0.0.0/0" @input="egressDirty = true" /></div>
+        <button v-if="egressDirty" class="btn-ghost !py-1.5 text-xs" title="还原为最近一次保存的出口配置" @click="restoreEgress">还原已保存值</button>
         <button class="btn-secondary" :disabled="!app.canOperate || savingEgress" @click="saveEgress">{{ savingEgress ? '保存中…' : '保存出口配置' }}</button>
       </div>
     </div>

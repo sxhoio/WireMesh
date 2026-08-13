@@ -139,6 +139,11 @@ func TestNodeDeleteCascadesAccessResources(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&policy); err != nil {
 		t.Fatal(err)
 	}
+	// 另一条策略以被删节点作为源节点，验证源引用同步清理
+	response = authenticatedRequest(app, http.MethodPost, "/api/v1/networks/"+network.ID+"/access-policies", token, `{"name":"Source Cascade","source_node_ids":["`+nodeTwo.ID+`"],"resource_ids":[],"enabled":true}`)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create source policy: %d %s", response.Code, response.Body.String())
+	}
 
 	response = authenticatedRequest(app, http.MethodDelete, "/api/v1/nodes/"+nodeTwo.ID, token, "")
 	if response.Code != http.StatusNoContent {
@@ -149,7 +154,17 @@ func TestNodeDeleteCascadesAccessResources(t *testing.T) {
 		t.Fatalf("gateway resources must be removed with node: %#v %v", resources, err)
 	}
 	policies, err := app.store.ListAccessPolicies(admin.TenantID, network.ID)
-	if err != nil || len(policies) != 1 || len(policies[0].ResourceIDs) != 0 {
-		t.Fatalf("policy references must be cleaned: %#v %v", policies, err)
+	if err != nil || len(policies) != 2 {
+		t.Fatalf("policies must survive with cleaned references: %#v %v", policies, err)
+	}
+	byName := map[string]AccessPolicy{}
+	for _, item := range policies {
+		byName[item.Name] = item
+	}
+	if len(byName["Cascade Policy"].ResourceIDs) != 0 {
+		t.Fatalf("resource references must be cleaned: %#v", byName["Cascade Policy"])
+	}
+	if len(byName["Source Cascade"].SourceNodeIDs) != 0 {
+		t.Fatalf("source node references must be cleaned: %#v", byName["Source Cascade"])
 	}
 }
