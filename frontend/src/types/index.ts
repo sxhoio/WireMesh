@@ -50,6 +50,9 @@ export interface WGInterface {
   peers: WGObservedPeer[]
 }
 
+/** 速率相对上一次心跳采样的变化方向 */
+export type RateTrend = 'new' | 'flat' | 'up' | 'down'
+
 export interface Agent {
   id: string
   projectId: string
@@ -76,6 +79,8 @@ export interface Agent {
   lastSeen: number
   rxMbps: number
   txMbps: number
+  rxTrend: RateTrend
+  txTrend: RateTrend
   totalRxGB: number
   totalTxGB: number
   interfaces: WGInterface[]

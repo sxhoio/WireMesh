@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { api, type ApiTrafficRange } from '../api'
 import AddAgentDialog from '../components/AddAgentDialog.vue'
 import EditNodeConfigModal from '../components/EditNodeConfigModal.vue'
@@ -16,6 +17,7 @@ import { ago, fmtBytes, fmtHandshake, fmtMbps, shortKey } from '../utils/format'
 
 const app = useAppStore()
 const mesh = useMeshStore()
+const router = useRouter()
 
 const showAdd = ref(false)
 const keyword = ref('')
@@ -26,12 +28,9 @@ const expanded = ref<Set<string>>(new Set())
 const trafficRange = reactive<Record<string, ApiTrafficRange>>({})
 const trafficRangeOptions: { value: ApiTrafficRange; label: string }[] = [
   { value: '5m', label: '5 分钟' },
-  { value: '10m', label: '10 分钟' },
   { value: '30m', label: '30 分钟' },
   { value: '1h', label: '1 小时' },
-  { value: '2h', label: '2 小时' },
   { value: '6h', label: '6 小时' },
-  { value: '12h', label: '12 小时' },
   { value: '24h', label: '24 小时' },
   { value: '7d', label: '7 天' },
   { value: '30d', label: '30 天' },
@@ -61,6 +60,7 @@ const peerEditingInterface = ref('')
 const logsAgent = ref<Agent | null>(null)
 const refreshing = ref(false)
 const updating = ref(false)
+const batchBusy = ref(false)
 const selectedAgentIds = ref<Set<string>>(new Set())
 const deletingAgentIds = ref<Set<string>>(new Set())
 
@@ -100,7 +100,10 @@ const filtered = computed(() => {
     if (statusFilter.value === 'disabled' && a.enabled) return false
     if (networkFilter.value !== 'all' && a.networkId !== networkFilter.value && !a.interfaces.some((i) => i.networkId === networkFilter.value)) return false
     const kw = keyword.value.trim().toLowerCase()
-    if (kw && !`${a.name} ${a.hostname} ${a.city} ${a.publicIP}`.toLowerCase().includes(kw)) return false
+    if (kw) {
+      const haystack = `${a.name} ${a.hostname} ${a.city} ${a.publicIP} ${a.address} ${a.labels.join(' ')} ${a.interfaces.flatMap((i) => [i.name, i.tunnelIP]).join(' ')}`.toLowerCase()
+      if (!haystack.includes(kw)) return false
+    }
     return true
   })
   list = [...list].sort((a, b) => {
@@ -111,8 +114,29 @@ const filtered = computed(() => {
   return list
 })
 
+const hasAnyAgents = computed(() => mesh.agents.length > 0)
+const hasActiveFilters = computed(() => Boolean(keyword.value.trim()) || statusFilter.value !== 'all' || networkFilter.value !== 'all')
+function clearFilters() {
+  keyword.value = ''
+  statusFilter.value = 'all'
+  networkFilter.value = 'all'
+  sortBy.value = 'name'
+}
+
 const selectedCount = computed(() => filtered.value.filter((agent) => selectedAgentIds.value.has(agent.id)).length)
 const allFilteredSelected = computed(() => filtered.value.length > 0 && selectedCount.value === filtered.value.length)
+
+/** 表格上方的整体状态摘要（按当前项目/网络范围统计） */
+const summary = computed(() => {
+  const list = mesh.scopedAgents
+  return {
+    total: list.length,
+    online: list.filter((agent) => agent.status === 'online').length,
+    offline: list.filter((agent) => agent.status === 'offline').length,
+    disabled: list.filter((agent) => !agent.enabled).length,
+    errorLinks: list.reduce((count, agent) => count + peerErrorCount(agent), 0),
+  }
+})
 
 function setAgentSelected(id: string, checked: boolean) {
   if (checked) selectedAgentIds.value.add(id)
@@ -162,13 +186,48 @@ async function updateAgent(agent: Agent) {
 }
 
 async function updateSelectedAgents() {
-  if (updating.value || !selectedAgentIds.value.size) return
-  updating.value = true
+  if (batchBusy.value || !selectedAgentIds.value.size) return
+  const confirmed = await requestConfirm({
+    title: '批量更新 Agent',
+    message: `将向已选的 ${selectedAgentIds.value.size} 个节点下发 Agent 自更新命令，离线或暂不支持的节点会被后端跳过。`,
+    confirmText: '下发更新',
+    variant: 'warning',
+  })
+  if (!confirmed) return
+  batchBusy.value = true
   try {
     const ids = [...selectedAgentIds.value]
     if (await mesh.updateAgentBinaries(ids)) selectedAgentIds.value = new Set()
   } finally {
-    updating.value = false
+    batchBusy.value = false
+  }
+}
+
+async function collectSelectedAgents() {
+  if (batchBusy.value || !selectedAgentIds.value.size) return
+  batchBusy.value = true
+  try {
+    await mesh.collectSelected([...selectedAgentIds.value])
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+async function toggleSelectedEnabled(enabled: boolean) {
+  if (batchBusy.value || !selectedAgentIds.value.size) return
+  const confirmed = await requestConfirm({
+    title: enabled ? '批量启用节点' : '批量停用节点',
+    message: `将${enabled ? '启用' : '停用'}已选的 ${selectedAgentIds.value.size} 个节点，每个节点都会生成配置版本并自动下发。`,
+    confirmText: enabled ? '启用节点' : '停用节点',
+    variant: 'warning',
+  })
+  if (!confirmed) return
+  batchBusy.value = true
+  try {
+    const ids = [...selectedAgentIds.value]
+    if (await mesh.setAgentsEnabled(ids, enabled)) selectedAgentIds.value = new Set()
+  } finally {
+    batchBusy.value = false
   }
 }
 
@@ -179,6 +238,26 @@ function toggleExpand(id: string) {
     if (!trafficRange[id]) trafficRange[id] = '24h'
   }
   expanded.value = new Set(expanded.value)
+}
+
+/** 整行点击展开/收起；用户正在选中文本时不触发 */
+function onRowClick(a: Agent) {
+  const selection = window.getSelection()
+  if (selection && selection.toString()) return
+  toggleExpand(a.id)
+}
+
+/** 速率趋势指示（相对上一次心跳采样） */
+function trendSymbol(trend: Agent['rxTrend']) {
+  if (trend === 'up') return '▲'
+  if (trend === 'down') return '▼'
+  return ''
+}
+
+function trendClass(trend: Agent['rxTrend']) {
+  if (trend === 'up') return 'text-emerald-400'
+  if (trend === 'down') return 'text-amber-400'
+  return 'text-slate-600'
 }
 
 type PeerRow = {
@@ -228,8 +307,8 @@ const agentErrorCounts = computed(() => {
   for (const agent of mesh.agents) {
     const ids = new Set(agent.interfaces.map((i) => i.id))
     let count = 0
-    for (const l of mesh.links) {
-      if ((ids.has(l.a) || ids.has(l.b)) && l.state === 'down') count++
+    for (const l of mesh.scopedLinks) {
+      if ((ids.has(l.a) || ids.has(l.b)) && l.displayState === 'down') count++
     }
     map.set(agent.id, count)
   }
@@ -289,7 +368,7 @@ async function rotateKey(agent: Agent) {
     <div class="flex flex-wrap items-center gap-3">
       <div class="relative min-w-0 flex-1 sm:max-w-64">
         <svg viewBox="0 0 24 24" fill="none" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
-        <input v-model="keyword" class="input w-full pl-9" placeholder="搜索名称 / 主机名 / IP…" />
+        <input v-model="keyword" class="input w-full pl-9" placeholder="搜索名称 / 主机名 / IP / 标签…" />
       </div>
       <select v-model="statusFilter" class="input !w-28 shrink-0">
         <option value="all">全部状态</option>
@@ -307,8 +386,17 @@ async function rotateKey(agent: Agent) {
         <option value="rx">按流量</option>
       </select>
       <div class="ml-auto flex items-center gap-2">
-        <button v-if="app.canOperate && selectedCount" class="btn-secondary flex items-center gap-1.5 text-cyan-300" :disabled="updating" title="向已选节点下发 Agent 自更新命令" @click="updateSelectedAgents">
-          {{ updating ? '更新中…' : `更新已选 (${selectedCount})` }}
+        <button v-if="app.canOperate && selectedCount" class="btn-secondary flex items-center gap-1.5 text-cyan-300" :disabled="batchBusy" title="向已选节点下发 Agent 自更新命令" @click="updateSelectedAgents">
+          {{ batchBusy ? '处理中…' : `更新已选 (${selectedCount})` }}
+        </button>
+        <button v-if="app.canOperate && selectedCount" class="btn-secondary flex items-center gap-1.5 text-emerald-300" :disabled="batchBusy" title="只对已选节点下发即时采集命令" @click="collectSelectedAgents">
+          {{ batchBusy ? '处理中…' : `采集已选 (${selectedCount})` }}
+        </button>
+        <button v-if="app.canOperate && selectedCount" class="btn-secondary flex items-center gap-1.5 text-amber-300" :disabled="batchBusy" title="停用已选节点，不再参与配置下发" @click="toggleSelectedEnabled(false)">
+          {{ batchBusy ? '处理中…' : `停用已选 (${selectedCount})` }}
+        </button>
+        <button v-if="app.canOperate && selectedCount" class="btn-secondary flex items-center gap-1.5 text-emerald-300" :disabled="batchBusy" title="重新启用已选节点" @click="toggleSelectedEnabled(true)">
+          {{ batchBusy ? '处理中…' : `启用已选 (${selectedCount})` }}
         </button>
         <button v-if="app.canOperate" class="btn-secondary flex items-center gap-1.5" :disabled="refreshing" title="立即请求在线节点采集并上报最新状态" @click="refreshAll">
           <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" :class="{ 'animate-spin': refreshing }" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
@@ -321,8 +409,27 @@ async function rotateKey(agent: Agent) {
       </div>
     </div>
 
+    <!-- 汇总统计条 -->
+    <div v-if="summary.total" class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+      <p>共 <span class="font-medium text-slate-300">{{ summary.total }}</span> 个节点<span v-if="filtered.length !== summary.total"> · 当前筛选出 {{ filtered.length }} 个</span></p>
+      <p><span class="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 align-middle"></span><span class="text-emerald-400">{{ summary.online }}</span> 在线 · <span class="text-slate-400">{{ summary.offline }}</span> 离线<span v-if="summary.disabled"> · {{ summary.disabled }} 停用</span></p>
+      <p v-if="summary.errorLinks" class="flex items-center gap-1.5"><span class="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-red-400 align-middle"></span><span class="text-red-400">{{ summary.errorLinks }}</span> 条异常链路</p>
+      <button v-if="selectedAgentIds.size" class="ml-auto rounded-md px-2 py-0.5 text-[11px] text-cyan-300 transition hover:bg-cyan-500/10" @click="selectedAgentIds = new Set()">已选 {{ selectedAgentIds.size }} 项 · 清除选择</button>
+    </div>
+
+    <!-- 空状态：尚无任何节点 -->
+    <div v-if="!hasAnyAgents" class="panel p-8 text-center">
+      <p class="text-sm text-slate-300">还没有接入任何节点</p>
+      <p class="mx-auto mt-1 max-w-xl text-xs leading-relaxed text-slate-500">节点（Agent）部署在目标 Linux 主机上，负责管理 WireGuard 接口、上报状态并接收配置下发。接入前请先在「系统设置 → 项目与网络」中创建网络。</p>
+      <div class="mt-4 flex justify-center gap-2.5">
+        <button v-if="app.isAdmin" class="btn-primary" @click="showAdd = true">接入第一个节点</button>
+        <button v-else class="btn-primary" @click="router.push({ name: 'settings' })">前往系统设置</button>
+        <button class="btn-secondary" @click="router.push({ name: 'clients' })">接入客户端设备</button>
+      </div>
+    </div>
+
     <!-- Agent 列表：table-fixed 固定列宽，所有行严格对齐 -->
-    <div class="panel overflow-hidden">
+    <div v-else class="panel overflow-hidden">
       <table class="w-full table-fixed border-collapse text-left">
         <thead>
           <tr class="text-[11px] font-medium text-slate-500">
@@ -330,33 +437,36 @@ async function rotateKey(agent: Agent) {
               <input type="checkbox" class="h-3.5 w-3.5 rounded border-ink-600 bg-ink-900 text-cyan-400" :checked="allFilteredSelected" @change="toggleSelectAll(checkboxChecked($event))" />
             </th>
             <th class="w-7 px-1 py-3"></th>
-            <th class="w-36 px-2 py-3">节点</th>
+            <th class="w-40 px-2 py-3">节点</th>
             <th class="hidden w-24 px-2 py-3 md:table-cell">接口</th>
             <th class="hidden w-28 px-2 py-3 md:table-cell">隧道 IP</th>
             <th class="hidden w-28 px-2 py-3 2xl:table-cell">公网 Endpoint</th>
-            <th class="hidden w-24 px-2 py-3 2xl:table-cell">速率 (Mbps)</th>
+            <th class="hidden w-24 px-2 py-3 xl:table-cell">速率 (Mbps)</th>
             <th class="hidden w-24 px-2 py-3 2xl:table-cell">总流量</th>
-            <th class="hidden w-20 px-2 py-3 2xl:table-cell">Peer</th>
-            <th class="hidden w-56 px-2 py-3 xl:table-cell">版本 · 上报</th>
+            <th class="hidden w-20 px-2 py-3 xl:table-cell">Peer</th>
+            <th class="hidden w-56 px-2 py-3 lg:table-cell">版本 · 上报</th>
             <th class="w-28 px-2 py-3 text-center">操作</th>
           </tr>
         </thead>
         <tbody>
           <template v-for="a in filtered" :key="a.id">
-            <tr class="border-t border-ink-700/70 transition hover:bg-ink-850/40">
-              <td class="px-2 py-3.5">
+            <tr class="cursor-pointer border-t border-ink-700/70 transition hover:bg-ink-850/40" @click="onRowClick(a)">
+              <td class="px-2 py-3.5" @click.stop>
                 <div class="flex items-center gap-1.5">
                   <input type="checkbox" class="h-3.5 w-3.5 rounded border-ink-600 bg-ink-900 text-cyan-400" :checked="selectedAgentIds.has(a.id)" @click.stop @change="setAgentSelected(a.id, checkboxChecked($event))" />
-                <button class="text-slate-500 transition hover:text-slate-300" @click="toggleExpand(a.id)">
+                <button class="text-slate-500 transition hover:text-slate-300" @click.stop="toggleExpand(a.id)">
                   <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4 transition-transform" :class="{ 'rotate-90': expanded.has(a.id) }" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" /></svg>
                 </button>
                 </div>
               </td>
               <td class="px-1 py-3.5">
-                <span class="block h-2.5 w-2.5 rounded-full" :class="!a.enabled ? 'bg-slate-600' : a.status === 'online' ? 'bg-emerald-400 shadow-glow' : 'bg-slate-500'"></span>
+                <span class="block h-2.5 w-2.5 rounded-full" :class="!a.enabled ? 'bg-slate-600' : a.status === 'online' ? 'bg-emerald-400 shadow-glow' : 'bg-slate-500'" :title="!a.enabled ? '已停用' : a.status === 'online' ? '在线' : '离线（最近上报 ' + ago(a.lastSeen) + '）'"></span>
               </td>
               <td class="px-2 py-3.5">
-                <p class="truncate font-medium leading-snug text-white">{{ a.name }}</p>
+                <div class="flex items-center gap-1.5">
+                  <p class="truncate font-medium leading-snug text-white">{{ a.name }}</p>
+                  <span v-if="!a.enabled" class="chip shrink-0 bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/30">停用</span>
+                </div>
                 <p class="truncate text-xs text-slate-500">{{ a.hostname }}</p>
                 <p v-if="a.collectionError" class="mt-0.5 truncate text-[11px] text-amber-400" :title="a.collectionError">WireGuard 采集异常</p>
                 <p class="mt-0.5 truncate font-mono text-[11px] text-slate-600 md:hidden">{{ a.interfaces.map((i) => i.name).join(', ') || '待配置' }} · {{ a.interfaces.map((i) => i.tunnelIP).join(', ') || a.address }} · 总 {{ fmtBytes(agentTotalBytes(a)) }}</p>
@@ -371,22 +481,24 @@ async function rotateKey(agent: Agent) {
                 <p class="truncate font-mono text-xs text-slate-300">{{ a.interfaces.map((i) => i.tunnelIP).join(', ') || a.address }}</p>
               </td>
               <td class="hidden px-2 py-3.5 2xl:table-cell">
-                <p class="truncate font-mono text-xs text-slate-300">{{ a.publicIP }}</p>
+                <p class="truncate font-mono text-xs text-slate-300">{{ a.publicIP || '—' }}</p>
               </td>
-              <td class="hidden whitespace-nowrap px-2 py-3.5 font-mono text-xs text-slate-300 2xl:table-cell">↓{{ fmtMbps(a.rxMbps) }} ↑{{ fmtMbps(a.txMbps) }}</td>
+              <td class="hidden whitespace-nowrap px-2 py-3.5 font-mono text-xs text-slate-300 xl:table-cell">
+                <span class="mr-1" :class="trendClass(a.rxTrend)">{{ trendSymbol(a.rxTrend) }}</span>↓{{ fmtMbps(a.rxMbps) }} <span class="mr-1 ml-2" :class="trendClass(a.txTrend)">{{ trendSymbol(a.txTrend) }}</span>↑{{ fmtMbps(a.txMbps) }}
+              </td>
               <td class="hidden whitespace-nowrap px-2 py-3.5 font-mono text-xs text-slate-300 2xl:table-cell" :title="`自接口启用以来累计：接收 ${fmtBytes(a.totalRxGB * 1024 ** 3)} · 发送 ${fmtBytes(a.totalTxGB * 1024 ** 3)}`">{{ fmtBytes(agentTotalBytes(a)) }}</td>
-              <td class="hidden whitespace-nowrap px-2 py-3.5 text-xs text-slate-300 2xl:table-cell">
+              <td class="hidden whitespace-nowrap px-2 py-3.5 text-xs text-slate-300 xl:table-cell" :title="'点击查看该节点全部链路'">
                 {{ peersOf(a.interfaces[0]).length + a.interfaces.slice(1).reduce((n, i) => n + peersOf(i).length, 0) }}
                 <span v-if="peerErrorCount(a)" class="ml-1 text-red-400">({{ peerErrorCount(a) }} 异常)</span>
               </td>
-              <td class="hidden px-2 py-3.5 xl:table-cell">
+              <td class="hidden px-2 py-3.5 lg:table-cell">
                 <p class="flex min-w-0 items-center gap-1 truncate text-xs leading-relaxed text-slate-500" :title="`${a.version} · ${a.osInfo}`">
                   <span class="truncate">{{ a.version || '未知版本' }} · {{ a.osInfo }}</span>
                   <span v-if="agentNeedsUpdate(a)" class="chip shrink-0 bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/30">可更新</span>
                 </p>
-                <p class="truncate text-xs text-slate-500">最后上报 {{ ago(a.lastSeen) }}<span v-if="!a.enabled" class="ml-1.5 text-amber-400">已停用</span></p>
+                <p class="truncate text-xs text-slate-500">最后上报 {{ ago(a.lastSeen) }}</p>
               </td>
-              <td class="px-2 py-3.5">
+              <td class="px-2 py-3.5" @click.stop>
                 <div class="flex items-center justify-center gap-1.5">
                   <button
                     v-if="app.canOperate"
@@ -474,7 +586,12 @@ async function rotateKey(agent: Agent) {
             </tr>
           </template>
           <tr v-if="!filtered.length">
-            <td colspan="11" class="py-12 text-center text-sm text-slate-500">没有匹配的 Agent</td>
+            <td colspan="11" class="py-12 text-center">
+              <p class="text-sm text-slate-400">{{ hasActiveFilters ? '当前筛选条件下没有匹配的节点' : '当前项目/网络范围内没有节点' }}</p>
+              <p class="mt-1 text-xs text-slate-600">{{ hasActiveFilters ? '尝试放宽关键词或状态/网络筛选' : '可切换顶部项目/网络范围，或接入新节点' }}</p>
+              <button v-if="hasActiveFilters" class="btn-secondary mt-4" @click="clearFilters">清除筛选条件</button>
+              <button v-if="app.isAdmin" class="btn-primary mt-4" :class="{ 'ml-2': hasActiveFilters }" @click="showAdd = true">接入节点</button>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -505,7 +622,7 @@ async function rotateKey(agent: Agent) {
               @click="updateAgent(a); closeMenu()"
             >{{ agentRemoteUpdateBlockedReason(a) ? '更新 Agent（需手动升级）' : agentNeedsUpdate(a) ? '更新 Agent（可更新）' : '更新 Agent' }}</button>
             <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="mesh.checkConnectivity(a.id); closeMenu()">连通性检测</button>
-            <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="editingAgent = a; closeMenu()">编辑接口设置</button>
+            <button v-if="app.canOperate" class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="editingAgent = a; closeMenu()">编辑配置</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.interfaces.map((i) => i.tunnelIP).filter(Boolean).join(', ') || a.address, 'ip-' + a.id)">{{ copiedKey === 'ip-' + a.id ? '已复制 ✓' : '复制隧道 IP' }}</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.publicIP, 'ep-' + a.id)">{{ copiedKey === 'ep-' + a.id ? '已复制 ✓' : '复制 Endpoint' }}</button>
             <button class="flex w-full items-center gap-2.5 px-4 py-2 text-left text-xs text-slate-300 hover:bg-ink-700" @click="copyText(a.interfaces[0]?.publicKey || a.publicKey, 'pk-' + a.id)">{{ copiedKey === 'pk-' + a.id ? '已复制 ✓' : '复制 Public Key' }}</button>

@@ -8,7 +8,7 @@ import { pollUntil } from '../utils/pollUntil'
 import { useAppStore } from './app'
 
 let pollingTimer: number | undefined
-const trafficSamples = new Map<string, { time: number; receiveBytes: number; transmitBytes: number }>()
+const trafficSamples = new Map<string, { time: number; receiveBytes: number; transmitBytes: number; rxMbps: number; txMbps: number }>()
 const deletingNodeIDs = new Set<string>()
 const immediateCollectTimeoutMs = 10_000
 const immediateCollectPollMs = 400
@@ -31,6 +31,15 @@ function nodeRole(node: ApiNode): WGInterface['role'] {
   const value = node.labels?.['wiremesh.role']
   return value === 'hub' || value === 'spoke' || value === 'mesh' ? value : 'mesh'
 }
+
+/** 对比上次采样的速率，给出趋势方向；低于噪声阈值视为持平 */
+function rateTrend(prev: number | undefined, current: number): 'new' | 'flat' | 'up' | 'down' {
+  if (prev === undefined) return 'new'
+  const threshold = Math.max(0.01, prev * 0.05)
+  if (current - prev > threshold) return 'up'
+  if (prev - current > threshold) return 'down'
+  return 'flat'
+}
 function toAgent(node: ApiNode, offlineSeconds: number): Agent {
   const seen = timestamp(node.last_seen)
   const online = seen > 0 && Date.now() - seen <= offlineSeconds * 1000
@@ -42,7 +51,9 @@ function toAgent(node: ApiNode, offlineSeconds: number): Agent {
   const elapsedSeconds = previousSample ? (sampleTime - previousSample.time) / 1000 : 0
   const rxMbps = previousSample && elapsedSeconds > 0 ? Math.max(0, receiveBytes - previousSample.receiveBytes) * 8 / elapsedSeconds / 1_000_000 : 0
   const txMbps = previousSample && elapsedSeconds > 0 ? Math.max(0, transmitBytes - previousSample.transmitBytes) * 8 / elapsedSeconds / 1_000_000 : 0
-  trafficSamples.set(node.id, { time: sampleTime, receiveBytes, transmitBytes })
+  const rxTrend = rateTrend(previousSample?.rxMbps, rxMbps)
+  const txTrend = rateTrend(previousSample?.txMbps, txMbps)
+  trafficSamples.set(node.id, { time: sampleTime, receiveBytes, transmitBytes, rxMbps, txMbps })
   return {
     id: node.id,
     projectId: node.project_id,
@@ -69,6 +80,8 @@ function toAgent(node: ApiNode, offlineSeconds: number): Agent {
     lastSeen: seen,
     rxMbps,
     txMbps,
+    rxTrend,
+    txTrend,
     totalRxGB: receiveBytes / 1024 / 1024 / 1024,
     totalTxGB: transmitBytes / 1024 / 1024 / 1024,
     interfaces: observed.map((iface) => ({
@@ -701,14 +714,16 @@ export const useMeshStore = defineStore('mesh', {
       this.error = ''
       const knownLastSeen = new Map(this.agents.filter((agent) => agent.enabled).map((agent) => [agent.id, agent.lastSeen]))
       try {
-        const result = await api.collectAllNodes()
+        // 只对在线节点下发即时采集，避免离线节点让等待流程走满 10 秒超时
+        const onlineIDs = this.agents.filter((agent) => agent.enabled && agent.status === 'online').map((agent) => agent.id)
+        const result = await api.collectAllNodes(onlineIDs)
         const targetIDs = result.node_ids?.length
           ? result.node_ids
           : this.agents.filter((agent) => agent.enabled).map((agent) => agent.id)
         const previousLastSeen = new Map(targetIDs.map((id) => [id, knownLastSeen.get(id) || 0]))
         const received = await this.waitForCollectedTelemetry(targetIDs, previousLastSeen)
         this.notice = result.created === 0
-          ? '没有可即时采集的已启用节点'
+          ? '没有可即时采集的在线节点'
           : received.expected === 0
             ? '已向 ' + result.created + ' 个节点发送即时采集请求；当前没有在线节点'
             : received.received === received.expected
@@ -716,6 +731,34 @@ export const useMeshStore = defineStore('mesh', {
               : '已收到 ' + received.received + '/' + received.expected + ' 个在线节点的最新状态，其余节点仍在等待回传'
         return true
       } catch (reason) { this.error = reason instanceof Error ? reason.message : '强制上报下发失败'; return false }
+    },
+    async collectSelected(ids: string[]) {
+      this.error = ''
+      if (!ids.length) return false
+      const knownLastSeen = new Map(this.agents.filter((agent) => ids.includes(agent.id) && agent.enabled).map((agent) => [agent.id, agent.lastSeen]))
+      try {
+        const result = await api.collectAllNodes(ids)
+        const targetIDs = result.node_ids?.length ? result.node_ids : ids
+        const previousLastSeen = new Map(targetIDs.map((id) => [id, knownLastSeen.get(id) || 0]))
+        const received = await this.waitForCollectedTelemetry(targetIDs, previousLastSeen)
+        this.notice = result.created === 0
+          ? '所选节点均为离线状态，没有下发采集命令'
+          : received.received === received.expected
+            ? '已收到 ' + received.received + ' 个所选节点的最新状态，界面已更新'
+            : '已收到 ' + received.received + '/' + received.expected + ' 个所选节点的最新状态，其余节点仍在等待回传'
+        return true
+      } catch (reason) { this.error = reason instanceof Error ? reason.message : '批量下发采集命令失败'; return false }
+    },
+    async setAgentsEnabled(ids: string[], enabled: boolean) {
+      this.error = ''
+      if (!ids.length) return false
+      try {
+        // 逐个 PATCH 以保持配置版本与下发顺序一致，避免并发发布产生竞态
+        for (const id of ids) await api.updateNode(id, { enabled })
+        await this.refresh()
+        this.notice = (enabled ? '已启用 ' : '已停用 ') + ids.length + ' 个节点，新配置已生成并自动下发'
+        return true
+      } catch (reason) { this.error = reason instanceof Error ? reason.message : '批量变更节点状态失败'; return false }
     },
     async updateAgentBinary(id: string) {
       this.error = ''
