@@ -131,8 +131,8 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
       <p class="text-sm text-slate-300">欢迎使用 WireMesh，当前还没有任何节点。</p>
       <p class="mt-1 text-xs text-slate-500">先在「系统设置 → 项目与网络」创建网络，再到「客户端接入」或「节点列表 → 接入节点」部署节点。</p>
       <div class="mt-4 flex justify-center gap-2.5">
-        <button class="btn-primary" @click="router.push({ name: 'settings' })">创建项目与网络</button>
-        <button class="btn-secondary" @click="router.push({ name: 'clients' })">接入客户端设备</button>
+        <button class="btn-primary" @click="router.push({ name: 'clients' })">接入客户端设备</button>
+        <button class="btn-secondary" @click="router.push({ name: 'nodes' })">接入节点</button>
       </div>
     </div>
 
