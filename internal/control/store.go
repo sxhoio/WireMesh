@@ -72,6 +72,7 @@ type Store interface {
 	DeleteNotificationChannel(string, string) error
 	AddNotificationLog(NotificationLog) error
 	ListNotificationLogs(string) ([]NotificationLog, error)
+	ListNotificationLogsPage(string, int, int) ([]NotificationLog, bool, error)
 	ListAuditPage(string, int, int) ([]AuditEvent, error)
 	ClearAudit(string) error
 	CreateAlertRule(AlertRule) error
@@ -81,6 +82,7 @@ type Store interface {
 	AllAlertRules() ([]AlertRule, error)
 	AddAlertEvent(AlertEvent) error
 	ListAlertEvents(string) ([]AlertEvent, error)
+	ListAlertEventsPage(string, int, int) ([]AlertEvent, bool, error)
 	ClearAlertEvents(string) error
 	GetAlertFired(string, string) (AlertFired, error)
 	PutAlertFired(AlertFired) error
@@ -631,6 +633,15 @@ func (s *MemoryStore) ClearAlertEvents(tenant string) error {
 	return nil
 }
 
+func (s *MemoryStore) ListAlertEventsPage(tenant string, limit, offset int) ([]AlertEvent, bool, error) {
+	items, err := s.ListAlertEvents(tenant)
+	if err != nil {
+		return nil, false, err
+	}
+	page := pageSlice(items, limit, offset)
+	return page, offset+len(page) < len(items), nil
+}
+
 func (s *MemoryStore) GetAlertFired(tenant, key string) (AlertFired, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1105,4 +1116,13 @@ func (s *MemoryStore) ListNotificationLogs(tenant string) ([]NotificationLog, er
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
+}
+
+func (s *MemoryStore) ListNotificationLogsPage(tenant string, limit, offset int) ([]NotificationLog, bool, error) {
+	items, err := s.ListNotificationLogs(tenant)
+	if err != nil {
+		return nil, false, err
+	}
+	page := pageSlice(items, limit, offset)
+	return page, offset+len(page) < len(items), nil
 }

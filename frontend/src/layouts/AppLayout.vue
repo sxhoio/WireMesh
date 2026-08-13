@@ -32,12 +32,25 @@ function pushToast(message: string, kind: ToastKind) {
   toastTimers.set(id, window.setTimeout(() => dismissToast(id), 5000))
 }
 
+let lastToastKey = ''
+let lastToastAt = 0
+
 watch(
   () => ({ error: mesh.error, notice: mesh.notice }),
   ({ error, notice }) => {
-    if (error) pushToast(error, 'error')
-    else if (notice) pushToast(notice, 'success')
-    if (error || notice) mesh.clearMessage()
+    const message = error || notice
+    if (!message) return
+    // 持续故障时每轮轮询都会重新写入同一文案，8 秒内去重避免重复弹窗
+    const key = (error ? 'e:' : 'n:') + message
+    const now = Date.now()
+    if (key === lastToastKey && now - lastToastAt < 8000) {
+      mesh.clearMessage()
+      return
+    }
+    lastToastKey = key
+    lastToastAt = now
+    pushToast(message, error ? 'error' : 'success')
+    mesh.clearMessage()
   },
   { flush: 'post', immediate: true },
 )

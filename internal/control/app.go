@@ -16,10 +16,12 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"net/mail"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +61,8 @@ type App struct {
 	agentBinaryPath        string
 	agentVersion           string
 	requireAgentClientCert bool
+	loginMu                sync.Mutex
+	loginFailures          map[string][]time.Time
 }
 
 func NewApp(cfg Config) (*App, error) {
@@ -87,6 +91,7 @@ func NewApp(cfg Config) (*App, error) {
 		agentBinaryPath:        cfg.AgentBinaryPath,
 		agentVersion:           strings.TrimSpace(cfg.AgentVersion),
 		requireAgentClientCert: cfg.RequireAgentClientCert,
+		loginFailures:          map[string][]time.Time{},
 	}
 	app.geoLookup = app.lookupGeoIPLocation
 	app.auth = newAuthenticator(store, cfg.MasterKey+"-auth")
@@ -329,13 +334,63 @@ func requestToken(r *http.Request) string {
 	}
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
+
+const (
+	loginMaxAttempts = 5
+	loginWindow      = 15 * time.Minute
+)
+
+// clientIP 提取请求来源 IP（忽略端口），用于登录限流键。
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// checkLoginAllowed 返回该邮箱+IP 组合是否允许继续尝试登录。
+func (a *App) checkLoginAllowed(email, ip string) bool {
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	key := strings.ToLower(strings.TrimSpace(email)) + "\x00" + ip
+	now := time.Now()
+	kept := make([]time.Time, 0, len(a.loginFailures[key]))
+	for _, at := range a.loginFailures[key] {
+		if now.Sub(at) <= loginWindow {
+			kept = append(kept, at)
+		}
+	}
+	a.loginFailures[key] = kept
+	return len(kept) < loginMaxAttempts
+}
+
+func (a *App) recordLoginFailure(email, ip string) {
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	key := strings.ToLower(strings.TrimSpace(email)) + "\x00" + ip
+	a.loginFailures[key] = append(a.loginFailures[key], time.Now())
+}
+
+func (a *App) clearLoginFailures(email, ip string) {
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	delete(a.loginFailures, strings.ToLower(strings.TrimSpace(email))+"\x00"+ip)
+}
+
 func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	var in struct{ Email, Password, OTP string }
 	if !decode(w, r, &in) {
 		return
 	}
+	ip := clientIP(r)
+	if !a.checkLoginAllowed(in.Email, ip) {
+		writeError(w, http.StatusTooManyRequests, "登录尝试次数过多，请 15 分钟后再试")
+		return
+	}
 	token, user, err := a.auth.Login(in.Email, in.Password)
 	if err != nil {
+		a.recordLoginFailure(in.Email, ip)
 		if errors.Is(err, errLoginPersistence) {
 			writeError(w, http.StatusInternalServerError, "保存登录状态失败")
 		} else {
@@ -346,15 +401,22 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	if user.TotpEnabled {
 		secretBytes, decryptErr := a.box.Decrypt(user.TotpSecret)
 		if decryptErr != nil || !verifyTOTP(string(secretBytes), in.OTP, time.Now()) {
-			writeError(w, http.StatusUnauthorized, "otp_required")
+			a.recordLoginFailure(in.Email, ip)
+			// 区分「需要输入验证码」与「验证码错误」，前端据此展示提示
+			if strings.TrimSpace(in.OTP) == "" {
+				writeError(w, http.StatusUnauthorized, "otp_required")
+			} else {
+				writeError(w, http.StatusUnauthorized, "otp_invalid")
+			}
 			return
 		}
 	}
+	a.clearLoginFailures(in.Email, ip)
 	a.auditEvent(user.TenantID, user.ID, "auth.login", "user", user.ID, nil)
 	a.recordSession(user, token, r.UserAgent())
 	// 设置 HttpOnly + SameSite cookie，浏览器后续请求自动携带；Authorization 头仍作为非浏览器客户端的回退。
 	ttl := a.auth.sessionTTL(user.TenantID)
-	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int(ttl.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: token, Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: int(ttl.Seconds())})
 	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": publicUser(user)})
 }
 
@@ -1188,10 +1250,28 @@ func (a *App) openRevisionConfig(config NodeConfig) (NodeConfig, error) {
 func (a *App) auditEvent(tenant, actor, action, resourceType, resourceID string, metadata map[string]string) {
 	a.store.AddAudit(AuditEvent{ID: newID("audit"), TenantID: tenant, ActorID: actor, Action: action, ResourceType: resourceType, ResourceID: resourceID, Metadata: metadata, CreatedAt: time.Now()})
 }
+
+// maxJSONBodyBytes 限制所有 JSON 端点的请求体大小，防止超大 body 造成内存 DoS。
+const maxJSONBodyBytes = 1 << 20 // 1 MiB
+
+// pageParams 解析列表端点的 limit/offset 查询参数（默认 100，上限 500）。
+func pageParams(r *http.Request) (int, int) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
 func decode(w http.ResponseWriter, r *http.Request, target any) bool {
 	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(target); err != nil {
-		writeError(w, 400, "请求体不是有效的 JSON")
+		writeError(w, 400, "请求体不是有效的 JSON 或超出大小限制")
 		return false
 	}
 	return true

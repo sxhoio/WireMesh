@@ -869,6 +869,10 @@ async function saveSSO() {
               </div>
               <p v-if="!mesh.notifyLogs.length" class="py-6 text-center text-xs text-slate-500">暂无通知记录</p>
               <p v-else-if="!filteredNotifyLogs.length" class="py-6 text-center text-xs text-slate-500">当前筛选条件下没有记录</p>
+              <button v-if="mesh.notifyLogsHasMore" class="mt-2 w-full rounded-xl bg-ink-800/60 px-3 py-2 text-center text-xs text-cyan-300 ring-1 ring-ink-600 transition hover:bg-ink-800 disabled:text-slate-600" :disabled="mesh.notifyLogsLoading" @click="mesh.loadMoreNotifyLogs()">
+                {{ mesh.notifyLogsLoading ? '加载中…' : '加载更多（已加载 ' + mesh.notifyLogs.length + ' 条）' }}
+              </button>
+              <p v-else-if="mesh.notifyLogs.length" class="mt-2 text-center text-[11px] text-slate-600">共 {{ mesh.notifyLogs.length }} 条记录</p>
             </div>
           </div>
           </div>

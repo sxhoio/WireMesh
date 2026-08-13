@@ -4,6 +4,7 @@ wiremesh-agent-identity.json
 wiremesh-desired-config.json
 wiremesh-ca.json
 wiremesh-database.json
+GeoLite2-City.mmdb
 *.db
 *.db-shm
 *.db-wal

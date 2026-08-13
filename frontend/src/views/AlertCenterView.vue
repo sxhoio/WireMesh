@@ -11,6 +11,9 @@ const mesh = useMeshStore()
 
 const rules = ref<ApiAlertRule[]>([])
 const events = ref<ApiAlertEvent[]>([])
+const eventsHasMore = ref(false)
+const eventsOffset = ref(0)
+const eventsLoadingMore = ref(false)
 const loading = ref(false)
 const error = ref('')
 const eventsError = ref('')
@@ -265,9 +268,27 @@ async function load(silent = false) {
   const [ruleResult, eventResult] = await Promise.allSettled([api.alertRules(), api.alertEvents()])
   if (ruleResult.status === 'fulfilled') rules.value = ruleResult.value
   else error.value = ruleResult.reason instanceof Error ? ruleResult.reason.message : '加载规则失败'
-  if (eventResult.status === 'fulfilled') events.value = eventResult.value
-  else eventsError.value = eventResult.reason instanceof Error ? eventResult.reason.message : '加载告警历史失败'
+  if (eventResult.status === 'fulfilled') {
+    events.value = eventResult.value.items
+    eventsOffset.value = eventResult.value.items.length
+    eventsHasMore.value = eventResult.value.has_more
+  } else eventsError.value = eventResult.reason instanceof Error ? eventResult.reason.message : '加载告警历史失败'
   if (!silent) loading.value = false
+}
+
+async function loadMoreEvents() {
+  if (eventsLoadingMore.value || !eventsHasMore.value) return
+  eventsLoadingMore.value = true
+  try {
+    const page = await api.alertEvents(100, eventsOffset.value)
+    events.value = [...events.value, ...page.items]
+    eventsOffset.value += page.items.length
+    eventsHasMore.value = page.has_more
+  } catch (reason) {
+    eventsError.value = reason instanceof Error ? reason.message : '加载告警历史失败'
+  } finally {
+    eventsLoadingMore.value = false
+  }
 }
 
 const filteredEvents = computed(() => {
@@ -469,6 +490,10 @@ onUnmounted(() => window.clearInterval(refreshTimer))
             </div>
             <p v-if="!events.length" class="py-6 text-center text-xs text-slate-500">暂无告警记录</p>
             <p v-else-if="!filteredEvents.length" class="py-6 text-center text-xs text-slate-500">当前筛选条件下没有记录</p>
+            <button v-if="eventsHasMore" class="mt-2 w-full rounded-xl bg-ink-800/60 px-3 py-2 text-center text-xs text-cyan-300 ring-1 ring-ink-600 transition hover:bg-ink-800 disabled:text-slate-600" :disabled="eventsLoadingMore" @click="loadMoreEvents">
+              {{ eventsLoadingMore ? '加载中…' : '加载更多（已加载 ' + events.length + ' 条）' }}
+            </button>
+            <p v-else-if="events.length" class="mt-2 text-center text-[11px] text-slate-600">共 {{ events.length }} 条记录</p>
           </div>
         </div>
       </div>

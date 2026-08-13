@@ -138,7 +138,7 @@ func TestDatabaseDSNAndMySQLSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mysqlConfig.Driver != "mysql" || !strings.Contains(mysqlDSN, "tcp(localhost:3306)") || !strings.Contains(mysqlDSN, "tls=true") {
+	if mysqlConfig.Driver != "mysql" || !strings.Contains(mysqlDSN, "tcp(localhost:3306)") || !strings.Contains(mysqlDSN, "tls=true") || !strings.Contains(mysqlDSN, "clientFoundRows=true") {
 		t.Fatalf("unexpected MySQL DSN: %s", mysqlDSN)
 	}
 	postgresConfig, postgresDSN, err := normalizeDatabaseConfig(DatabaseConfig{Driver: "pgsql", Host: "localhost", Database: "wiremesh", Username: "user", Password: "secret", SSLMode: "verify-full"}, base)

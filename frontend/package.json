@@ -1,7 +1,7 @@
 {
   "name": "wiremesh-console",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.4.20",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "echarts": "^6.1.0",
     "ol": "^10.9.0",
     "pinia": "^4.0.2",
     "qrcode": "^1.5.4",

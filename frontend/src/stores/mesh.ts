@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
-import { ApiError, api, type ApiAgentUpdateInfo, type ApiAudit, type ApiConfigPublishResult, type ApiDelivery, type ApiNetwork, type ApiNode } from '../api'
+import { ApiError, api, type ApiAgentUpdateInfo, type ApiAudit, type ApiConfigPublishResult, type ApiDelivery, type ApiNetwork, type ApiNode, type ApiNotificationLog } from '../api'
 import type {
   Agent, AuditEntry, ConfigRevision, FeedEvent, GeoIPInfo, Network, NotifyChannel, NotifyLog,
-  PendingChange, PeerLink, Project, TempPeer, UserAccount, WGInterface, PeerState,
+  PeerLink, Project, TempPeer, UserAccount, WGInterface, PeerState,
 } from '../types'
 import { pollUntil } from '../utils/pollUntil'
 import { useAppStore } from './app'
@@ -378,19 +378,21 @@ export const useMeshStore = defineStore('mesh', {
     auditHasMore: false,
     auditOffset: 0,
     auditLoading: false,
+    auditPaged: false,
     users: [] as UserAccount[],
     geoip: { dbPath: '', version: '', updatedAt: 0, entryCount: 0 } as GeoIPInfo,
     agentUpdate: { manifest: { available: false, version: '', error: '' }, node_status: [] } as ApiAgentUpdateInfo,
     notifyChannels: [] as NotifyChannel[],
     notifyLogs: [] as NotifyLog[],
+    notifyLogsHasMore: false,
+    notifyLogsOffset: 0,
+    notifyLogsLoading: false,
     revisions: [] as ConfigRevision[],
-    pendingChanges: [] as PendingChange[],
     selectedProjectId: 'all',
     selectedNetworkId: 'all',
     autoRefresh: true,
     onlyErrors: false,
     linkFilter: 'all' as 'all' | PeerState,
-    collecting: false,
     loading: false,
     error: '',
     notice: '',
@@ -437,7 +439,6 @@ export const useMeshStore = defineStore('mesh', {
         tempCount: this.scopedTempPeers.length,
       }
     },
-    recentAlerts(s): FeedEvent[] { return s.feed.filter((item) => item.kind === 'alert').slice(0, 8) },
   },
   actions: {
     setProject(id: string) { this.selectedProjectId = id; this.selectedNetworkId = 'all' },
@@ -509,7 +510,7 @@ export const useMeshStore = defineStore('mesh', {
         const audits = auditPage.items
         if (usersResult.status === 'fulfilled') this.users = users
         if (channelsResult.status === 'fulfilled') this.notifyChannels = notifyChannels
-        if (auditsResult.status === 'fulfilled') {
+        if (auditsResult.status === 'fulfilled' && !this.auditPaged) {
           this.audit = auditEntries(audits, { agents: this.agents, users, networks: this.networks, projects: this.projects, notifyChannels })
           this.auditOffset = audits.length
           this.auditHasMore = auditPage.has_more
@@ -521,8 +522,9 @@ export const useMeshStore = defineStore('mesh', {
           const geoip = geoipResult.value
           this.geoip = { dbPath: geoip.dbPath || '', version: geoip.version || '', updatedAt: timestamp(geoip.updatedAt), entryCount: geoip.entryCount || 0 }
         }
-        if (logsResult.status === 'fulfilled') this.notifyLogs = logsResult.value.map((log) => ({ id: log.id, time: timestamp(log.createdAt), channelName: log.channelName, channelType: log.channelType, agentName: log.agentName, message: log.message, status: log.status }))
-        this.pendingChanges = []
+        if (logsResult.status === 'fulfilled') this.notifyLogs = logsResult.value.items.map((log) => ({ id: log.id, time: timestamp(log.createdAt), channelName: log.channelName, channelType: log.channelType, agentName: log.agentName, message: log.message, status: log.status }))
+        this.notifyLogsHasMore = logsResult.status === 'fulfilled' ? logsResult.value.has_more : false
+        this.notifyLogsOffset = logsResult.status === 'fulfilled' ? logsResult.value.items.length : 0
         if (this.selectedProjectId !== 'all' && !this.projects.some((project) => project.id === this.selectedProjectId)) this.selectedProjectId = 'all'
         if (this.selectedNetworkId !== 'all' && !this.networks.some((network) => network.id === this.selectedNetworkId)) this.selectedNetworkId = 'all'
         this.lastUpdated = Date.now()
@@ -621,6 +623,8 @@ export const useMeshStore = defineStore('mesh', {
         this.audit = reset ? entries : [...this.audit, ...entries]
         this.auditOffset = offset + entries.length
         this.auditHasMore = page.has_more
+        // 用户已翻页时，全局轮询不再用第一页覆盖列表；显式刷新/清空会复位
+        this.auditPaged = !reset
         return true
       } catch (reason) {
         this.error = reason instanceof Error ? reason.message : '加载审计日志失败'
@@ -636,6 +640,7 @@ export const useMeshStore = defineStore('mesh', {
         this.audit = []
         this.auditOffset = 0
         this.auditHasMore = false
+        this.auditPaged = false
         this.notice = '审计日志已清空'
         return true
       } catch (reason) {
@@ -858,7 +863,6 @@ export const useMeshStore = defineStore('mesh', {
         return false
       }
     },
-    discardPending(_user?: string) { this.pendingChanges = [] },
     async reloadGeoIP(_user?: string) {
       this.error = ''
       try {
@@ -913,8 +917,30 @@ export const useMeshStore = defineStore('mesh', {
       try { await api.testNotificationChannel(id); await this.refresh(); this.notice = '测试通知已发送'; return true }
       catch (reason) {
         this.error = reason instanceof Error ? reason.message : '通知渠道测试失败'
-        try { this.notifyLogs = (await api.notificationLogs()).map((log) => ({ id: log.id, time: timestamp(log.createdAt), channelName: log.channelName, channelType: log.channelType, agentName: log.agentName, message: log.message, status: log.status })) } catch {}
+        try { this.replaceNotifyLogs(await api.notificationLogs()) } catch {}
         return false
+      }
+    },
+    replaceNotifyLogs(page: { items: ApiNotificationLog[]; has_more: boolean }) {
+      this.notifyLogs = page.items.map((log) => ({ id: log.id, time: timestamp(log.createdAt), channelName: log.channelName, channelType: log.channelType, agentName: log.agentName, message: log.message, status: log.status }))
+      this.notifyLogsOffset = page.items.length
+      this.notifyLogsHasMore = page.has_more
+    },
+    async loadMoreNotifyLogs() {
+      if (this.notifyLogsLoading || !this.notifyLogsHasMore) return false
+      this.notifyLogsLoading = true
+      try {
+        const page = await api.notificationLogs(100, this.notifyLogsOffset)
+        const extra = page.items.map((log) => ({ id: log.id, time: timestamp(log.createdAt), channelName: log.channelName, channelType: log.channelType, agentName: log.agentName, message: log.message, status: log.status }))
+        this.notifyLogs = [...this.notifyLogs, ...extra]
+        this.notifyLogsOffset += page.items.length
+        this.notifyLogsHasMore = page.has_more
+        return true
+      } catch (reason) {
+        this.error = reason instanceof Error ? reason.message : '加载通知记录失败'
+        return false
+      } finally {
+        this.notifyLogsLoading = false
       }
     },
     async addUser(payload: { name: string; email: string; password: string; role: UserAccount['role'] }) {

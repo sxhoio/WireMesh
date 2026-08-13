@@ -172,12 +172,13 @@ func (a *App) deleteAlertRule(w http.ResponseWriter, r *http.Request, c claims) 
 }
 
 func (a *App) alertEvents(w http.ResponseWriter, r *http.Request, c claims) {
-	items, err := a.store.ListAlertEvents(c.TenantID)
+	limit, offset := pageParams(r)
+	items, hasMore, err := a.store.ListAlertEventsPage(c.TenantID, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list alert events")
 		return
 	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "has_more": hasMore})
 }
 
 // StartAlertEvaluator 启动后台评估循环：每 30 秒检查一次所有启用的告警规则。

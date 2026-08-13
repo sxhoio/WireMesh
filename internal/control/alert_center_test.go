@@ -191,9 +191,12 @@ func TestAlertEventsClearAndTenantIsolation(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("list events: %d %s", response.Code, response.Body.String())
 	}
-	var events []AlertEvent
-	if err := json.NewDecoder(response.Body).Decode(&events); err != nil || len(events) != 2 {
-		t.Fatalf("expected 2 tenant events, got %#v (%v)", events, err)
+	var page struct {
+		Items   []AlertEvent `json:"items"`
+		HasMore bool         `json:"has_more"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil || len(page.Items) != 2 {
+		t.Fatalf("expected 2 tenant events, got %#v (%v)", page, err)
 	}
 
 	// viewer 不能清空（后端对角色不足返回 401）
@@ -207,13 +210,13 @@ func TestAlertEventsClearAndTenantIsolation(t *testing.T) {
 		t.Fatalf("clear events: %d %s", response.Code, response.Body.String())
 	}
 	response = authenticatedRequest(app, http.MethodGet, "/api/v1/settings/alert-events", token, "")
-	if err := json.NewDecoder(response.Body).Decode(&events); err != nil || len(events) != 0 {
-		t.Fatalf("events must be cleared, got %#v (%v)", events, err)
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil || len(page.Items) != 0 {
+		t.Fatalf("events must be cleared, got %#v (%v)", page, err)
 	}
 	// 其他租户不受影响
 	response = authenticatedRequest(app, http.MethodGet, "/api/v1/settings/alert-events", otherToken, "")
-	if err := json.NewDecoder(response.Body).Decode(&events); err != nil || len(events) != 1 || events[0].ID != "ev-b1" {
-		t.Fatalf("other tenant events must survive clear, got %#v (%v)", events, err)
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil || len(page.Items) != 1 || page.Items[0].ID != "ev-b1" {
+		t.Fatalf("other tenant events must survive clear, got %#v (%v)", page, err)
 	}
 }
 

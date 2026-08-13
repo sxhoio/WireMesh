@@ -156,6 +156,9 @@ func (s *SwitchableStore) AddNotificationLog(v NotificationLog) error {
 func (s *SwitchableStore) ListNotificationLogs(tenant string) ([]NotificationLog, error) {
 	return s.store().ListNotificationLogs(tenant)
 }
+func (s *SwitchableStore) ListNotificationLogsPage(tenant string, limit, offset int) ([]NotificationLog, bool, error) {
+	return s.store().ListNotificationLogsPage(tenant, limit, offset)
+}
 func (s *SwitchableStore) ListAuditPage(tenant string, limit, offset int) ([]AuditEvent, error) {
 	return s.store().ListAuditPage(tenant, limit, offset)
 }
@@ -182,6 +185,9 @@ func (s *SwitchableStore) AddAlertEvent(v AlertEvent) error {
 }
 func (s *SwitchableStore) ListAlertEvents(tenant string) ([]AlertEvent, error) {
 	return s.store().ListAlertEvents(tenant)
+}
+func (s *SwitchableStore) ListAlertEventsPage(tenant string, limit, offset int) ([]AlertEvent, bool, error) {
+	return s.store().ListAlertEventsPage(tenant, limit, offset)
 }
 func (s *SwitchableStore) ClearAlertEvents(tenant string) error {
 	return s.store().ClearAlertEvents(tenant)

@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -31,6 +30,7 @@ type ssoState struct {
 	Issuer    string
 	ClientID  string
 	Secret    string
+	Nonce     string
 	ExpiresAt time.Time
 }
 
@@ -128,17 +128,19 @@ func (a *App) ssoLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := base64.RawURLEncoding.EncodeToString(randomBytes(24))
+	nonce := base64.RawURLEncoding.EncodeToString(randomBytes(16))
 	secret, err := a.box.Decrypt(config.ClientSecret)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "SSO client secret unavailable")
 		return
 	}
 	a.ssoMu.Lock()
-	a.ssoStates[state] = ssoState{TenantID: tenant, Issuer: config.Issuer, ClientID: config.ClientID, Secret: string(secret), ExpiresAt: time.Now().Add(ssoStateTTL)}
+	a.ssoStates[state] = ssoState{TenantID: tenant, Issuer: config.Issuer, ClientID: config.ClientID, Secret: string(secret), Nonce: nonce, ExpiresAt: time.Now().Add(ssoStateTTL)}
 	a.ssoMu.Unlock()
 	redirectURI := ssoRedirectURI(r)
 	authURL := discovery.AuthorizationEndpoint + "?response_type=code&client_id=" + url.QueryEscape(config.ClientID) +
-		"&redirect_uri=" + url.QueryEscape(redirectURI) + "&scope=" + url.QueryEscape("openid email profile") + "&state=" + url.QueryEscape(state)
+		"&redirect_uri=" + url.QueryEscape(redirectURI) + "&scope=" + url.QueryEscape("openid email profile") + "&state=" + url.QueryEscape(state) +
+		"&nonce=" + url.QueryEscape(nonce)
 	writeJSON(w, http.StatusOK, map[string]string{"url": authURL})
 }
 
@@ -162,12 +164,17 @@ func (a *App) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "SSO provider discovery failed")
 		return
 	}
-	token, err := exchangeOIDCCode(r.Context(), discovery.TokenEndpoint, stateInfo.ClientID, stateInfo.Secret, code, ssoRedirectURI(r))
+	accessToken, idToken, err := exchangeOIDCCode(r.Context(), discovery.TokenEndpoint, stateInfo.ClientID, stateInfo.Secret, code, ssoRedirectURI(r))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "SSO token exchange failed")
 		return
 	}
-	email, err := fetchOIDCUserEmail(r.Context(), discovery.UserinfoEndpoint, token)
+	// 校验 ID token：签名（JWKS）、issuer、audience、过期时间与 nonce
+	if err := verifyOIDCIDToken(r.Context(), idToken, discovery.JWKSURI, stateInfo.Issuer, stateInfo.ClientID, stateInfo.Nonce); err != nil {
+		writeError(w, http.StatusUnauthorized, "SSO ID token validation failed")
+		return
+	}
+	email, err := fetchOIDCUserEmail(r.Context(), discovery.UserinfoEndpoint, accessToken)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "SSO userinfo failed")
 		return
@@ -191,7 +198,7 @@ func (a *App) ssoCallback(w http.ResponseWriter, r *http.Request) {
 	_ = a.store.UpdateUserLastLogin(user.ID, time.Now().UTC())
 	a.recordSession(user, sessionToken, r.UserAgent())
 	a.auditEvent(user.TenantID, user.ID, "auth.login.sso", "user", user.ID, nil)
-	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: sessionToken, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: int(ttl.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: sessionToken, Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: int(ttl.Seconds())})
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -199,6 +206,7 @@ type oidcDiscovery struct {
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
 	UserinfoEndpoint      string `json:"userinfo_endpoint"`
+	JWKSURI               string `json:"jwks_uri"`
 }
 
 func fetchOIDCDiscovery(ctx context.Context, issuer string) (oidcDiscovery, error) {
@@ -226,7 +234,7 @@ func fetchOIDCDiscovery(ctx context.Context, issuer string) (oidcDiscovery, erro
 	return discovery, nil
 }
 
-func exchangeOIDCCode(ctx context.Context, tokenEndpoint, clientID, clientSecret, code, redirectURI string) (string, error) {
+func exchangeOIDCCode(ctx context.Context, tokenEndpoint, clientID, clientSecret, code, redirectURI string) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	form := url.Values{}
@@ -237,27 +245,31 @@ func exchangeOIDCCode(ctx context.Context, tokenEndpoint, clientID, clientSecret
 	form.Set("client_secret", clientSecret)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("token endpoint returned %s", response.Status)
+		return "", "", fmt.Errorf("token endpoint returned %s", response.Status)
 	}
 	var payload struct {
 		AccessToken string `json:"access_token"`
+		IDToken     string `json:"id_token"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if payload.AccessToken == "" {
-		return "", errors.New("token response missing access_token")
+		return "", "", errors.New("token response missing access_token")
 	}
-	return payload.AccessToken, nil
+	if payload.IDToken == "" {
+		return "", "", errors.New("token response missing id_token")
+	}
+	return payload.AccessToken, payload.IDToken, nil
 }
 
 func fetchOIDCUserEmail(ctx context.Context, userinfoEndpoint, accessToken string) (string, error) {
@@ -277,10 +289,14 @@ func fetchOIDCUserEmail(ctx context.Context, userinfoEndpoint, accessToken strin
 		return "", fmt.Errorf("userinfo endpoint returned %s", response.Status)
 	}
 	var payload struct {
-		Email string `json:"email"`
+		Email         string `json:"email"`
+		EmailVerified *bool  `json:"email_verified"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
 		return "", err
+	}
+	if payload.EmailVerified != nil && !*payload.EmailVerified {
+		return "", errors.New("userinfo email is not verified by the provider")
 	}
 	email := strings.ToLower(strings.TrimSpace(payload.Email))
 	if email == "" {
@@ -295,10 +311,4 @@ func ssoRedirectURI(r *http.Request) string {
 		scheme = "https"
 	}
 	return scheme + "://" + r.Host + "/api/v1/auth/sso/callback"
-}
-
-// ssoStateHash 供状态码校验（保留哈希值避免时序泄露）。
-func ssoStateHash(state string) string {
-	sum := sha256.Sum256([]byte(state))
-	return base64.RawURLEncoding.EncodeToString(sum[:])
 }

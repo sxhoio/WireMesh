@@ -279,12 +279,13 @@ func (a *App) lookupGeoIP(w http.ResponseWriter, r *http.Request, c claims) {
 }
 
 func (a *App) notificationLogs(w http.ResponseWriter, r *http.Request, c claims) {
-	items, err := a.store.ListNotificationLogs(c.TenantID)
+	limit, offset := pageParams(r)
+	items, hasMore, err := a.store.ListNotificationLogsPage(c.TenantID, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "读取通知日志失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "has_more": hasMore})
 }
 
 func (a *App) users(w http.ResponseWriter, r *http.Request, c claims) {

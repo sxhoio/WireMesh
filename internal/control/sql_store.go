@@ -826,6 +826,17 @@ func (s *SQLStore) AddNotificationLog(v NotificationLog) error {
 func (s *SQLStore) ListNotificationLogs(tenant string) ([]NotificationLog, error) {
 	return queryList(s, `SELECT id, tenant_id, channel_id, channel_name, channel_type, agent_name, message, status, created_at FROM notification_logs WHERE tenant_id=? ORDER BY created_at DESC`, scanNotificationLog, tenant)
 }
+func (s *SQLStore) ListNotificationLogsPage(tenant string, limit, offset int) ([]NotificationLog, bool, error) {
+	items, err := queryList(s, `SELECT id, tenant_id, channel_id, channel_name, channel_type, agent_name, message, status, created_at FROM notification_logs WHERE tenant_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?`, scanNotificationLog, tenant, limit+1, offset)
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	return items, hasMore, nil
+}
 
 func scanTrafficSample(row scanner) (TrafficSample, error) {
 	var v TrafficSample
@@ -1063,6 +1074,17 @@ func (s *SQLStore) AddAlertEvent(v AlertEvent) error {
 }
 func (s *SQLStore) ListAlertEvents(tenant string) ([]AlertEvent, error) {
 	return queryList(s, `SELECT id, tenant_id, rule_id, rule_name, node_id, node_name, message, status, created_at FROM alert_events WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200`, scanAlertEvent, tenant)
+}
+func (s *SQLStore) ListAlertEventsPage(tenant string, limit, offset int) ([]AlertEvent, bool, error) {
+	items, err := queryList(s, `SELECT id, tenant_id, rule_id, rule_name, node_id, node_name, message, status, created_at FROM alert_events WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, scanAlertEvent, tenant, limit+1, offset)
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	return items, hasMore, nil
 }
 func (s *SQLStore) ClearAlertEvents(tenant string) error {
 	_, err := s.db.Exec(s.query(`DELETE FROM alert_events WHERE tenant_id = ?`), tenant)

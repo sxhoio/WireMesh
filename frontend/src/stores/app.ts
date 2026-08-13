@@ -24,7 +24,6 @@ export const useAppStore = defineStore('app', {
     error: '',
     user: null as ApiUser | null,
     username: '',
-    password: '',
     settings: structuredClone(settings),
   }),
   getters: {
@@ -127,7 +126,6 @@ export const useAppStore = defineStore('app', {
       session.clear()
       this.user = null
       this.username = ''
-      this.password = ''
       this.authed = false
       this.initialized = true
     },

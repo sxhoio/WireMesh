@@ -237,12 +237,6 @@ export interface GeoIPInfo {
   entryCount: number
 }
 
-export interface PendingChange {
-  id: string | number
-  time: number
-  text: string
-}
-
 // ---- 系统设置分组 ----
 export interface SystemSettings {
   dashboardName: string

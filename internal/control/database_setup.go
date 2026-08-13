@@ -357,6 +357,10 @@ func normalizeDatabaseConfig(cfg DatabaseConfig, baseDir string) (DatabaseConfig
 		mysqlCfg.ParseTime = true
 		mysqlCfg.Loc = time.UTC
 		mysqlCfg.TLSConfig = tlsMode
+		// RowsAffected 按"匹配行数"而非"实际变更行数"计数，与 SQLite/PostgreSQL
+		// 行为一致：值未变化的 UPDATE 同样返回 1，避免 changed() 误判 404、
+		// UpdateDelivery 误退化为 CreateDelivery 撞唯一约束。
+		mysqlCfg.ClientFoundRows = true
 		mysqlCfg.Params = map[string]string{"charset": "utf8mb4"}
 		cfg.SQLitePath = ""
 		return cfg, mysqlCfg.FormatDSN(), nil

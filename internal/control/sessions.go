@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -97,6 +98,57 @@ func (a *App) revokeUserSessions(tenant, userID string) {
 		}
 		delete(a.sessions, hash)
 		a.revokedTokens[hash] = time.Now()
+	}
+}
+
+const (
+	housekeepingInterval  = 10 * time.Minute
+	revokedTokenRetention = 24 * time.Hour
+	sessionRetention      = 24 * time.Hour
+)
+
+// StartHousekeeping 定期清理内存态凭据表：过期会话、已撤销令牌与失效 SSO state，
+// 避免长期运行后无界增长。
+func (a *App) StartHousekeeping(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(housekeepingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.cleanupSessionTables()
+				a.cleanupSSOStates()
+			}
+		}
+	}()
+}
+
+func (a *App) cleanupSessionTables() {
+	now := time.Now()
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	for hash, revokedAt := range a.revokedTokens {
+		if now.Sub(revokedAt) > revokedTokenRetention {
+			delete(a.revokedTokens, hash)
+		}
+	}
+	for hash, session := range a.sessions {
+		if now.Sub(session.LastSeenAt) > sessionRetention {
+			delete(a.sessions, hash)
+		}
+	}
+}
+
+func (a *App) cleanupSSOStates() {
+	now := time.Now()
+	a.ssoMu.Lock()
+	defer a.ssoMu.Unlock()
+	for state, info := range a.ssoStates {
+		if now.After(info.ExpiresAt) {
+			delete(a.ssoStates, state)
+		}
 	}
 }
 

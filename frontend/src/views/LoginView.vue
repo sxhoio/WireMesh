@@ -26,6 +26,9 @@ async function submit() {
     if (app.error?.includes('otp_required')) {
       needsOtp.value = true
       error.value = '该账号已启用多因素认证，请输入动态验证码'
+    } else if (app.error?.includes('otp_invalid')) {
+      needsOtp.value = true
+      error.value = '动态验证码错误，请重试'
     } else {
       error.value = app.error || '邮箱或密码错误'
     }

@@ -91,6 +91,7 @@ func main() {
 	evaluatorCtx, evaluatorCancel := context.WithCancel(context.Background())
 	defer evaluatorCancel()
 	app.StartAlertEvaluator(evaluatorCtx)
+	app.StartHousekeeping(evaluatorCtx)
 	log.Printf("WireMesh control plane listening on %s", address)
 	log.Printf("database driver: %s", databaseDriver)
 	handler := withFrontend(app.Router(), os.Getenv("WIREMESH_WEB_DIR"))
