@@ -1093,6 +1093,13 @@ func (a *App) createEnrollment(w http.ResponseWriter, r *http.Request, c claims)
 }
 
 func (a *App) enroll(w http.ResponseWriter, r *http.Request) {
+	// H-2（P0）：enroll 返回节点 mTLS 私钥+证书，必须与其余 Agent 端点
+	// 一致 fail-closed——纯 HTTP 下拒绝（除非显式开发开关或可信反代），
+	// 防止 MITM 窃取注册令牌与节点私钥永久冒充节点。
+	if r.TLS == nil && !a.agentInsecureHTTP && !a.trustProxyAgentID {
+		writeError(w, http.StatusForbidden, "agent endpoints require TLS; set WIREMESH_AGENT_INSECURE_HTTP=1 only for local development")
+		return
+	}
 	var in wireproto.EnrollmentRequest
 	if !decode(w, r, &in) {
 		return

@@ -4,6 +4,16 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.7`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.7.2（P0 安全专项 H-2：enroll 端点 TLS 守卫）
+
+0day 审计 P0 第三项修复（High）：
+
+- `POST /agent/v1/enroll` 补上 TLS fail-closed 守卫：纯 HTTP（未显式
+  开启开发开关/可信反代）时拒绝注册——此前该端点返回节点 mTLS 私钥
+  +证书却无任何 TLS 检查，MITM 可窃取注册令牌与私钥永久冒充节点
+- 新增 H-2 专项测试（纯 HTTP 拒绝、开发开关放行）
+- go vet/go test 全绿
+
 ## v0.7.1（P0 安全专项 H-1：心跳标签覆写 → 访问策略绕过/拓扑自授）
 
 0day 审计 P0 第二项修复（High）：
