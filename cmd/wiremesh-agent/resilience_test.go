@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -55,5 +56,23 @@ func TestResponseErrorIncludesServerMessage(t *testing.T) {
 	}
 	if isTerminalAgentError(err) {
 		t.Fatalf("400 must not be terminal: %v", err)
+	}
+}
+
+// TestResponseErrorKeepsServerReason：401 的终止错误保留服务端具体拒绝
+// 原因（如证书缺失/未知节点），errors.Is 仍可匹配终止判断。
+func TestResponseErrorKeepsServerReason(t *testing.T) {
+	response := httptest.NewRecorder()
+	response.WriteHeader(http.StatusUnauthorized)
+	_, _ = response.WriteString(`{"error":"agent client certificate required"}`)
+	err := responseError(response.Result())
+	if !errors.Is(err, errAgentIdentityRejected) {
+		t.Fatalf("401 must be identity rejection, got %v", err)
+	}
+	if !isTerminalAgentError(err) {
+		t.Fatal("401 must remain terminal")
+	}
+	if !strings.Contains(err.Error(), "agent client certificate required") {
+		t.Fatalf("401 must keep the server-side reason for diagnosis: %v", err)
 	}
 }

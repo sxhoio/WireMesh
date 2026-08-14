@@ -16,6 +16,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -1159,25 +1160,33 @@ func (a *App) renewAgentCert(w http.ResponseWriter, r *http.Request) {
 // the server directly. X-Agent-ID also supports local HTTP and TLS-terminating
 // reverse proxies; proxy deployments must keep the backend listener private.
 func (a *App) agentNode(w http.ResponseWriter, r *http.Request) (Node, bool) {
+	// 拒绝路径统一记录服务端日志（docker logs / journalctl 可见），
+	// 响应体仍携带具体原因供 Agent 侧诊断。
+	reject := func(status int, message string) (Node, bool) {
+		nodeID := strings.TrimSpace(r.Header.Get("X-Agent-ID"))
+		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			nodeID = r.TLS.PeerCertificates[0].Subject.CommonName
+		}
+		log.Printf("agent endpoint rejected: %s %s node=%q reason=%s", r.Method, r.URL.Path, nodeID, message)
+		writeError(w, status, message)
+		return Node{}, false
+	}
 	// 严格模式（RequireAgentClientCert）：直连 TLS 必须携带有效客户端证书，
 	// 不允许仅凭 X-Agent-ID 头冒充节点。
 	if a.requireAgentClientCert && (r.TLS == nil || len(r.TLS.PeerCertificates) == 0) {
-		writeError(w, http.StatusUnauthorized, "agent client certificate required")
-		return Node{}, false
+		return reject(http.StatusUnauthorized, "agent client certificate required")
 	}
 	// 纯 HTTP（无 TLS）模式下，X-Agent-ID 头即节点身份，可被伪造窃取私钥。
 	// 默认 fail-closed：仅显式开启 WIREMESH_AGENT_INSECURE_HTTP（开发）或
 	// 配置了可信反向代理（WIREMESH_TRUST_PROXY_AGENT_ID）时才放行。
 	if r.TLS == nil && !a.agentInsecureHTTP && !a.trustProxyAgentID {
-		writeError(w, http.StatusForbidden, "agent endpoints require TLS; set WIREMESH_AGENT_INSECURE_HTTP=1 only for local development")
-		return Node{}, false
+		return reject(http.StatusForbidden, "agent endpoints require TLS; set WIREMESH_AGENT_INSECURE_HTTP=1 only for local development")
 	}
 	nodeID := r.Header.Get("X-Agent-ID")
 	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 		certificateNodeID := r.TLS.PeerCertificates[0].Subject.CommonName
 		if nodeID != "" && nodeID != certificateNodeID {
-			writeError(w, http.StatusUnauthorized, "agent identity mismatch")
-			return Node{}, false
+			return reject(http.StatusUnauthorized, "agent identity mismatch")
 		}
 		nodeID = certificateNodeID
 		// S9：吊销/轮换即时生效——证书指纹必须与当前登记身份一致。
@@ -1185,23 +1194,19 @@ func (a *App) agentNode(w http.ResponseWriter, r *http.Request) (Node, bool) {
 		if identity, identityErr := a.store.GetIdentity(nodeID); identityErr == nil {
 			sha := sha256.Sum256(r.TLS.PeerCertificates[0].Raw)
 			if hex.EncodeToString(sha[:]) != identity.CertificateFingerprint {
-				writeError(w, http.StatusUnauthorized, "agent certificate was revoked or rotated")
-				return Node{}, false
+				return reject(http.StatusUnauthorized, "agent certificate was revoked or rotated")
 			}
 		} else if !errors.Is(identityErr, errNotFound) {
-			writeError(w, http.StatusInternalServerError, "failed to verify agent certificate")
-			return Node{}, false
+			return reject(http.StatusInternalServerError, "failed to verify agent certificate")
 		}
 	}
 	if nodeID == "" {
-		writeError(w, 401, "missing agent identity")
-		return Node{}, false
+		return reject(http.StatusUnauthorized, "missing agent identity")
 	}
 	if node, err := a.store.GetNodeByID(nodeID); err == nil {
 		return node, true
 	}
-	writeError(w, 401, "unknown agent identity")
-	return Node{}, false
+	return reject(http.StatusUnauthorized, "unknown agent identity")
 }
 
 // AgentTLSConfig verifies enrolled client certificates while allowing browsers

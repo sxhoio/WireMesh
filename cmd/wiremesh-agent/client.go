@@ -360,8 +360,17 @@ func responseError(response *http.Response) error {
 	}
 	switch response.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
+		// 保留服务端响应体里的具体拒绝原因（如 "agent client certificate
+		// required" / "unknown agent identity"），便于诊断；errors.Is 仍
+		// 匹配 errAgentIdentityRejected，终止重试逻辑不受影响。
+		if strings.TrimSpace(message) != "" && message != response.Status {
+			return fmt.Errorf("%w: %s", errAgentIdentityRejected, message)
+		}
 		return errAgentIdentityRejected
 	case http.StatusLocked:
+		if strings.TrimSpace(message) != "" && message != response.Status {
+			return fmt.Errorf("%w: %s", errAgentDisabled, message)
+		}
 		return errAgentDisabled
 	default:
 		return fmt.Errorf("control plane returned %s: %s", response.Status, message)
