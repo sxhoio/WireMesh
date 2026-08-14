@@ -8,5 +8,7 @@ GeoLite2-City.mmdb
 *.db
 *.db-shm
 *.db-wal
+*.pem
+*.key
 .claude
 .reasonix

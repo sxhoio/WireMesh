@@ -4,6 +4,17 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.6`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.5.7（文档/部署专项）
+
+- README 新增「Upgrading」章节：备份优先、master key 保持不变的加密
+  兼容性说明、数据库配置持久化、Agent 无需重装（证书续期 + 自更新）、
+  Go 工具链最低版本要求、降级注意
+- Dockerfile：Go 构建镜像 1.26.2 → 1.26.6（与 go.mod 最低版本一致，
+  修复标准库漏洞）；Agent 版本线注释对齐
+- docker-compose 示例镜像标签更新为 0.5.x 并注明升级时 master key 不变
+- .dockerignore / .gitignore 补全敏感文件排除（wiremesh-ca/database/
+  master key、*.pem/*.key、临时数据库文件）
+
 ## v0.5.6（依赖与供应链专项）
 
 - Go 工具链升级至 1.26.6：修复 7 个标准库漏洞（net/url、crypto/tls、

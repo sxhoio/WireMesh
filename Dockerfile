@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
 ARG NODE_VERSION=24-alpine
-ARG GO_VERSION=1.26.2-alpine
+# 1.26.6 修复多个标准库漏洞（见 go.mod go 指令），构建镜像不得低于该版本
+ARG GO_VERSION=1.26.6-alpine
+# 与 cmd/wiremesh-agent/main.go 的 agentVersion 保持一致（Agent 版本线）
 ARG WIREMESH_VERSION=0.3.6
 
 FROM node:${NODE_VERSION} AS frontend-build
