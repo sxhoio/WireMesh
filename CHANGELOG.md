@@ -4,6 +4,17 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.7`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.7.3（P0 安全专项 H-4：未认证初始化接管）
+
+0day 审计 P0 第四项修复（High，P0 全部完成）：
+
+- `WIREMESH_SETUP_TOKEN` 未配置时，服务端首次启动自动生成 256 位
+  随机初始化口令：打印到日志并写入 `wiremesh-setup-token`（0600），
+  初始化向导必须携带 `X-Setup-Token`——全新实例不再可被未认证抢占
+- docker-compose 示例补充口令说明（支持显式注入）
+- 新增 H-4 专项测试（口令熵/唯一性、错误/缺失口令 401、正确放行）
+- go vet/go test 全绿
+
 ## v0.7.2（P0 安全专项 H-2：enroll 端点 TLS 守卫）
 
 0day 审计 P0 第三项修复（High）：

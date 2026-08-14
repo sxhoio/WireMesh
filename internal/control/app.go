@@ -528,6 +528,12 @@ func (a *App) requireSetupToken(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+// GenerateSetupToken 生成 256 位随机初始化口令（base64 编码）。
+// 供服务端在未配置 WIREMESH_SETUP_TOKEN 时自动生成（H-4 修复）。
+func GenerateSetupToken() string {
+	return base64.RawURLEncoding.EncodeToString(randomBytes(32))
+}
+
 // checkSetupAllowed 初始化接口按 IP 限流（5 次/分钟），未初始化窗口同样受限，
 // 防止未认证探测与初始化口令爆破。
 func (a *App) checkSetupAllowed(ip string) bool {

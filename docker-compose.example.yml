@@ -23,6 +23,10 @@ services:
       WIREMESH_CA_FILE: /data/wiremesh-ca.json
       # 数据库：默认使用 /data/wiremesh-database.json（SQLite）
       WIREMESH_DATABASE_CONFIG: /data/wiremesh-database.json
+      # 初始化口令：不配置时服务端首次启动自动生成随机口令并写入
+      # /data/wiremesh-setup-token（防公网实例被抢先初始化接管）；
+      # 首次配置向导需在 X-Setup-Token 头携带该口令
+      WIREMESH_SETUP_TOKEN: ${WIREMESH_SETUP_TOKEN:-}
       # 可选：GeoIP 数据库路径（镜像不内置，由下方 volume 从 ./data 挂载，
       # 文件需自备且受 MaxMind 许可约束；未挂载时节点回退到 Agent 上报坐标）
       WIREMESH_GEOIP_DB: /data/GeoLite2-City.mmdb

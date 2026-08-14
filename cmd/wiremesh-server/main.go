@@ -80,6 +80,18 @@ func main() {
 	}
 
 	certFile, keyFile := os.Getenv("WIREMESH_TLS_CERT_FILE"), os.Getenv("WIREMESH_TLS_KEY_FILE")
+	// H-4（P0）：初始化口令——未配置 WIREMESH_SETUP_TOKEN 时自动生成随机
+	// 口令（写入日志与 wiremesh-setup-token 文件），杜绝全新实例被未认证
+	// 抢先初始化接管；管理员从日志/文件获取口令完成首次配置。
+	setupToken := strings.TrimSpace(os.Getenv("WIREMESH_SETUP_TOKEN"))
+	if setupToken == "" {
+		setupToken = control.GenerateSetupToken()
+		tokenPath := envOrDefault("WIREMESH_SETUP_TOKEN_FILE", "wiremesh-setup-token")
+		if err := os.WriteFile(tokenPath, []byte(setupToken+"\n"), 0600); err != nil {
+			log.Printf("warning: could not persist setup token to %s: %v", tokenPath, err)
+		}
+		log.Printf("first-run setup token generated: %s (also saved to %s) — keep it secret; the setup wizard requires X-Setup-Token", setupToken, tokenPath)
+	}
 	app, err := control.NewApp(control.Config{
 		MasterKey:       masterKey,
 		Store:           store,
@@ -88,7 +100,7 @@ func main() {
 		AgentBinaryPath: strings.TrimSpace(os.Getenv("WIREMESH_AGENT_BINARY")),
 		AgentVersion:    strings.TrimSpace(os.Getenv("WIREMESH_AGENT_VERSION")),
 		CAFile:          envOrDefault("WIREMESH_CA_FILE", "wiremesh-ca.json"),
-		SetupToken:      os.Getenv("WIREMESH_SETUP_TOKEN"),
+		SetupToken:      setupToken,
 		// 直接 TLS 监听时要求 Agent 携带有效客户端证书；仅当流量经过
 		// 可信反向代理（由代理注入 X-Agent-ID）时设置 WIREMESH_TRUST_PROXY_AGENT_ID=true
 		RequireAgentClientCert: certFile != "" && keyFile != "" && os.Getenv("WIREMESH_TRUST_PROXY_AGENT_ID") != "true",
