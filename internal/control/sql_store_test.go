@@ -17,7 +17,7 @@ func TestSQLitePersistsLoginAndControlPlaneState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := NewApp(Config{MasterKey: "integration-master-key", Store: store})
+	app, err := NewApp(Config{MasterKey: "integration-master-key", AgentInsecureHTTP: true, Store: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestSQLitePersistsLoginAndControlPlaneState(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	app, err = NewApp(Config{MasterKey: "integration-master-key", Store: store})
+	app, err = NewApp(Config{MasterKey: "integration-master-key", AgentInsecureHTTP: true, Store: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +290,7 @@ func TestSQLiteInitialSetupIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	app, err := NewApp(Config{MasterKey: "concurrent-setup-key", Store: store})
+	app, err := NewApp(Config{MasterKey: "concurrent-setup-key", AgentInsecureHTTP: true, Store: store})
 	if err != nil {
 		t.Fatal(err)
 	}

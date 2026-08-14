@@ -702,6 +702,30 @@ func (s *SQLStore) ClearAudit(tenant string) error {
 	return err
 }
 
+func (s *SQLStore) AddRevokedToken(v RevokedToken) error {
+	_, err := s.db.Exec(s.query(`INSERT INTO revoked_tokens (token_hash, tenant_id, revoked_at) VALUES (?, ?, ?)`), v.TokenHash, v.TenantID, timeText(v.RevokedAt))
+	return err
+}
+
+func (s *SQLStore) ListRevokedTokens() ([]RevokedToken, error) {
+	return queryList(s, `SELECT token_hash, tenant_id, revoked_at FROM revoked_tokens`, scanRevokedToken)
+}
+
+func (s *SQLStore) DeleteRevokedTokensBefore(at time.Time) error {
+	_, err := s.db.Exec(s.query(`DELETE FROM revoked_tokens WHERE revoked_at < ?`), timeText(at))
+	return err
+}
+
+func scanRevokedToken(row scanner) (RevokedToken, error) {
+	var v RevokedToken
+	var revokedAt string
+	if err := row.Scan(&v.TokenHash, &v.TenantID, &revokedAt); err != nil {
+		return RevokedToken{}, notFound(err)
+	}
+	v.RevokedAt = parseTime(revokedAt)
+	return v, nil
+}
+
 func (s *SQLStore) pruneCommands(tenant, node string) error {
 	return s.pruneKeepingNewest("agent_commands", tenant, node, maxAgentLogRecords)
 }

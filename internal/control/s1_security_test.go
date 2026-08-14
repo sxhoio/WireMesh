@@ -8,7 +8,7 @@ import (
 )
 
 func TestSetupTokenProtectsSetupEndpoints(t *testing.T) {
-	app, err := NewApp(Config{MasterKey: "setup-token-key", SetupToken: "secret-init-token"})
+	app, err := NewApp(Config{MasterKey: "setup-token-key", AgentInsecureHTTP: true, SetupToken: "secret-init-token"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestSetupEndpointsRateLimitedPerIP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := NewApp(Config{MasterKey: "setup-limit-key", Store: manager.Store(), Database: manager})
+	app, err := NewApp(Config{MasterKey: "setup-limit-key", AgentInsecureHTTP: true, Store: manager.Store(), Database: manager})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestSetupDatabaseTestErrorDesensitized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := NewApp(Config{MasterKey: "setup-error-key", Store: manager.Store(), Database: manager})
+	app, err := NewApp(Config{MasterKey: "setup-error-key", AgentInsecureHTTP: true, Store: manager.Store(), Database: manager})
 	if err != nil {
 		t.Fatal(err)
 	}

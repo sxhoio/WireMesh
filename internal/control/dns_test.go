@@ -74,7 +74,7 @@ func TestDNSRecordUpdateAndDuplicateConflict(t *testing.T) {
 	}
 
 	// viewer 无权更新（后端对角色不足返回 401）
-	viewer := User{ID: "viewer-dns", TenantID: admin.TenantID, Email: "viewer-dns@example.com", Name: "Viewer", Role: RoleViewer, PasswordHash: "unused", CreatedAt: time.Now()}
+	viewer := User{ID: "viewer-dns", TenantID: admin.TenantID, Email: "viewer-dns@example.com", Name: "Viewer", Role: RoleViewer, Active: true, PasswordHash: "unused", CreatedAt: time.Now()}
 	if err := app.store.CreateUser(viewer); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestDNSRecordUpdateAndDuplicateConflict(t *testing.T) {
 		t.Fatalf("viewer must not update: %d", response.Code)
 	}
 	// 其他租户不可见 → 404
-	other := User{ID: "other-dns", TenantID: "other-dns-tenant", Email: "other-dns@example.com", Name: "Other", Role: RoleAdmin, PasswordHash: "unused", CreatedAt: time.Now()}
+	other := User{ID: "other-dns", TenantID: "other-dns-tenant", Email: "other-dns@example.com", Name: "Other", Role: RoleAdmin, Active: true, PasswordHash: "unused", CreatedAt: time.Now()}
 	if err := app.store.CreateUser(other); err != nil {
 		t.Fatal(err)
 	}

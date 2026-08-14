@@ -94,7 +94,7 @@ func TestAlertRuleScopeValidationAndFiltering(t *testing.T) {
 
 func TestAlertQuietPersistsAcrossRestartAndRecovery(t *testing.T) {
 	store := NewMemoryStore()
-	app, err := NewApp(Config{MasterKey: "alert-key", Store: store})
+	app, err := NewApp(Config{MasterKey: "alert-key", AgentInsecureHTTP: true, Store: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestAlertQuietPersistsAcrossRestartAndRecovery(t *testing.T) {
 	}
 
 	// 模拟服务重启：同一 store 挂到新 App，静默状态必须仍然有效
-	app2, err := NewApp(Config{MasterKey: "alert-key", Store: store})
+	app2, err := NewApp(Config{MasterKey: "alert-key", AgentInsecureHTTP: true, Store: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,12 +165,12 @@ func TestAlertQuietPersistsAcrossRestartAndRecovery(t *testing.T) {
 func TestAlertEventsClearAndTenantIsolation(t *testing.T) {
 	app := testApp(t)
 	admin, token := initializeTestAdmin(t, app, "alert-clear@example.com", "strong-password")
-	other := User{ID: "user-other-alert", TenantID: "other-alert-tenant", Email: "other-alert@example.com", Name: "Other", Role: RoleAdmin, PasswordHash: "unused", CreatedAt: time.Now()}
+	other := User{ID: "user-other-alert", TenantID: "other-alert-tenant", Email: "other-alert@example.com", Name: "Other", Role: RoleAdmin, Active: true, PasswordHash: "unused", CreatedAt: time.Now()}
 	if err := app.store.CreateUser(other); err != nil {
 		t.Fatal(err)
 	}
 	otherToken := app.auth.issue(other)
-	viewer := User{ID: "viewer-alert", TenantID: admin.TenantID, Email: "viewer-alert@example.com", Name: "Viewer", Role: RoleViewer, PasswordHash: "unused", CreatedAt: time.Now()}
+	viewer := User{ID: "viewer-alert", TenantID: admin.TenantID, Email: "viewer-alert@example.com", Name: "Viewer", Role: RoleViewer, Active: true, PasswordHash: "unused", CreatedAt: time.Now()}
 	if err := app.store.CreateUser(viewer); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestAlertRuleEvaluateEndpoint(t *testing.T) {
 		t.Fatalf("unknown rule must 404: %d", response.Code)
 	}
 	// viewer 无权评估
-	viewer := User{ID: "viewer-eval", TenantID: admin.TenantID, Email: "viewer-eval@example.com", Name: "Viewer", Role: RoleViewer, PasswordHash: "unused", CreatedAt: time.Now()}
+	viewer := User{ID: "viewer-eval", TenantID: admin.TenantID, Email: "viewer-eval@example.com", Name: "Viewer", Role: RoleViewer, Active: true, PasswordHash: "unused", CreatedAt: time.Now()}
 	if err := app.store.CreateUser(viewer); err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestSQLiteAlertStateAndScopePersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := NewApp(Config{MasterKey: "alert-sql-key", Store: store})
+	app, err := NewApp(Config{MasterKey: "alert-sql-key", AgentInsecureHTTP: true, Store: store})
 	if err != nil {
 		t.Fatal(err)
 	}

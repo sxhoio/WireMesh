@@ -168,6 +168,15 @@ func (s *SwitchableStore) ListAuditPage(tenant string, limit, offset int) ([]Aud
 func (s *SwitchableStore) ClearAudit(tenant string) error {
 	return s.store().ClearAudit(tenant)
 }
+func (s *SwitchableStore) AddRevokedToken(v RevokedToken) error {
+	return s.store().AddRevokedToken(v)
+}
+func (s *SwitchableStore) ListRevokedTokens() ([]RevokedToken, error) {
+	return s.store().ListRevokedTokens()
+}
+func (s *SwitchableStore) DeleteRevokedTokensBefore(at time.Time) error {
+	return s.store().DeleteRevokedTokensBefore(at)
+}
 func (s *SwitchableStore) CreateAlertRule(v AlertRule) error {
 	return s.store().CreateAlertRule(v)
 }

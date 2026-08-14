@@ -18,7 +18,7 @@ func TestDatabaseSetupSQLiteFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := NewApp(Config{MasterKey: "database-setup-test-key", Store: manager.Store(), Database: manager})
+	app, err := NewApp(Config{MasterKey: "database-setup-test-key", AgentInsecureHTTP: true, Store: manager.Store(), Database: manager})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestDatabaseSetupRejectsInvalidSQLitePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer manager.Close()
-	app, err := NewApp(Config{MasterKey: "test-key", Store: manager.Store(), Database: manager})
+	app, err := NewApp(Config{MasterKey: "test-key", AgentInsecureHTTP: true, Store: manager.Store(), Database: manager})
 	if err != nil {
 		t.Fatal(err)
 	}

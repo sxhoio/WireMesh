@@ -18,7 +18,7 @@ func TestAgentInstallerAndBinaryDownload(t *testing.T) {
 	if err := os.WriteFile(binaryPath, binary, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	app, err := NewApp(Config{MasterKey: "test-key", AgentBinaryPath: binaryTemplate})
+	app, err := NewApp(Config{MasterKey: "test-key", AgentInsecureHTTP: true, AgentBinaryPath: binaryTemplate})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestAgentInstallerAndBinaryDownload(t *testing.T) {
 }
 
 func TestAgentUninstallerScriptIsDirectlyExecutable(t *testing.T) {
-	app, err := NewApp(Config{MasterKey: "test-key"})
+	app, err := NewApp(Config{MasterKey: "test-key", AgentInsecureHTTP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestAgentUninstallerScriptIsDirectlyExecutable(t *testing.T) {
 }
 
 func TestAgentInstallerUsesRequestURLAndBuiltInDefaults(t *testing.T) {
-	app, err := NewApp(Config{MasterKey: "test-key"})
+	app, err := NewApp(Config{MasterKey: "test-key", AgentInsecureHTTP: true})
 	if err != nil {
 		t.Fatal(err)
 	}

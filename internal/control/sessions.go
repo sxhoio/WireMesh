@@ -29,6 +29,14 @@ func sessionTokenHash(token string) string {
 	return hex.EncodeToString(hash[:])
 }
 
+// RevokedToken 是已吊销会话令牌的持久化记录（DB 存储），
+// 保证服务重启后吊销仍然生效，不再依赖仅存在于内存的黑名单。
+type RevokedToken struct {
+	TokenHash string
+	TenantID  string
+	RevokedAt time.Time
+}
+
 func (a *App) recordSession(user User, token, userAgent string) {
 	hash := sessionTokenHash(token)
 	now := time.Now()
@@ -63,18 +71,49 @@ func (a *App) isRevokedToken(token string) bool {
 	return ok
 }
 
-func (a *App) revokeSessionByID(tenant, id string) bool {
+// markTokenRevoked 把令牌哈希加入内存黑名单并持久化到数据库，
+// 保证服务重启后吊销仍然生效。持久化失败不阻塞（内存态仍生效）。
+func (a *App) markTokenRevoked(tenant, tokenHash string, at time.Time) {
+	a.sessionMu.Lock()
+	a.revokedTokens[tokenHash] = at
+	a.sessionMu.Unlock()
+	_ = a.store.AddRevokedToken(RevokedToken{TokenHash: tokenHash, TenantID: tenant, RevokedAt: at})
+}
+
+// loadRevokedTokens 启动时从数据库加载已吊销令牌到内存黑名单。
+func (a *App) loadRevokedTokens() {
+	rows, err := a.store.ListRevokedTokens()
+	if err != nil {
+		return
+	}
 	a.sessionMu.Lock()
 	defer a.sessionMu.Unlock()
-	for hash, session := range a.sessions {
-		if hash[:16] != id || session.TenantID != tenant {
-			continue
+	for _, row := range rows {
+		if row.TenantID != "" {
+			a.revokedTokens[row.TokenHash] = row.RevokedAt
 		}
-		delete(a.sessions, hash)
-		a.revokedTokens[hash] = time.Now()
-		return true
 	}
-	return false
+}
+
+func (a *App) revokeSessionByID(tenant, id string) bool {
+	a.sessionMu.Lock()
+	var target string
+	for hash, session := range a.sessions {
+		if hash[:16] == id && session.TenantID == tenant {
+			target = hash
+			break
+		}
+	}
+	if target == "" {
+		a.sessionMu.Unlock()
+		return false
+	}
+	delete(a.sessions, target)
+	at := time.Now()
+	a.revokedTokens[target] = at
+	a.sessionMu.Unlock()
+	_ = a.store.AddRevokedToken(RevokedToken{TokenHash: target, TenantID: tenant, RevokedAt: at})
+	return true
 }
 
 func (a *App) revokeCurrentSession(token string) {
@@ -83,21 +122,29 @@ func (a *App) revokeCurrentSession(token string) {
 	}
 	hash := sessionTokenHash(token)
 	a.sessionMu.Lock()
-	defer a.sessionMu.Unlock()
 	delete(a.sessions, hash)
 	a.revokedTokens[hash] = time.Now()
+	a.sessionMu.Unlock()
+	_ = a.store.AddRevokedToken(RevokedToken{TokenHash: hash, RevokedAt: time.Now()})
 }
 
 // revokeUserSessions 吊销某用户的全部会话令牌（停用或删除用户时调用）。
 func (a *App) revokeUserSessions(tenant, userID string) {
 	a.sessionMu.Lock()
-	defer a.sessionMu.Unlock()
+	targets := make([]string, 0)
 	for hash, session := range a.sessions {
-		if session.TenantID != tenant || session.UserID != userID {
-			continue
+		if session.TenantID == tenant && session.UserID == userID {
+			targets = append(targets, hash)
+			delete(a.sessions, hash)
 		}
-		delete(a.sessions, hash)
-		a.revokedTokens[hash] = time.Now()
+	}
+	at := time.Now()
+	for _, hash := range targets {
+		a.revokedTokens[hash] = at
+	}
+	a.sessionMu.Unlock()
+	for _, hash := range targets {
+		_ = a.store.AddRevokedToken(RevokedToken{TokenHash: hash, TenantID: tenant, RevokedAt: at})
 	}
 }
 
@@ -128,7 +175,6 @@ func (a *App) StartHousekeeping(ctx context.Context) {
 func (a *App) cleanupSessionTables() {
 	now := time.Now()
 	a.sessionMu.Lock()
-	defer a.sessionMu.Unlock()
 	for hash, revokedAt := range a.revokedTokens {
 		if now.Sub(revokedAt) > revokedTokenRetention {
 			delete(a.revokedTokens, hash)
@@ -139,6 +185,9 @@ func (a *App) cleanupSessionTables() {
 			delete(a.sessions, hash)
 		}
 	}
+	a.sessionMu.Unlock()
+	// 同步清理数据库中超过保留期的吊销记录
+	_ = a.store.DeleteRevokedTokensBefore(now.Add(-revokedTokenRetention))
 }
 
 func (a *App) cleanupSSOStates() {

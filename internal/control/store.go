@@ -54,6 +54,9 @@ type Store interface {
 	AddAudit(AuditEvent) error
 	ListAudit(string) ([]AuditEvent, error)
 	HasNodeAuditAction(string, string, ...string) (bool, error)
+	AddRevokedToken(RevokedToken) error
+	ListRevokedTokens() ([]RevokedToken, error)
+	DeleteRevokedTokensBefore(time.Time) error
 	GetUserByEmail(string) (User, error)
 	GetUser(string) (User, error)
 	UpdateUserLastLogin(string, time.Time) error
@@ -126,6 +129,7 @@ type MemoryStore struct {
 	enrollments      map[string]EnrollmentToken
 	identities       map[string]AgentIdentity
 	audits           []AuditEvent
+	revokedTokens    map[string]RevokedToken
 	users            map[string]User
 	settings         map[string]SystemSettings
 	notifications    map[string]NotificationChannel
@@ -145,7 +149,7 @@ type MemoryStore struct {
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		projects: map[string]Project{}, networks: map[string]Network{}, nodes: map[string]Node{}, peers: map[string]PeerRelation{}, revisions: map[string][]ConfigRevision{}, deliveries: map[string]ConfigDelivery{}, commands: map[string]AgentCommand{}, enrollments: map[string]EnrollmentToken{}, identities: map[string]AgentIdentity{}, users: map[string]User{}, settings: map[string]SystemSettings{}, notifications: map[string]NotificationChannel{}, alertRules: map[string]AlertRule{}, alertFired: map[string]AlertFired{}, accessResources: map[string]AccessResource{}, accessPolicies: map[string]AccessPolicy{}, dnsRecords: map[string]DNSRecord{}, apiTokens: map[string]APIToken{}, apiTokenByHash: map[string]string{}, egressConfigs: map[string]EgressConfig{}, ssoConfigs: map[string]SSOConfig{},
+		projects: map[string]Project{}, networks: map[string]Network{}, nodes: map[string]Node{}, peers: map[string]PeerRelation{}, revisions: map[string][]ConfigRevision{}, deliveries: map[string]ConfigDelivery{}, commands: map[string]AgentCommand{}, enrollments: map[string]EnrollmentToken{}, identities: map[string]AgentIdentity{}, revokedTokens: map[string]RevokedToken{}, users: map[string]User{}, settings: map[string]SystemSettings{}, notifications: map[string]NotificationChannel{}, alertRules: map[string]AlertRule{}, alertFired: map[string]AlertFired{}, accessResources: map[string]AccessResource{}, accessPolicies: map[string]AccessPolicy{}, dnsRecords: map[string]DNSRecord{}, apiTokens: map[string]APIToken{}, apiTokenByHash: map[string]string{}, egressConfigs: map[string]EgressConfig{}, ssoConfigs: map[string]SSOConfig{},
 	}
 }
 func (s *MemoryStore) CreateProject(v Project) error {
@@ -555,6 +559,34 @@ func (s *MemoryStore) ClearAudit(tenant string) error {
 	s.audits = slices.DeleteFunc(s.audits, func(event AuditEvent) bool {
 		return event.TenantID == tenant
 	})
+	return nil
+}
+
+func (s *MemoryStore) AddRevokedToken(v RevokedToken) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.revokedTokens[v.TokenHash] = v
+	return nil
+}
+
+func (s *MemoryStore) ListRevokedTokens() ([]RevokedToken, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]RevokedToken, 0, len(s.revokedTokens))
+	for _, v := range s.revokedTokens {
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) DeleteRevokedTokensBefore(at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for hash, v := range s.revokedTokens {
+		if v.RevokedAt.Before(at) {
+			delete(s.revokedTokens, hash)
+		}
+	}
 	return nil
 }
 

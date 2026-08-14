@@ -14,7 +14,7 @@ import (
 
 func testApp(t *testing.T) *App {
 	t.Helper()
-	app, err := NewApp(Config{MasterKey: "test-key"})
+	app, err := NewApp(Config{MasterKey: "test-key", AgentInsecureHTTP: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,7 +509,7 @@ func TestAgentUpdateRejectsAgentsWithoutUpdaterSupport(t *testing.T) {
 	if err := os.WriteFile(binaryPath, []byte("test-agent-binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	app, err := NewApp(Config{MasterKey: "test-key", AgentBinaryPath: binaryTemplate, AgentVersion: "0.3.7"})
+	app, err := NewApp(Config{MasterKey: "test-key", AgentInsecureHTTP: true, AgentBinaryPath: binaryTemplate, AgentVersion: "0.3.7"})
 	if err != nil {
 		t.Fatal(err)
 	}

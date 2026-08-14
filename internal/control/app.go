@@ -42,6 +42,8 @@ type Config struct {
 	AgentVersion           string
 	CAFile                 string
 	RequireAgentClientCert bool
+	TrustProxyAgentID      bool
+	AgentInsecureHTTP      bool
 }
 type App struct {
 	store                  Store
@@ -65,6 +67,8 @@ type App struct {
 	agentBinaryPath        string
 	agentVersion           string
 	requireAgentClientCert bool
+	trustProxyAgentID      bool
+	agentInsecureHTTP      bool
 	loginMu                sync.Mutex
 	loginFailures          map[string][]time.Time
 	setupMu                sync.Mutex
@@ -98,12 +102,15 @@ func NewApp(cfg Config) (*App, error) {
 		agentBinaryPath:        cfg.AgentBinaryPath,
 		agentVersion:           strings.TrimSpace(cfg.AgentVersion),
 		requireAgentClientCert: cfg.RequireAgentClientCert,
+		trustProxyAgentID:      cfg.TrustProxyAgentID,
+		agentInsecureHTTP:      cfg.AgentInsecureHTTP,
 		loginFailures:          map[string][]time.Time{},
 		setupAttempts:          map[string][]time.Time{},
 		setupToken:             strings.TrimSpace(cfg.SetupToken),
 	}
 	app.geoLookup = app.lookupGeoIPLocation
 	app.auth = newAuthenticator(store, cfg.MasterKey+"-auth")
+	app.loadRevokedTokens()
 	if cfg.CAFile != "" {
 		// 生产部署：CA 私钥用 master key 加密持久化，重启后复用，避免吊销全部 Agent 证书
 		if err := app.loadOrCreateCA(cfg.CAFile); err != nil {
@@ -337,6 +344,14 @@ func (a *App) withUser(required Role, next func(http.ResponseWriter, *http.Reque
 			writeError(w, http.StatusUnauthorized, "身份验证或权限不足")
 			return
 		} else {
+			// 用户令牌：每次请求按 subject 重查用户状态，停用/删除即时生效，
+			// 并用数据库当前角色覆盖令牌内嵌角色（升降级无需重新登录即生效）。
+			user, userErr := a.store.GetUser(c.Subject)
+			if userErr != nil || !user.Active || user.TenantID != c.TenantID {
+				writeError(w, http.StatusUnauthorized, "身份验证或权限不足")
+				return
+			}
+			c.Role = user.Role
 			a.touchSession(token)
 		}
 		if !allowed(c.Role, required) {
@@ -1005,6 +1020,13 @@ func (a *App) agentNode(w http.ResponseWriter, r *http.Request) (Node, bool) {
 	// 不允许仅凭 X-Agent-ID 头冒充节点。
 	if a.requireAgentClientCert && (r.TLS == nil || len(r.TLS.PeerCertificates) == 0) {
 		writeError(w, http.StatusUnauthorized, "agent client certificate required")
+		return Node{}, false
+	}
+	// 纯 HTTP（无 TLS）模式下，X-Agent-ID 头即节点身份，可被伪造窃取私钥。
+	// 默认 fail-closed：仅显式开启 WIREMESH_AGENT_INSECURE_HTTP（开发）或
+	// 配置了可信反向代理（WIREMESH_TRUST_PROXY_AGENT_ID）时才放行。
+	if r.TLS == nil && !a.agentInsecureHTTP && !a.trustProxyAgentID {
+		writeError(w, http.StatusForbidden, "agent endpoints require TLS; set WIREMESH_AGENT_INSECURE_HTTP=1 only for local development")
 		return Node{}, false
 	}
 	nodeID := r.Header.Get("X-Agent-ID")

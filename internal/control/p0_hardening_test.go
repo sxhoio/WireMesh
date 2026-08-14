@@ -23,11 +23,11 @@ func TestNewAppRequiresMasterKey(t *testing.T) {
 
 func TestAgentCAPersistsAcrossRestart(t *testing.T) {
 	caPath := filepath.Join(t.TempDir(), "wiremesh-ca.json")
-	app1, err := NewApp(Config{MasterKey: "ca-persist-key", CAFile: caPath})
+	app1, err := NewApp(Config{MasterKey: "ca-persist-key", AgentInsecureHTTP: true, CAFile: caPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	app2, err := NewApp(Config{MasterKey: "ca-persist-key", CAFile: caPath})
+	app2, err := NewApp(Config{MasterKey: "ca-persist-key", AgentInsecureHTTP: true, CAFile: caPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,17 +38,17 @@ func TestAgentCAPersistsAcrossRestart(t *testing.T) {
 	if err := os.WriteFile(caPath, []byte("not-json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewApp(Config{MasterKey: "ca-persist-key", CAFile: caPath}); err == nil {
+	if _, err := NewApp(Config{MasterKey: "ca-persist-key", AgentInsecureHTTP: true, CAFile: caPath}); err == nil {
 		t.Fatal("corrupt CA file must fail startup")
 	}
 }
 
 func TestAgentCARequiresSameMasterKey(t *testing.T) {
 	caPath := filepath.Join(t.TempDir(), "wiremesh-ca.json")
-	if _, err := NewApp(Config{MasterKey: "ca-key-a", CAFile: caPath}); err != nil {
+	if _, err := NewApp(Config{MasterKey: "ca-key-a", AgentInsecureHTTP: true, CAFile: caPath}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewApp(Config{MasterKey: "ca-key-b", CAFile: caPath}); err == nil {
+	if _, err := NewApp(Config{MasterKey: "ca-key-b", AgentInsecureHTTP: true, CAFile: caPath}); err == nil {
 		t.Fatal("CA encrypted under key A must not be readable with key B")
 	}
 }
@@ -129,7 +129,7 @@ func TestSessionTimeoutFromSettings(t *testing.T) {
 }
 
 func TestStrictAgentCertRequired(t *testing.T) {
-	app, err := NewApp(Config{MasterKey: "strict-cert-key", RequireAgentClientCert: true})
+	app, err := NewApp(Config{MasterKey: "strict-cert-key", AgentInsecureHTTP: true, RequireAgentClientCert: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -49,7 +49,7 @@ func TestSystemSettingsAPIAndPermissions(t *testing.T) {
 		t.Fatalf("missing settings audit: %#v %v", events, err)
 	}
 
-	viewer := User{ID: "viewer_settings", TenantID: admin.TenantID, Email: "viewer-settings@example.com", Name: "Viewer", Role: RoleViewer, PasswordHash: "unused", CreatedAt: time.Now().UTC()}
+	viewer := User{ID: "viewer_settings", TenantID: admin.TenantID, Email: "viewer-settings@example.com", Name: "Viewer", Role: RoleViewer, Active: true, PasswordHash: "unused", CreatedAt: time.Now().UTC()}
 	if err := app.store.CreateUser(viewer); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestSystemSettingsTenantIsolation(t *testing.T) {
 		t.Fatalf("tenant A update failed: %d %s", response.Code, response.Body.String())
 	}
 
-	adminB := User{ID: "admin_b", TenantID: "tenant_b", Email: "tenant-b@example.com", Name: "Tenant B", Role: RoleAdmin, PasswordHash: "unused", CreatedAt: time.Now().UTC()}
+	adminB := User{ID: "admin_b", TenantID: "tenant_b", Email: "tenant-b@example.com", Name: "Tenant B", Role: RoleAdmin, Active: true, PasswordHash: "unused", CreatedAt: time.Now().UTC()}
 	if err := app.store.CreateUser(adminB); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestNotificationAndUserManagementAPIs(t *testing.T) {
 		}
 	}
 
-	otherAdmin := User{ID: "notification_other", TenantID: "notification_other_tenant", Email: "notification-other@example.com", Name: "Other", Role: RoleAdmin, PasswordHash: "unused", CreatedAt: time.Now().UTC()}
+	otherAdmin := User{ID: "notification_other", TenantID: "notification_other_tenant", Email: "notification-other@example.com", Name: "Other", Role: RoleAdmin, Active: true, PasswordHash: "unused", CreatedAt: time.Now().UTC()}
 	if err := app.store.CreateUser(otherAdmin); err != nil {
 		t.Fatal(err)
 	}

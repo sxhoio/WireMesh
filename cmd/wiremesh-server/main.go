@@ -91,6 +91,10 @@ func main() {
 		// 直接 TLS 监听时要求 Agent 携带有效客户端证书；仅当流量经过
 		// 可信反向代理（由代理注入 X-Agent-ID）时设置 WIREMESH_TRUST_PROXY_AGENT_ID=true
 		RequireAgentClientCert: certFile != "" && keyFile != "" && os.Getenv("WIREMESH_TRUST_PROXY_AGENT_ID") != "true",
+		TrustProxyAgentID:      os.Getenv("WIREMESH_TRUST_PROXY_AGENT_ID") == "true",
+		// 纯 HTTP 模式下 Agent 端点默认拒绝（X-Agent-ID 可伪造窃取私钥）；
+		// 仅本地开发显式开启 WIREMESH_AGENT_INSECURE_HTTP=1
+		AgentInsecureHTTP: os.Getenv("WIREMESH_AGENT_INSECURE_HTTP") == "1",
 	})
 	if err != nil {
 		log.Fatal(err)
