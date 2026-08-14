@@ -90,17 +90,10 @@ let map: OlMap | null = null
 let linkSource: VectorSource | null = null
 let markerSource: VectorSource | null = null
 
-/** 两点间生成贝塞尔曲线（弧线）投影坐标序列。
- *  若两点跨 180° 经线（经度差 > 180），先把终点经度平移 ±360 走短路径，
- *  避免曲线横穿整个世界（而非跨越太平洋），配合 wrapX:false 的单一
- *  世界坐标渲染，曲线完整显示。 */
+/** 两点间生成贝塞尔曲线（弧线）投影坐标序列 */
 function curveCoords(a: [number, number], b: [number, number]): number[][] {
-  const adjustedB: [number, number] = [b[0], b[1]]
-  const delta = b[0] - a[0]
-  if (delta > 180) adjustedB[0] = b[0] - 360
-  else if (delta < -180) adjustedB[0] = b[0] + 360
   const pa = toMapProjection(a)
-  const pb = toMapProjection(adjustedB)
+  const pb = toMapProjection(b)
   const dx = pb[0] - pa[0]
   const dy = pb[1] - pa[1]
   const dist = Math.hypot(dx, dy)
@@ -124,15 +117,7 @@ function curveCoords(a: [number, number], b: [number, number]): number[][] {
   for (let i = 0; i <= N; i++) {
     const t = i / N
     const mt = 1 - t
-    let x = mt * mt * pa[0] + 2 * mt * t * cx + t * t * pb[0]
-    const y = mt * mt * pa[1] + 2 * mt * t * cy + t * t * pb[1]
-    // 跨 180° 短路径会使采样 X 超出单一世界范围 [−W, W]，回绕到世界内，
-    // 保证 wrapX:false 下 OpenLayers 能完整渲染整条曲线
-    const worldHalf = 20037508.342789244
-    const world = worldHalf * 2
-    if (x > worldHalf) x -= world
-    else if (x < -worldHalf) x += world
-    pts.push([x, y])
+    pts.push([mt * mt * pa[0] + 2 * mt * t * cx + t * t * pb[0], mt * mt * pa[1] + 2 * mt * t * cy + t * t * pb[1]])
   }
   return pts
 }
@@ -297,12 +282,8 @@ function zoomToCountry(lng: number, lat: number) {
 }
 
 onMounted(() => {
-  // wrapX:false——所有坐标均由 fromLonLat 产生、落在单一世界范围内，
-  // 关闭多世界副本渲染可避免长距离连线在低缩放时被裁切只显示一半
-  // （渲染器按视口中心为几何选择 world copy，跨大经度差的线两端
-  // 可能落在不同副本导致部分丢失）。
-  linkSource = new VectorSource({ wrapX: false })
-  markerSource = new VectorSource({ wrapX: false })
+  linkSource = new VectorSource()
+  markerSource = new VectorSource()
   map = new OlMap({
     target: el.value!,
     controls: defaultControls({ zoom: false, rotate: false, attribution: false }).extend([new ScaleLine({ units: 'metric' })]),
