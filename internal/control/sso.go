@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -32,6 +33,7 @@ type ssoState struct {
 	ClientID    string
 	Secret      string
 	Nonce       string
+	Verifier    string
 	RedirectURI string
 	ExpiresAt   time.Time
 }
@@ -141,12 +143,18 @@ func (a *App) ssoLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	state := base64.RawURLEncoding.EncodeToString(randomBytes(24))
 	nonce := base64.RawURLEncoding.EncodeToString(randomBytes(16))
+	// H-3（P1）：PKCE——生成 64 字节 code_verifier，S256 摘要作为
+	// code_challenge 随授权请求发出；即使授权码被截获，攻击者没有
+	// verifier 也无法向 token 端点兑换。
+	verifier := base64.RawURLEncoding.EncodeToString(randomBytes(64))
+	verifierHash := sha256.Sum256([]byte(verifier))
+	codeChallenge := base64.RawURLEncoding.EncodeToString(verifierHash[:])
 	secret, err := a.box.Decrypt(config.ClientSecret)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "SSO client secret unavailable")
 		return
 	}
-	redirectURI, err := ssoRedirectURI(r)
+	redirectURI, err := a.ssoRedirectURI(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "无效的 SSO 回调地址")
 		return
@@ -173,11 +181,11 @@ func (a *App) ssoLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		delete(a.ssoStates, oldestKey)
 	}
-	a.ssoStates[state] = ssoState{TenantID: tenant, Issuer: config.Issuer, ClientID: config.ClientID, Secret: string(secret), Nonce: nonce, RedirectURI: redirectURI, ExpiresAt: now.Add(ssoStateTTL)}
+	a.ssoStates[state] = ssoState{TenantID: tenant, Issuer: config.Issuer, ClientID: config.ClientID, Secret: string(secret), Nonce: nonce, Verifier: verifier, RedirectURI: redirectURI, ExpiresAt: now.Add(ssoStateTTL)}
 	a.ssoMu.Unlock()
 	authURL := discovery.AuthorizationEndpoint + "?response_type=code&client_id=" + url.QueryEscape(config.ClientID) +
 		"&redirect_uri=" + url.QueryEscape(redirectURI) + "&scope=" + url.QueryEscape("openid email profile") + "&state=" + url.QueryEscape(state) +
-		"&nonce=" + url.QueryEscape(nonce)
+		"&nonce=" + url.QueryEscape(nonce) + "&code_challenge=" + url.QueryEscape(codeChallenge) + "&code_challenge_method=S256"
 	writeJSON(w, http.StatusOK, map[string]string{"url": authURL})
 }
 
@@ -198,7 +206,7 @@ func (a *App) ssoCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	// S7：回调的 redirect_uri 必须与发起登录时一致（绑定 state），
 	// 防止攻击者篡改 Host 头把授权码重定向到自己的域名。
-	redirectURI, err := ssoRedirectURI(r)
+	redirectURI, err := a.ssoRedirectURI(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "无效的 SSO 回调地址")
 		return
@@ -212,7 +220,7 @@ func (a *App) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "SSO provider discovery failed")
 		return
 	}
-	accessToken, idToken, err := exchangeOIDCCode(r.Context(), discovery.TokenEndpoint, stateInfo.ClientID, stateInfo.Secret, code, redirectURI)
+	accessToken, idToken, err := exchangeOIDCCode(r.Context(), discovery.TokenEndpoint, stateInfo.ClientID, stateInfo.Secret, code, redirectURI, stateInfo.Verifier)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "SSO token exchange failed")
 		return
@@ -282,7 +290,7 @@ func fetchOIDCDiscovery(ctx context.Context, issuer string) (oidcDiscovery, erro
 	return discovery, nil
 }
 
-func exchangeOIDCCode(ctx context.Context, tokenEndpoint, clientID, clientSecret, code, redirectURI string) (string, string, error) {
+func exchangeOIDCCode(ctx context.Context, tokenEndpoint, clientID, clientSecret, code, redirectURI, codeVerifier string) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	form := url.Values{}
@@ -291,6 +299,11 @@ func exchangeOIDCCode(ctx context.Context, tokenEndpoint, clientID, clientSecret
 	form.Set("redirect_uri", redirectURI)
 	form.Set("client_id", clientID)
 	form.Set("client_secret", clientSecret)
+	// H-3（P1）：PKCE——兑换时携带 code_verifier，IdP 校验其与授权请求的
+	// code_challenge 匹配；截获的授权码无 verifier 无法兑换。
+	if codeVerifier != "" {
+		form.Set("code_verifier", codeVerifier)
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", "", err
@@ -353,12 +366,17 @@ func fetchOIDCUserEmail(ctx context.Context, userinfoEndpoint, accessToken strin
 	return email, nil
 }
 
-// ssoRedirectURI 构造 SSO 回调地址，并校验 Host 头（S7）：
-// - 拒绝包含用户信息、路径、查询串、空白或控制字符的 Host（防 URL 注入）；
-// - 拒绝非标准端口的 Host 头伪装（redirect_uri 必须指向本服务）。
-// 回调阶段同样调用此函数，与发起登录时存储的 redirect_uri 比对，
-// 防止 Host 头被篡改导致授权码泄漏到攻击者域名。
-func ssoRedirectURI(r *http.Request) (string, error) {
+// ssoRedirectURI 构造 SSO 回调地址。配置了 WIREMESH_PUBLIC_URL 时使用该
+// 固定公网源（H-3：不再信任攻击者可控制的 Host 头）；未配置时回退到
+// 校验过的 Host 头（S7 保留，配合 PKCE 兜底）。
+func (a *App) ssoRedirectURI(r *http.Request) (string, error) {
+	if a.publicURL != "" {
+		parsed, err := url.Parse(a.publicURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return "", errors.New("invalid configured public URL")
+		}
+		return strings.TrimRight(a.publicURL, "/") + "/api/v1/auth/sso/callback", nil
+	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"

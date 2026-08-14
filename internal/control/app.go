@@ -46,6 +46,7 @@ type Config struct {
 	TrustProxyAgentID      bool
 	AgentInsecureHTTP      bool
 	UpdateSigningKey       string
+	PublicURL              string
 }
 type App struct {
 	store                  Store
@@ -72,6 +73,7 @@ type App struct {
 	trustProxyAgentID      bool
 	agentInsecureHTTP      bool
 	updateSigningKey       *ecdsa.PrivateKey
+	publicURL              string
 	startTime              time.Time
 	loginMu                sync.Mutex
 	loginFailures          map[string][]time.Time
@@ -114,6 +116,7 @@ func NewApp(cfg Config) (*App, error) {
 		changePasswordFailures: map[string][]time.Time{},
 		setupAttempts:          map[string][]time.Time{},
 		setupToken:             strings.TrimSpace(cfg.SetupToken),
+		publicURL:              strings.TrimRight(strings.TrimSpace(cfg.PublicURL), "/"),
 		startTime:              time.Now(),
 	}
 	if strings.TrimSpace(cfg.UpdateSigningKey) != "" {

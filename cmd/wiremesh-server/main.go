@@ -111,6 +111,9 @@ func main() {
 		// 可选：更新清单签名私钥（PEM ECDSA P-256），配置后清单携带签名，
 		// Agent 端可用 --update-public-key 离线验证
 		UpdateSigningKey: os.Getenv("WIREMESH_UPDATE_SIGNING_KEY"),
+		// 可选：SSO 回调使用的固定公网源（redirect_uri 不再信任 Host 头），
+		// 例如 https://wiremesh.example.com（H-3）
+		PublicURL: os.Getenv("WIREMESH_PUBLIC_URL"),
 	})
 	if err != nil {
 		log.Fatal(err)

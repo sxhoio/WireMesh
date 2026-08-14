@@ -4,6 +4,18 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.7`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.7.4（P1 安全专项 H-3：SSO 授权码劫持修复）
+
+0day 审计 P1 首项修复（High）：
+
+- **PKCE**：SSO 授权请求携带 `code_challenge`（S256），回调兑换携带
+  `code_verifier`——即使授权码被截获，无 verifier 也无法兑换令牌
+- **固定 redirect_uri 源**：新增 `WIREMESH_PUBLIC_URL` 配置，配置后
+  SSO 回调地址使用固定公网源，不再信任攻击者可控制的 Host 头；
+  未配置时保留严格 Host 校验（S7）+ PKCE 兜底
+- 新增 H-3 专项测试（固定源优先、伪造 Host 不影响、PKCE 兑换）
+- go vet/go test 全绿
+
 ## v0.7.3（P0 安全专项 H-4：未认证初始化接管）
 
 0day 审计 P0 第四项修复（High，P0 全部完成）：
