@@ -82,8 +82,11 @@ func (a *App) updateUser(w http.ResponseWriter, r *http.Request, c claims) {
 		writeError(w, http.StatusInternalServerError, "更新用户失败")
 		return
 	}
-	if !next.Active {
+	// M-3：停用或不再具备管理员角色时，级联删除其创建的 API 令牌
+	// （API 令牌恒为 admin 权限，降级/停用后必须失效，否则成为后门）。
+	if !next.Active || next.Role != RoleAdmin {
 		a.revokeUserSessions(c.TenantID, next.ID)
+		_ = a.store.DeleteAPITokensByCreator(c.TenantID, next.ID)
 	}
 	a.auditEvent(c.TenantID, c.Subject, "user.update", "user", next.ID, map[string]string{"role": string(next.Role), "active": fmt.Sprintf("%t", next.Active)})
 	writeJSON(w, http.StatusOK, publicUser(next))
