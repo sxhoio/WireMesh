@@ -71,6 +71,20 @@ const formDirty = computed(
   () => formTabKeys.includes(tab.value) && JSON.stringify(form) !== JSON.stringify(app.settings),
 )
 
+// ---- Agent 状态页 ----
+const agentManifest = computed(() => mesh.agentUpdate.manifest)
+const agentNodeStatus = (id: string) => mesh.agentUpdate.node_status.find((status) => status.node_id === id)
+const updatableCount = computed(() => mesh.agentUpdate.node_status.filter((status) => status.needs_update).length)
+const manualOnlyCount = computed(() => mesh.agentUpdate.node_status.filter((status) => status.reason).length)
+const agentVersionGroups = computed(() => {
+  const counts = new Map<string, number>()
+  for (const agent of mesh.agents) {
+    const version = agent.version || '未知版本'
+    counts.set(version, (counts.get(version) || 0) + 1)
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])
+})
+
 /** 切换 tab：设置类 tab 有未保存修改时先确认，避免静默丢弃 */
 function selectTab(key: TabKey) {
   if (tab.value === key) return
@@ -838,11 +852,65 @@ onUnmounted(() => { if (savedTimer) window.clearTimeout(savedTimer) })
 
       <!-- Agent -->
       <section v-else-if="tab === 'agent'" class="panel p-5">
-        <h2 class="text-sm font-semibold text-white">Agent</h2>
-        <p class="mt-0.5 text-xs text-slate-500">WireMesh 使用由后端签发的一次性注册令牌，不在浏览器中保存全局 Token。</p>
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 class="text-sm font-semibold text-white">Agent</h2>
+            <p class="mt-0.5 max-w-xl text-xs leading-relaxed text-slate-500">节点 Agent 使用后端签发的一次性注册令牌接入（浏览器不保存全局 Token）；本页汇总服务端更新包状态与各节点版本。</p>
+          </div>
+          <button class="btn-primary" @click="router.push({ name: 'nodes' })">前往节点列表接入 / 更新</button>
+        </div>
+
+        <!-- 更新包状态 + 版本分布 -->
+        <div class="mt-4 grid gap-4 sm:grid-cols-3">
+          <div class="rounded-xl bg-ink-800/60 p-4 ring-1 ring-ink-600 sm:col-span-1">
+            <p class="text-xs text-slate-500">服务端更新包</p>
+            <p class="mt-1 flex items-center gap-2 text-sm font-semibold" :class="agentManifest.available ? 'text-emerald-300' : 'text-amber-300'">
+              {{ agentManifest.available ? '已配置' : '未配置' }}
+              <span v-if="agentManifest.version" class="font-mono text-xs text-slate-400">v{{ agentManifest.version }}</span>
+            </p>
+            <p v-if="!agentManifest.available" class="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+              设置 <code class="text-cyan-300">WIREMESH_AGENT_BINARY</code> 与 <code class="text-cyan-300">WIREMESH_AGENT_VERSION</code> 环境变量后可远程更新 Agent{{ agentManifest.error ? '：' + agentManifest.error : '' }}。
+            </p>
+            <p v-else class="mt-1.5 text-[11px] text-slate-500">支持远程自更新的最低版本：{{ agentManifest.min_agent_version || '0.3.6' }}</p>
+          </div>
+          <div class="rounded-xl bg-ink-800/60 p-4 ring-1 ring-ink-600">
+            <p class="text-xs text-slate-500">可远程更新</p>
+            <p class="mt-1 text-2xl font-bold text-amber-300">{{ updatableCount }}</p>
+            <p class="mt-1 text-[11px] text-slate-500">版本落后于更新包、可直接下发更新的节点</p>
+          </div>
+          <div class="rounded-xl bg-ink-800/60 p-4 ring-1 ring-ink-600">
+            <p class="text-xs text-slate-500">需手动升级</p>
+            <p class="mt-1 text-2xl font-bold text-red-400">{{ manualOnlyCount }}</p>
+            <p class="mt-1 text-[11px] text-slate-500">版本过旧或无法识别，需在节点机器上重新执行接入脚本</p>
+          </div>
+        </div>
+
+        <!-- 版本分布 -->
         <div class="mt-4 rounded-xl bg-ink-800/60 p-4 ring-1 ring-ink-600">
-          <p class="text-sm text-slate-200">前往“节点列表 → 接入新节点”选择真实项目和网络，并生成一键安装接入命令。</p>
-          <button class="btn-primary mt-4" @click="router.push({ name: 'nodes' })">前往节点列表</button>
+          <p class="text-xs font-semibold text-slate-300">版本分布</p>
+          <div class="mt-2.5 flex flex-wrap gap-1.5">
+            <span v-for="[version, count] in agentVersionGroups" :key="version" class="chip bg-ink-900/70 font-mono text-slate-300 ring-1 ring-ink-600">
+              {{ version }} × {{ count }}
+            </span>
+            <span v-if="!agentVersionGroups.length" class="text-[11px] text-slate-600">暂无已接入节点</span>
+          </div>
+        </div>
+
+        <!-- 节点版本明细 -->
+        <div class="mt-4">
+          <p class="mb-2 text-xs font-semibold text-slate-300">节点版本明细（{{ mesh.agents.length }}）</p>
+          <div class="space-y-1.5">
+            <div v-for="agent in mesh.agents" :key="agent.id" class="flex items-center gap-3 rounded-xl bg-ink-800/60 px-4 py-2.5 ring-1 ring-ink-600">
+              <span class="h-2 w-2 shrink-0 rounded-full" :class="!agent.enabled ? 'bg-slate-600' : agent.status === 'online' ? 'bg-emerald-400' : 'bg-slate-500'"></span>
+              <p class="min-w-0 flex-1 truncate text-sm text-slate-200">{{ agent.name }}</p>
+              <span class="shrink-0 font-mono text-xs text-slate-400">{{ agent.version || '未知版本' }}</span>
+              <span v-if="!agentNodeStatus(agent.id)" class="chip shrink-0 bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/30">待评估</span>
+              <span v-else-if="agentNodeStatus(agent.id)!.needs_update" class="chip shrink-0 bg-amber-500/10 text-amber-300 ring-1 ring-amber-500/30">可更新</span>
+              <span v-else-if="agentNodeStatus(agent.id)!.reason" class="chip shrink-0 bg-red-500/10 text-red-300 ring-1 ring-red-500/30" :title="agentNodeStatus(agent.id)!.reason">需手动升级</span>
+              <span v-else class="chip shrink-0 bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/30">已是最新</span>
+            </div>
+            <p v-if="!mesh.agents.length" class="rounded-xl bg-ink-800/40 px-4 py-6 text-center text-xs text-slate-500 ring-1 ring-ink-700">暂无已接入节点，请到节点列表生成接入命令</p>
+          </div>
         </div>
       </section>
 
