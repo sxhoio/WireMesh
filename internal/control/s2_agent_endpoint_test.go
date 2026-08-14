@@ -49,17 +49,30 @@ func TestAgentInsecureHTTPExplicitOptIn(t *testing.T) {
 }
 
 // TestAgentTrustProxyAllowsPlainHTTP：显式配置可信反向代理时，HTTP 模式放行
-// X-Agent-ID（由代理注入并保持后端私有）。
+// X-Agent-ID（由代理注入并保持后端私有）。M-4：仅私网/回环来源（可信反代）
+// 可携带身份头；公网直连即使伪造头也拒绝。
 func TestAgentTrustProxyAllowsPlainHTTP(t *testing.T) {
 	app, err := NewApp(Config{MasterKey: "s2-proxy-key", TrustProxyAgentID: true})
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 可信反代（私网来源）携带 X-Agent-ID → 走到身份认证（401 unknown node）
 	request := httptest.NewRequest(http.MethodGet, "/agent/v1/config", nil)
+	request.RemoteAddr = "10.0.0.5:12345"
 	request.Header.Set("X-Agent-ID", "unknown-node")
 	response := httptest.NewRecorder()
 	app.Router().ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("trust-proxy mode should authenticate (401 unknown node), got %d %s", response.Code, response.Body.String())
+	}
+
+	// M-4：公网直连携带 X-Agent-ID → 拒绝（防后端暴露被冒充）
+	request = httptest.NewRequest(http.MethodGet, "/agent/v1/config", nil)
+	request.RemoteAddr = "198.51.100.9:12345"
+	request.Header.Set("X-Agent-ID", "any-node")
+	response = httptest.NewRecorder()
+	app.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("public direct connection with identity header must be rejected: %d %s", response.Code, response.Body.String())
 	}
 }

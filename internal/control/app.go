@@ -1204,6 +1204,16 @@ func (a *App) agentNode(w http.ResponseWriter, r *http.Request) (Node, bool) {
 	if r.TLS == nil && !a.agentInsecureHTTP && !a.trustProxyAgentID {
 		return reject(http.StatusForbidden, "agent endpoints require TLS; set WIREMESH_AGENT_INSECURE_HTTP=1 only for local development")
 	}
+	// M-4：trustProxyAgentID 模式依赖 X-Agent-ID 头（无 mTLS 证书）时，
+	// 直连来源必须是私网/回环（可信反代所在）；公网直连即使伪造头也拒绝
+	// ——防止反代模式下后端暴露被冒充节点窃取私钥。
+	// 显式开发的 agentInsecureHTTP 模式不强制（本地测试/内网开发）。
+	hasClientCert := r.TLS != nil && len(r.TLS.PeerCertificates) > 0
+	if a.trustProxyAgentID && !hasClientCert {
+		if address, ok := parseAddress(r.RemoteAddr); !ok || !(address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast()) {
+			return reject(http.StatusForbidden, "agent identity header is only accepted from a trusted private/loopback proxy")
+		}
+	}
 	nodeID := r.Header.Get("X-Agent-ID")
 	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 		certificateNodeID := r.TLS.PeerCertificates[0].Subject.CommonName

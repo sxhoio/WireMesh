@@ -4,6 +4,16 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.7`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.7.8（P2 安全专项 M-4：X-Agent-ID 信任收紧）
+
+0day 审计 P2 修复：
+
+- `WIREMESH_TRUST_PROXY_AGENT_ID` 模式下，无 mTLS 证书、依赖
+  X-Agent-ID 头的请求，直连来源必须是私网/回环（可信反代所在）；
+  公网直连即使伪造头也拒绝——防后端暴露被冒充节点窃取私钥
+- 更新 s2 测试（私网放行 / 公网拒绝）
+- go vet/go test 全绿
+
 ## v0.7.7（P1 安全专项 M-6：logout 吊销重启失效）
 
 0day 审计 P1 修复（P1 全部完成）：
