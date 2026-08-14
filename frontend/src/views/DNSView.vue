@@ -217,7 +217,7 @@ onUnmounted(() => window.clearInterval(refreshTimer))
 
 <template>
   <div class="flex h-full flex-col gap-5">
-    <div class="flex flex-wrap items-center gap-3">
+    <div class="flex flex-wrap items-start gap-3">
       <div>
         <label class="label">网络</label>
         <select v-model="selectedNetworkId" class="input !w-64">
@@ -225,7 +225,7 @@ onUnmounted(() => window.clearInterval(refreshTimer))
           <option v-for="n in mesh.networks" :key="n.id" :value="n.id">{{ n.name }}（{{ n.cidr }}）</option>
         </select>
       </div>
-      <p class="mb-2 max-w-2xl text-xs leading-relaxed text-slate-500">私有 DNS 映射表：节点主机名自动对应隧道 IP，手动记录用于额外的服务名。WireGuard 本身不解析 DNS——请把生成的 /etc/hosts 片段导入节点，或在节点侧配置 DNS 服务。</p>
+      <p class="max-w-2xl pt-6 text-xs leading-relaxed text-slate-500">私有 DNS 映射表：节点主机名自动对应隧道 IP，手动记录用于额外的服务名。WireGuard 本身不解析 DNS——请把生成的 /etc/hosts 片段导入节点，或在节点侧配置 DNS 服务。</p>
     </div>
 
     <!-- 上游 DNS 设置 -->

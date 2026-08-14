@@ -482,7 +482,7 @@ onUnmounted(() => window.clearInterval(refreshTimer))
 
 <template>
   <div class="flex h-full flex-col gap-5">
-    <div class="sticky top-0 z-20 flex flex-wrap items-center gap-3 rounded-xl bg-ink-950/90 px-1 py-2 backdrop-blur">
+    <div class="sticky top-0 z-20 flex flex-wrap items-start gap-3 rounded-xl bg-ink-950/90 px-1 py-2 backdrop-blur">
       <div>
         <label class="label">网络</label>
         <select v-model="selectedNetworkId" class="input !w-64">
@@ -490,8 +490,8 @@ onUnmounted(() => window.clearInterval(refreshTimer))
           <option v-for="n in mesh.networks" :key="n.id" :value="n.id">{{ n.name }}（{{ n.cidr }}）</option>
         </select>
       </div>
-      <span v-if="selectedNetwork" class="chip mb-2 bg-cyan-500/10 text-cyan-300 ring-1 ring-cyan-500/30">{{ topologyLabel() }}</span>
-      <p class="mb-2 text-xs text-slate-500">访问策略在发布网络配置时生效：策略允许的资源目标 CIDR 会加入源节点对应网关 Peer 的 AllowedIPs（IP 级路由控制），端口作为元数据保存。</p>
+      <span v-if="selectedNetwork" class="chip mt-6 bg-cyan-500/10 text-cyan-300 ring-1 ring-cyan-500/30">{{ topologyLabel() }}</span>
+      <p class="mt-6 text-xs text-slate-500">访问策略在发布网络配置时生效：策略允许的资源目标 CIDR 会加入源节点对应网关 Peer 的 AllowedIPs（IP 级路由控制），端口作为元数据保存。</p>
       <div class="ml-auto flex gap-2">
         <p v-if="notice" class="mb-2 self-end text-xs text-emerald-300">{{ notice }}</p>
         <button

@@ -36,7 +36,12 @@ body {
     @apply bg-ink-900/80 border border-ink-700 rounded-2xl backdrop-blur;
   }
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-ink-950 transition hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none;
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-emerald-400/60 bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-ink-950 transition hover:bg-emerald-400 hover:border-emerald-300 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none;
+  }
+  /* 次要按钮：带边框的深色按钮，用于取消/辅助操作；
+     此前未定义导致页面中大量 btn-secondary 渲染成无边框原生按钮 */
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-ink-600 bg-ink-800/70 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:border-slate-400 hover:bg-ink-700 hover:text-white active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none;
   }
   .btn-ghost {
     @apply inline-flex items-center justify-center gap-2 rounded-xl border border-ink-600 bg-ink-800/60 px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-white active:scale-[0.98];
