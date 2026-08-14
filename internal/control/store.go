@@ -30,16 +30,20 @@ type Store interface {
 	ListNodes(string, string) ([]Node, error)
 	ListNodeRefs(string, string) ([]Node, error)
 	UpdateNode(Node) error
+	UpdateNodeStatus(Node) error
 	DeleteNode(string, string) error
 	AddTrafficSamples([]TrafficSample) error
 	ListTrafficSamples(string, string, string, time.Time) ([]TrafficSample, error)
+	DeleteTrafficSamplesBefore(string, time.Time) (int64, error)
 	AddPeer(PeerRelation) error
 	ListPeers(string, string) ([]PeerRelation, error)
 	CreateRevision(ConfigRevision) error
 	LatestRevision(string, string) (ConfigRevision, error)
+	DeleteRevisionsBefore(string, string, uint64) (int64, error)
 	CreateDelivery(ConfigDelivery) error
 	UpdateDelivery(ConfigDelivery) error
 	ListDeliveries(string, string) ([]ConfigDelivery, error)
+	DeleteDeliveriesBefore(string, string, int) (int64, error)
 	CreateCommand(AgentCommand) error
 	ClaimCommands(string) []AgentCommand
 	UpdateCommand(AgentCommand) error
@@ -69,6 +73,7 @@ type Store interface {
 	DeleteUser(string, string) error
 	GetSettings(string) (SystemSettings, error)
 	UpsertSettings(SystemSettings) error
+	ListTenants() ([]string, error)
 	ListNotificationChannels(string) ([]NotificationChannel, error)
 	GetNotificationChannel(string, string) (NotificationChannel, error)
 	CreateNotificationChannel(NotificationChannel) error
@@ -259,6 +264,37 @@ func (s *MemoryStore) UpdateNode(v Node) error {
 	s.nodes[v.ID] = v
 	return nil
 }
+func (s *MemoryStore) UpdateNodeStatus(v Node) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.nodes[v.ID]
+	if !ok {
+		return errNotFound
+	}
+	// 只合并心跳动态状态列，保留静态配置（名称、公钥/私钥、地址标记）
+	current.LastSeen = v.LastSeen
+	current.Hostname = v.Hostname
+	current.InterfaceSelector = v.InterfaceSelector
+	current.CollectionError = v.CollectionError
+	current.OS = v.OS
+	current.AgentVersion = v.AgentVersion
+	current.Labels = v.Labels
+	current.WireGuard = v.WireGuard
+	current.PeerConfigFiles = v.PeerConfigFiles
+	current.DesiredPeerConfig = v.DesiredPeerConfig
+	current.Endpoint = v.Endpoint
+	current.Region = v.Region
+	current.LocationName = v.LocationName
+	current.LocationSource = v.LocationSource
+	current.Latitude = v.Latitude
+	current.Longitude = v.Longitude
+	// 收养的上报配置（地址/端口/MTU）随心跳更新
+	current.Address = v.Address
+	current.ListenPort = v.ListenPort
+	current.MTU = v.MTU
+	s.nodes[v.ID] = current
+	return nil
+}
 func (s *MemoryStore) DeleteNode(tenant, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -305,6 +341,21 @@ func (s *MemoryStore) ListTrafficSamples(tenant, node, interfaceName string, sin
 	sort.Slice(out, func(i, j int) bool { return out[i].RecordedAt.Before(out[j].RecordedAt) })
 	return out, nil
 }
+func (s *MemoryStore) DeleteTrafficSamplesBefore(tenant string, before time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.trafficSamples[:0]
+	deleted := int64(0)
+	for _, sample := range s.trafficSamples {
+		if sample.TenantID == tenant && sample.RecordedAt.Before(before) {
+			deleted++
+			continue
+		}
+		kept = append(kept, sample)
+	}
+	s.trafficSamples = kept
+	return deleted, nil
+}
 
 func (s *MemoryStore) AddPeer(v PeerRelation) error {
 	s.mu.Lock()
@@ -328,6 +379,26 @@ func (s *MemoryStore) CreateRevision(v ConfigRevision) error {
 	defer s.mu.Unlock()
 	s.revisions[v.NetworkID] = append(s.revisions[v.NetworkID], v)
 	return nil
+}
+func (s *MemoryStore) DeleteRevisionsBefore(tenant, network string, keepVersion uint64) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := s.revisions[network]
+	kept := items[:0]
+	deleted := int64(0)
+	for _, revision := range items {
+		if revision.TenantID == tenant && revision.Version < keepVersion {
+			deleted++
+			continue
+		}
+		kept = append(kept, revision)
+	}
+	if len(kept) == 0 {
+		delete(s.revisions, network)
+	} else {
+		s.revisions[network] = kept
+	}
+	return deleted, nil
 }
 func (s *MemoryStore) LatestRevision(t, n string) (ConfigRevision, error) {
 	s.mu.RLock()
@@ -370,6 +441,28 @@ func (s *MemoryStore) ListDeliveries(t, n string) ([]ConfigDelivery, error) {
 		}
 	}
 	return out, nil
+}
+func (s *MemoryStore) DeleteDeliveriesBefore(tenant, node string, keep int) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// 每节点保留最新的 keep 条 delivery，其余删除（防无界增长）。
+	relevant := make([]ConfigDelivery, 0)
+	for _, v := range s.deliveries {
+		if v.TenantID == tenant && (node == "" || v.NodeID == node) {
+			relevant = append(relevant, v)
+		}
+	}
+	sort.Slice(relevant, func(i, j int) bool { return relevant[i].UpdatedAt.After(relevant[j].UpdatedAt) })
+	deleted := int64(0)
+	keptByNode := map[string]int{}
+	for _, v := range relevant {
+		keptByNode[v.NodeID]++
+		if keptByNode[v.NodeID] > keep {
+			delete(s.deliveries, v.ID)
+			deleted++
+		}
+	}
+	return deleted, nil
 }
 func (s *MemoryStore) CreateCommand(v AgentCommand) error {
 	s.mu.Lock()
@@ -643,6 +736,24 @@ func (s *MemoryStore) AddAlertEvent(v AlertEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.alertEvents = append(s.alertEvents, v)
+	return s.pruneAlertEventsLocked(v.TenantID)
+}
+
+// pruneAlertEventsLocked 按租户保留最近 maxAlertEventRecords 条告警事件。
+// alertEvents 按创建时间追加（新事件在后），从尾部向前保留即可。
+func (s *MemoryStore) pruneAlertEventsLocked(tenant string) error {
+	kept := make([]AlertEvent, 0, len(s.alertEvents))
+	skipped := 0
+	for _, event := range s.alertEvents {
+		if event.TenantID == tenant {
+			skipped++
+			if skipped <= len(s.alertEvents)-maxAlertEventRecords {
+				continue
+			}
+		}
+		kept = append(kept, event)
+	}
+	s.alertEvents = kept
 	return nil
 }
 func (s *MemoryStore) ListAlertEvents(tenant string) ([]AlertEvent, error) {
@@ -1109,6 +1220,25 @@ func (s *MemoryStore) UpsertSettings(v SystemSettings) error {
 	s.settings[v.TenantID] = v
 	return nil
 }
+func (s *MemoryStore) ListTenants() ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := map[string]struct{}{}
+	for _, user := range s.users {
+		if user.TenantID != "" {
+			seen[user.TenantID] = struct{}{}
+		}
+	}
+	for tenant := range s.settings {
+		seen[tenant] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for tenant := range seen {
+		out = append(out, tenant)
+	}
+	sort.Strings(out)
+	return out, nil
+}
 func (s *MemoryStore) ListNotificationChannels(tenant string) ([]NotificationChannel, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1160,6 +1290,23 @@ func (s *MemoryStore) AddNotificationLog(v NotificationLog) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.notificationLogs = append(s.notificationLogs, v)
+	return s.pruneNotificationLogsLocked(v.TenantID)
+}
+
+// pruneNotificationLogsLocked 按租户保留最近 maxNotificationLogRecords 条记录。
+func (s *MemoryStore) pruneNotificationLogsLocked(tenant string) error {
+	kept := make([]NotificationLog, 0, len(s.notificationLogs))
+	skipped := 0
+	for _, entry := range s.notificationLogs {
+		if entry.TenantID == tenant {
+			skipped++
+			if skipped <= len(s.notificationLogs)-maxNotificationLogRecords {
+				continue
+			}
+		}
+		kept = append(kept, entry)
+	}
+	s.notificationLogs = kept
 	return nil
 }
 func (s *MemoryStore) ListNotificationLogs(tenant string) ([]NotificationLog, error) {

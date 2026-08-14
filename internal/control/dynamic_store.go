@@ -57,6 +57,9 @@ func (s *SwitchableStore) ListNodeRefs(tenant, network string) ([]Node, error) {
 	return s.store().ListNodeRefs(tenant, network)
 }
 func (s *SwitchableStore) UpdateNode(v Node) error { return s.store().UpdateNode(v) }
+func (s *SwitchableStore) UpdateNodeStatus(v Node) error {
+	return s.store().UpdateNodeStatus(v)
+}
 func (s *SwitchableStore) DeleteNode(tenant, id string) error {
 	return s.store().DeleteNode(tenant, id)
 }
@@ -66,6 +69,9 @@ func (s *SwitchableStore) AddTrafficSamples(v []TrafficSample) error {
 func (s *SwitchableStore) ListTrafficSamples(tenant, node, iface string, since time.Time) ([]TrafficSample, error) {
 	return s.store().ListTrafficSamples(tenant, node, iface, since)
 }
+func (s *SwitchableStore) DeleteTrafficSamplesBefore(tenant string, before time.Time) (int64, error) {
+	return s.store().DeleteTrafficSamplesBefore(tenant, before)
+}
 func (s *SwitchableStore) AddPeer(v PeerRelation) error { return s.store().AddPeer(v) }
 func (s *SwitchableStore) ListPeers(tenant, network string) ([]PeerRelation, error) {
 	return s.store().ListPeers(tenant, network)
@@ -74,10 +80,16 @@ func (s *SwitchableStore) CreateRevision(v ConfigRevision) error { return s.stor
 func (s *SwitchableStore) LatestRevision(tenant, network string) (ConfigRevision, error) {
 	return s.store().LatestRevision(tenant, network)
 }
+func (s *SwitchableStore) DeleteRevisionsBefore(tenant, network string, keepVersion uint64) (int64, error) {
+	return s.store().DeleteRevisionsBefore(tenant, network, keepVersion)
+}
 func (s *SwitchableStore) CreateDelivery(v ConfigDelivery) error { return s.store().CreateDelivery(v) }
 func (s *SwitchableStore) UpdateDelivery(v ConfigDelivery) error { return s.store().UpdateDelivery(v) }
 func (s *SwitchableStore) ListDeliveries(tenant, node string) ([]ConfigDelivery, error) {
 	return s.store().ListDeliveries(tenant, node)
+}
+func (s *SwitchableStore) DeleteDeliveriesBefore(tenant, node string, keep int) (int64, error) {
+	return s.store().DeleteDeliveriesBefore(tenant, node, keep)
 }
 func (s *SwitchableStore) CreateCommand(v AgentCommand) error { return s.store().CreateCommand(v) }
 func (s *SwitchableStore) ClaimCommands(node string) []AgentCommand {
@@ -138,6 +150,7 @@ func (s *SwitchableStore) GetSettings(tenant string) (SystemSettings, error) {
 	return s.store().GetSettings(tenant)
 }
 func (s *SwitchableStore) UpsertSettings(v SystemSettings) error { return s.store().UpsertSettings(v) }
+func (s *SwitchableStore) ListTenants() ([]string, error)        { return s.store().ListTenants() }
 func (s *SwitchableStore) ListNotificationChannels(tenant string) ([]NotificationChannel, error) {
 	return s.store().ListNotificationChannels(tenant)
 }

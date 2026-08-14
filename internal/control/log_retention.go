@@ -13,8 +13,10 @@ const (
 	// Agent command records and audit records are operational history rather
 	// than immutable configuration. Keep a bounded amount per scope so a busy
 	// installation cannot grow the database without limit.
-	maxAgentLogRecords = 5000
-	maxAuditRecords    = 10000
+	maxAgentLogRecords        = 5000
+	maxAuditRecords           = 10000
+	maxNotificationLogRecords = 10000
+	maxAlertEventRecords      = 20000
 )
 
 type NodeLogPage struct {

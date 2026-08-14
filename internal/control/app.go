@@ -1317,7 +1317,8 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	a.applyAutomaticNodeLocation(&node, location, r)
 	a.adoptPublicEndpoint(&node, location, r)
-	if err := a.store.UpdateNode(node); err != nil {
+	// 心跳只更新动态状态列，不重写静态配置与加密私钥（写入放大优化）
+	if err := a.store.UpdateNodeStatus(node); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record agent heartbeat")
 		return
 	}

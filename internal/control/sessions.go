@@ -154,8 +154,21 @@ const (
 	sessionRetention      = 24 * time.Hour
 )
 
-// StartHousekeeping 定期清理内存态凭据表：过期会话、已撤销令牌与失效 SSO state，
-// 避免长期运行后无界增长。
+// 数据保留策略（专项：性能/可扩展性）。
+// retention.rawDays 配置流量采样保留天数；0 或未配置时使用此默认值，
+// 防止心跳高频写入导致 traffic_samples 无界增长。
+const defaultTrafficRetentionDays = 30
+
+// 每次发布会为每节点创建一条 delivery、每个网络新增一个修订版本；
+// 这些操作历史按节点/网络保留最近 N 条，防止长期运行无限膨胀。
+const (
+	maxDeliveriesPerNode       = 200
+	maxRevisionsPerNetwork     = 50
+	maxTrafficSamplesPerTenant = 500000
+)
+
+// StartHousekeeping 定期清理内存态凭据表与持久化操作历史：过期会话、
+// 已撤销令牌、失效 SSO state，以及超出保留策略的流量采样/下发记录/修订版本。
 func (a *App) StartHousekeeping(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(housekeepingInterval)
@@ -167,9 +180,41 @@ func (a *App) StartHousekeeping(ctx context.Context) {
 			case <-ticker.C:
 				a.cleanupSessionTables()
 				a.cleanupSSOStates()
+				a.pruneOperationalData()
 			}
 		}
 	}()
+}
+
+// pruneOperationalData 按租户设置的数据保留策略清理持久化操作历史，
+// 防止长期运行下数据库无界增长（性能/可扩展性专项）。
+func (a *App) pruneOperationalData() {
+	// 全部租户：流量采样按时间保留（settings.retention.rawDays）。
+	tenants, err := a.store.ListTenants()
+	if err != nil {
+		return
+	}
+	for _, tenant := range tenants {
+		days := defaultTrafficRetentionDays
+		if settings, settingsErr := a.tenantSettings(tenant); settingsErr == nil && settings.Retention.RawDays > 0 {
+			days = settings.Retention.RawDays
+		}
+		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+		_, _ = a.store.DeleteTrafficSamplesBefore(tenant, cutoff)
+		// 下发记录与修订版本按数量保留
+		_, _ = a.store.DeleteDeliveriesBefore(tenant, "", maxDeliveriesPerNode)
+		networks, networkErr := a.store.ListNetworks(tenant, "")
+		if networkErr != nil {
+			continue
+		}
+		for _, network := range networks {
+			// 保留最近 maxRevisionsPerNetwork 个版本：先取当前最新版本号，
+			// 删除更早的版本（LatestRevision 不受影响）。
+			if latest, latestErr := a.store.LatestRevision(tenant, network.ID); latestErr == nil && latest.Version > maxRevisionsPerNetwork {
+				_, _ = a.store.DeleteRevisionsBefore(tenant, network.ID, latest.Version-maxRevisionsPerNetwork+1)
+			}
+		}
+	}
 }
 
 func (a *App) cleanupSessionTables() {

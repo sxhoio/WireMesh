@@ -299,6 +299,21 @@ func marshalNodeColumns(v Node) (labels, secret, wireGuard, peerConfig, desiredP
 	return
 }
 
+// marshalNodeStatusColumns 序列化心跳动态状态列（不含私钥/静态配置）。
+func marshalNodeStatusColumns(v Node) (labels, wireGuard, peerConfig, desiredPeerConfig string, err error) {
+	if labels, err = marshalColumn(v.Labels); err != nil {
+		return
+	}
+	if wireGuard, err = marshalColumn(v.WireGuard); err != nil {
+		return
+	}
+	if peerConfig, err = marshalColumn(v.PeerConfigFiles); err != nil {
+		return
+	}
+	desiredPeerConfig, err = marshalColumn(v.DesiredPeerConfig)
+	return
+}
+
 func (s *SQLStore) HasUsers() (bool, error) {
 	var count int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
@@ -455,6 +470,19 @@ func (s *SQLStore) UpdateNode(v Node) error {
 	return changed(result, err)
 }
 
+// UpdateNodeStatus 只更新 Agent 心跳上报的动态状态列（LastSeen、主机名、
+// 接口状态、WireGuard 状态、标签、位置、Peer 配置、收养的地址/端口/MTU），
+// 跳过静态配置（名称、公钥、加密私钥），避免每 10 秒心跳重写整行
+// （含加密私钥）带来的写入放大。
+func (s *SQLStore) UpdateNodeStatus(v Node) error {
+	labels, wireGuard, peerConfig, desiredPeerConfig, err := marshalNodeStatusColumns(v)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.Exec(s.query(`UPDATE nodes SET hostname=?, interface_selector=?, collection_error=?, os=?, agent_version=?, labels_json=?, wireguard_json=?, peer_config_json=?, desired_peer_config_json=?, endpoint=?, region=?, location_name=?, location_source=?, latitude=?, longitude=?, address=?, listen_port=?, mtu=?, last_seen=? WHERE id=? AND tenant_id=?`), v.Hostname, v.InterfaceSelector, v.CollectionError, v.OS, v.AgentVersion, labels, wireGuard, peerConfig, desiredPeerConfig, v.Endpoint, v.Region, v.LocationName, v.LocationSource, v.Latitude, v.Longitude, v.Address, v.ListenPort, v.MTU, timeText(v.LastSeen), v.ID, v.TenantID)
+	return changed(result, err)
+}
+
 func (s *SQLStore) DeleteNode(tenant, id string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -510,6 +538,16 @@ func (s *SQLStore) ListTrafficSamples(tenant, node, iface string, since time.Tim
 	return queryList(s, `SELECT id, tenant_id, node_id, interface_name, receive_bytes, transmit_bytes, recorded_at FROM traffic_samples WHERE tenant_id=? AND node_id=? AND interface_name=? AND recorded_at>=? ORDER BY recorded_at`, scanTrafficSample, tenant, node, iface, timeText(since))
 }
 
+// DeleteTrafficSamplesBefore 删除指定租户早于 before 的流量采样（保留策略，
+// 防心跳高频写入导致的无限增长）。
+func (s *SQLStore) DeleteTrafficSamplesBefore(tenant string, before time.Time) (int64, error) {
+	result, err := s.db.Exec(s.query(`DELETE FROM traffic_samples WHERE tenant_id=? AND recorded_at < ?`), tenant, timeText(before))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *SQLStore) AddPeer(v PeerRelation) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO peer_relations (id, tenant_id, network_id, source_node_id, target_node_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.NetworkID, v.SourceNodeID, v.TargetNodeID, timeText(v.CreatedAt))
 	return err
@@ -540,6 +578,16 @@ func (s *SQLStore) LatestRevision(tenant, network string) (ConfigRevision, error
 	return v, nil
 }
 
+// DeleteRevisionsBefore 删除网络中小于 keepVersion 的历史修订（保留策略：
+// 每次发布都会累积，长期运行需按网络保留最近 N 个版本）。
+func (s *SQLStore) DeleteRevisionsBefore(tenant, network string, keepVersion uint64) (int64, error) {
+	result, err := s.db.Exec(s.query(`DELETE FROM config_revisions WHERE tenant_id=? AND network_id=? AND version < ?`), tenant, network, keepVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *SQLStore) CreateDelivery(v ConfigDelivery) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO config_deliveries (id, tenant_id, node_id, version, state, message, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.NodeID, v.Version, v.State, v.Message, timeText(v.UpdatedAt))
 	return err
@@ -567,6 +615,54 @@ func (s *SQLStore) ListDeliveries(tenant, node string) ([]ConfigDelivery, error)
 	}
 	query += ` ORDER BY updated_at DESC`
 	return queryList(s, query, scanDelivery, args...)
+}
+
+// DeleteDeliveriesBefore 按节点保留最新的 keep 条下发记录，其余删除。
+// 每次发布都会为每节点创建一条 delivery，长期运行需约束其总量。
+func (s *SQLStore) DeleteDeliveriesBefore(tenant, node string, keep int) (int64, error) {
+	// 找出需要删除的下发 ID：每个 node_id 按 updated_at 倒序保留前 keep 条。
+	var deleted int64
+	query := `SELECT id FROM config_deliveries WHERE tenant_id=?`
+	args := []any{tenant}
+	if node != "" {
+		query += ` AND node_id=?`
+		args = append(args, node)
+	}
+	query += ` ORDER BY updated_at DESC`
+	rows, err := s.db.Query(s.query(query), args...)
+	if err != nil {
+		return 0, err
+	}
+	ids := make([]string, 0)
+	keptByNode := map[string]int{}
+	for rows.Next() {
+		var id, nodeID string
+		var updatedAt string
+		var version int64
+		var state, message string
+		if err := rows.Scan(&id, &nodeID, &version, &state, &message, &updatedAt); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		keptByNode[nodeID]++
+		if keptByNode[nodeID] > keep {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		result, err := s.db.Exec(s.query(`DELETE FROM config_deliveries WHERE id=?`), id)
+		if err != nil {
+			return deleted, err
+		}
+		if count, err := result.RowsAffected(); err == nil {
+			deleted += count
+		}
+	}
+	return deleted, nil
 }
 
 func (s *SQLStore) CreateCommand(v AgentCommand) error {
@@ -787,6 +883,14 @@ func (s *SQLStore) pruneAudit(tenant string) error {
 	return s.pruneKeepingNewest("audit_events", tenant, "", maxAuditRecords)
 }
 
+func (s *SQLStore) pruneNotificationLogs(tenant string) error {
+	return s.pruneKeepingNewest("notification_logs", tenant, "", maxNotificationLogRecords)
+}
+
+func (s *SQLStore) pruneAlertEvents(tenant string) error {
+	return s.pruneKeepingNewest("alert_events", tenant, "", maxAlertEventRecords)
+}
+
 // pruneKeepingNewest keeps at most `keep` newest rows for the given tenant (and
 // optional node) scope. It first reads the (created_at, id) boundary of the
 // keep-th newest row, so the common case (fewer than keep rows) is a single
@@ -880,6 +984,26 @@ func (s *SQLStore) UpsertSettings(v SystemSettings) error {
 	_, err = s.db.Exec(s.query(query), v.TenantID, string(raw), v.GeoIPDBPath, timeText(v.UpdatedAt))
 	return err
 }
+func (s *SQLStore) ListTenants() ([]string, error) {
+	query := `SELECT DISTINCT tenant_id FROM users WHERE tenant_id <> ''`
+	if s.driver == "mysql" {
+		query = `SELECT DISTINCT tenant_id FROM users WHERE tenant_id <> ''`
+	}
+	rows, err := s.db.Query(s.query(query))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var tenant string
+		if err := rows.Scan(&tenant); err != nil {
+			return nil, err
+		}
+		out = append(out, tenant)
+	}
+	return out, rows.Err()
+}
 func (s *SQLStore) ListNotificationChannels(tenant string) ([]NotificationChannel, error) {
 	return queryList(s, `SELECT id, tenant_id, name, type, target_json, enabled, all_agents, agent_ids_json, created_at, updated_at FROM notification_channels WHERE tenant_id = ? ORDER BY created_at`, scanNotificationChannel, tenant)
 }
@@ -914,7 +1038,10 @@ func (s *SQLStore) DeleteNotificationChannel(tenant, id string) error {
 }
 func (s *SQLStore) AddNotificationLog(v NotificationLog) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO notification_logs (id, tenant_id, channel_id, channel_name, channel_type, agent_name, message, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.ChannelID, v.ChannelName, v.ChannelType, v.AgentName, v.Message, v.Status, timeText(v.CreatedAt))
-	return err
+	if err != nil {
+		return err
+	}
+	return s.pruneNotificationLogs(v.TenantID)
 }
 func (s *SQLStore) ListNotificationLogs(tenant string) ([]NotificationLog, error) {
 	return queryList(s, `SELECT id, tenant_id, channel_id, channel_name, channel_type, agent_name, message, status, created_at FROM notification_logs WHERE tenant_id=? ORDER BY created_at DESC`, scanNotificationLog, tenant)
@@ -1163,7 +1290,10 @@ func (s *SQLStore) AllAlertRules() ([]AlertRule, error) {
 }
 func (s *SQLStore) AddAlertEvent(v AlertEvent) error {
 	_, err := s.db.Exec(s.query(`INSERT INTO alert_events (id, tenant_id, rule_id, rule_name, node_id, node_name, message, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.RuleID, v.RuleName, v.NodeID, v.NodeName, v.Message, v.Status, timeText(v.CreatedAt))
-	return err
+	if err != nil {
+		return err
+	}
+	return s.pruneAlertEvents(v.TenantID)
 }
 func (s *SQLStore) ListAlertEvents(tenant string) ([]AlertEvent, error) {
 	return queryList(s, `SELECT id, tenant_id, rule_id, rule_name, node_id, node_name, message, status, created_at FROM alert_events WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200`, scanAlertEvent, tenant)

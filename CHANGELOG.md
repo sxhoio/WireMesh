@@ -4,6 +4,19 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.6`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.5.1（性能/可扩展性专项）
+
+- 数据保留策略落地：`traffic_samples` 按租户 `retention.rawDays` 定期清理
+  （未配置时默认 30 天），housekeeping 每 10 分钟执行，防心跳高频写入
+  导致数据库无界增长
+- 操作历史按数量修剪：告警事件（20000/租户）、通知记录（10000/租户）、
+  配置下发（200/节点）、配置修订（50/网络），与既有审计/命令修剪一致
+- 心跳写放大优化：Agent 心跳改用 `UpdateNodeStatus` 只更新动态状态列，
+  不再重写静态配置与加密私钥（每 10 秒/节点的整行重写消除）
+- 补充 `traffic_samples(tenant_id, recorded_at)` 保留清理索引；
+  新增 `ListTenants` 支撑按租户保留策略
+- 新增 6 项专项测试（保留策略、租户枚举、心跳静态列保护）
+
 ## v0.5.0（S7-S14 中危项专项）
 
 - S7 SSO：OIDC 外呼（discovery/JWKS/token/userinfo）统一走私网过滤拨号
