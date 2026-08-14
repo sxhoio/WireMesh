@@ -159,6 +159,25 @@ func (client agentClient) Enroll(ctx context.Context, token, name string, labels
 	}, nil
 }
 
+// RenewCert 用现有 mTLS 身份向服务端申请续期证书（S9）。续期成功后旧证书
+// 立即失效（服务端指纹校验），新身份持久化到 state。
+func (client agentClient) RenewCert(ctx context.Context) (agentState, error) {
+	var enrolled enrollmentResponse
+	if _, err := client.doJSON(ctx, http.MethodPost, "/agent/v1/renew-cert", nil, &enrolled, 0, http.StatusOK); err != nil {
+		return agentState{}, err
+	}
+	if enrolled.Node.ID == "" || enrolled.CertificatePEM == "" || enrolled.PrivateKeyPEM == "" {
+		return agentState{}, errors.New("control plane returned incomplete renewed identity")
+	}
+	renewed := client.state
+	renewed.NodeID = enrolled.Node.ID
+	renewed.CertificatePEM = enrolled.CertificatePEM
+	renewed.PrivateKeyPEM = enrolled.PrivateKeyPEM
+	renewed.CAPEM = enrolled.CAPEM
+	renewed.ExpiresAt = enrolled.ExpiresAt
+	return renewed, nil
+}
+
 func (client agentClient) PollCommands(ctx context.Context) ([]agentCommand, bool, error) {
 	var commands []agentCommand
 	response, err := client.doJSON(ctx, http.MethodGet, "/agent/v1/commands?wait="+wireproto.CommandLongPollWait.String(), nil, &commands, 0, http.StatusOK)
@@ -268,9 +287,11 @@ func authenticatedClient(state agentState, useMTLS bool) (*http.Client, error) {
 		roots.AppendCertsFromPEM([]byte(state.CAPEM))
 	}
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots}
-	if useMTLS && (state.CertificatePEM != "" || state.PrivateKeyPEM != "") {
+	// S8：--mtls 必须携带完整证书材料，缺失时 fail-closed（不允许静默回退到
+	// X-Agent-ID 头）。预注册探活（无证书）走 useMTLS=false 路径。
+	if useMTLS {
 		if state.CertificatePEM == "" || state.PrivateKeyPEM == "" {
-			return nil, errors.New("incomplete enrolled client certificate material")
+			return nil, errors.New("--mtls requires enrolled client certificate material; re-enroll the agent or drop --mtls")
 		}
 		certificate, err := tls.X509KeyPair([]byte(state.CertificatePEM), []byte(state.PrivateKeyPEM))
 		if err != nil {

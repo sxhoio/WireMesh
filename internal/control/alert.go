@@ -348,6 +348,8 @@ func (a *App) sendAlertToChannel(tenantID, channelID, nodeName, message string) 
 		Event: "alert.rule", Title: "WireMesh 告警", Message: message,
 		NodeName: nodeName, NodeStatus: "alert", OccurredAt: time.Now().UTC().Format(time.RFC3339),
 	}
+	// S13：按渠道净化不信任字段（节点名/消息）后再渲染
+	data = sanitizeNotificationData(channel.Type, envelope.Config, data)
 	body, err := renderNotificationTemplate(envelope.Template, data)
 	if err != nil {
 		return false

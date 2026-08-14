@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -50,7 +52,45 @@ func OpenSQLStore(driver, dsn string) (*SQLStore, error) {
 		db.Close()
 		return nil, err
 	}
+	// SQLite 文件权限收紧到 0600：默认 umask 下可能创建为 0644，
+	// 其他本机用户可读（含用户哈希与加密配置）。WAL/SHM 文件一并收紧。
+	if driver == "sqlite" {
+		chmodSQLiteFiles(dsn)
+	}
 	return store, nil
+}
+
+// chmodSQLiteFiles 把 SQLite 主库与伴随的 -wal/-shm 文件权限收紧为 0600。
+// 失败仅记录（Windows 上 chmod 语义受限），不阻塞启动。
+func chmodSQLiteFiles(dsn string) {
+	path := sqlitePathFromDSN(dsn)
+	if path == "" {
+		return
+	}
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		if _, err := os.Stat(candidate); err != nil {
+			continue
+		}
+		if err := os.Chmod(candidate, 0600); err != nil {
+			fmt.Printf("warning: chmod sqlite file %s: %v\n", candidate, err)
+		}
+	}
+}
+
+// sqlitePathFromDSN 从 file:path?... 形式的 DSN 中提取本地文件路径。
+func sqlitePathFromDSN(dsn string) string {
+	raw := dsn
+	if strings.HasPrefix(strings.ToLower(raw), "file:") {
+		raw = raw[len("file:"):]
+	}
+	if index := strings.IndexByte(raw, '?'); index >= 0 {
+		raw = raw[:index]
+	}
+	raw = strings.TrimPrefix(raw, "///")
+	if decoded, err := url.PathUnescape(raw); err == nil {
+		raw = decoded
+	}
+	return raw
 }
 
 func (s *SQLStore) Close() error   { return s.db.Close() }

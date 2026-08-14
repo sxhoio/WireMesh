@@ -214,7 +214,7 @@ async function addUser() {
 }
 
 // ---- 修改自己的密码 ----
-const passwordForm = reactive({ oldPassword: '', newPassword: '', confirm: '' })
+const passwordForm = reactive({ oldPassword: '', newPassword: '', confirm: '', otp: '' })
 const passwordSaving = ref(false)
 const passwordError = ref('')
 
@@ -232,15 +232,21 @@ async function changeMyPassword() {
     passwordError.value = '两次输入的新密码不一致'
     return
   }
+  if (mfaEnabled.value && !passwordForm.otp.trim()) {
+    passwordError.value = '该账号已启用多因素认证，请输入动态验证码'
+    return
+  }
   passwordSaving.value = true
   try {
-    await api.changePassword({ old_password: passwordForm.oldPassword, new_password: passwordForm.newPassword })
+    await api.changePassword({ old_password: passwordForm.oldPassword, new_password: passwordForm.newPassword, otp: passwordForm.otp.trim() || undefined })
     mesh.notice = '密码已修改'
     passwordForm.oldPassword = ''
     passwordForm.newPassword = ''
     passwordForm.confirm = ''
+    passwordForm.otp = ''
   } catch (reason) {
-    passwordError.value = reason instanceof Error ? reason.message : '修改密码失败'
+    const message = reason instanceof Error ? reason.message : '修改密码失败'
+    passwordError.value = message.includes('otp_required') ? '该账号已启用多因素认证，请输入动态验证码' : message.includes('otp_invalid') ? '动态验证码错误，请重试' : message
   } finally {
     passwordSaving.value = false
   }
@@ -652,19 +658,17 @@ async function enableMFA() {
 }
 
 async function disableMFA() {
-  const confirmed = await requestConfirm({
-    title: '关闭多因素认证',
-    message: '确定关闭多因素认证吗？登录将不再要求动态验证码。',
-    confirmText: '关闭 MFA',
-    variant: 'warning',
-  })
-  if (!confirmed) return
+  const password = window.prompt('关闭多因素认证需要验证当前密码，请输入密码：', '')
+  if (password === null) return
+  const otp = mfaEnabled.value ? window.prompt('请输入认证器中的 6 位动态验证码：', '') : ''
+  if (mfaEnabled.value && otp === null) return
   try {
-    await api.mfaDisable()
+    await api.mfaDisable({ password, otp: otp?.trim() || undefined })
     mfaEnabled.value = false
     mesh.notice = '多因素认证已关闭'
   } catch (reason) {
-    mesh.error = reason instanceof Error ? reason.message : '关闭 MFA 失败'
+    const message = reason instanceof Error ? reason.message : '关闭 MFA 失败'
+    mesh.error = message.includes('otp_required') ? '请输入动态验证码后重试' : message.includes('otp_invalid') ? '动态验证码错误，请重试' : message
   }
 }
 
@@ -1160,6 +1164,10 @@ onUnmounted(() => { if (savedTimer) window.clearTimeout(savedTimer) })
             <div><label class="label">新密码（至少 8 位）</label><input v-model="passwordForm.newPassword" type="password" autocomplete="new-password" class="input" /></div>
             <div><label class="label">确认新密码</label><input v-model="passwordForm.confirm" type="password" autocomplete="new-password" class="input" @keyup.enter="changeMyPassword" /></div>
             <button class="btn-secondary" :disabled="passwordSaving" @click="changeMyPassword">{{ passwordSaving ? '修改中…' : '修改密码' }}</button>
+          </div>
+          <div v-if="mfaEnabled" class="mt-2 max-w-xs">
+            <label class="label">动态验证码（已启用 MFA）</label>
+            <input v-model="passwordForm.otp" class="input font-mono" inputmode="numeric" maxlength="6" placeholder="6 位验证码" autocomplete="one-time-code" />
           </div>
           <p v-if="passwordError" class="mt-2 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300 ring-1 ring-red-500/30">{{ passwordError }}</p>
         </div>

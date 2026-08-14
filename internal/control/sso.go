@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -26,15 +27,20 @@ type SSOConfig struct {
 }
 
 type ssoState struct {
-	TenantID  string
-	Issuer    string
-	ClientID  string
-	Secret    string
-	Nonce     string
-	ExpiresAt time.Time
+	TenantID    string
+	Issuer      string
+	ClientID    string
+	Secret      string
+	Nonce       string
+	RedirectURI string
+	ExpiresAt   time.Time
 }
 
 const ssoStateTTL = 10 * time.Minute
+
+// maxSSOStates 是内存 SSO state 表上限（S11）：未完成的授权流程在 TTL 内
+// 最多占用有限条目，防攻击者批量发起登录放大内存。
+const maxSSOStates = 5000
 
 func (a *App) ssoConfig(w http.ResponseWriter, r *http.Request, c claims) {
 	if r.Method == http.MethodGet {
@@ -60,6 +66,12 @@ func (a *App) ssoConfig(w http.ResponseWriter, r *http.Request, c claims) {
 	if in.Enabled {
 		if in.Issuer == "" || !strings.HasPrefix(in.Issuer, "http") {
 			writeError(w, http.StatusBadRequest, "issuer must be a valid URL")
+			return
+		}
+		// S7：issuer 必须是 http/https 完整 URL，拒绝 javascript: 等非 HTTP 协议
+		parsed, parseErr := url.Parse(in.Issuer)
+		if parseErr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
+			writeError(w, http.StatusBadRequest, "issuer must be a valid HTTP(S) URL")
 			return
 		}
 		if in.ClientID == "" {
@@ -134,10 +146,35 @@ func (a *App) ssoLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "SSO client secret unavailable")
 		return
 	}
+	redirectURI, err := ssoRedirectURI(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的 SSO 回调地址")
+		return
+	}
 	a.ssoMu.Lock()
-	a.ssoStates[state] = ssoState{TenantID: tenant, Issuer: config.Issuer, ClientID: config.ClientID, Secret: string(secret), Nonce: nonce, ExpiresAt: time.Now().Add(ssoStateTTL)}
+	// S11：容量上限——先清理过期 state，仍超限则删除最旧的。
+	now := time.Now()
+	for key, info := range a.ssoStates {
+		if now.After(info.ExpiresAt) {
+			delete(a.ssoStates, key)
+		}
+	}
+	for len(a.ssoStates) >= maxSSOStates {
+		var oldestKey string
+		var oldestAt time.Time
+		first := true
+		for key, info := range a.ssoStates {
+			if first || info.ExpiresAt.Before(oldestAt) {
+				oldestKey, oldestAt, first = key, info.ExpiresAt, false
+			}
+		}
+		if first {
+			break
+		}
+		delete(a.ssoStates, oldestKey)
+	}
+	a.ssoStates[state] = ssoState{TenantID: tenant, Issuer: config.Issuer, ClientID: config.ClientID, Secret: string(secret), Nonce: nonce, RedirectURI: redirectURI, ExpiresAt: now.Add(ssoStateTTL)}
 	a.ssoMu.Unlock()
-	redirectURI := ssoRedirectURI(r)
 	authURL := discovery.AuthorizationEndpoint + "?response_type=code&client_id=" + url.QueryEscape(config.ClientID) +
 		"&redirect_uri=" + url.QueryEscape(redirectURI) + "&scope=" + url.QueryEscape("openid email profile") + "&state=" + url.QueryEscape(state) +
 		"&nonce=" + url.QueryEscape(nonce)
@@ -159,12 +196,23 @@ func (a *App) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "SSO state expired or invalid")
 		return
 	}
+	// S7：回调的 redirect_uri 必须与发起登录时一致（绑定 state），
+	// 防止攻击者篡改 Host 头把授权码重定向到自己的域名。
+	redirectURI, err := ssoRedirectURI(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的 SSO 回调地址")
+		return
+	}
+	if redirectURI != stateInfo.RedirectURI {
+		writeError(w, http.StatusBadRequest, "SSO callback host mismatch")
+		return
+	}
 	discovery, err := fetchOIDCDiscovery(r.Context(), stateInfo.Issuer)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "SSO provider discovery failed")
 		return
 	}
-	accessToken, idToken, err := exchangeOIDCCode(r.Context(), discovery.TokenEndpoint, stateInfo.ClientID, stateInfo.Secret, code, ssoRedirectURI(r))
+	accessToken, idToken, err := exchangeOIDCCode(r.Context(), discovery.TokenEndpoint, stateInfo.ClientID, stateInfo.Secret, code, redirectURI)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "SSO token exchange failed")
 		return
@@ -216,7 +264,7 @@ func fetchOIDCDiscovery(ctx context.Context, issuer string) (oidcDiscovery, erro
 	if err != nil {
 		return oidcDiscovery{}, err
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := oidcHTTPClient().Do(request)
 	if err != nil {
 		return oidcDiscovery{}, err
 	}
@@ -248,7 +296,7 @@ func exchangeOIDCCode(ctx context.Context, tokenEndpoint, clientID, clientSecret
 		return "", "", err
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response, err := http.DefaultClient.Do(request)
+	response, err := oidcHTTPClient().Do(request)
 	if err != nil {
 		return "", "", err
 	}
@@ -280,7 +328,7 @@ func fetchOIDCUserEmail(ctx context.Context, userinfoEndpoint, accessToken strin
 		return "", err
 	}
 	request.Header.Set("Authorization", "Bearer "+accessToken)
-	response, err := http.DefaultClient.Do(request)
+	response, err := oidcHTTPClient().Do(request)
 	if err != nil {
 		return "", err
 	}
@@ -305,10 +353,46 @@ func fetchOIDCUserEmail(ctx context.Context, userinfoEndpoint, accessToken strin
 	return email, nil
 }
 
-func ssoRedirectURI(r *http.Request) string {
+// ssoRedirectURI 构造 SSO 回调地址，并校验 Host 头（S7）：
+// - 拒绝包含用户信息、路径、查询串、空白或控制字符的 Host（防 URL 注入）；
+// - 拒绝非标准端口的 Host 头伪装（redirect_uri 必须指向本服务）。
+// 回调阶段同样调用此函数，与发起登录时存储的 redirect_uri 比对，
+// 防止 Host 头被篡改导致授权码泄漏到攻击者域名。
+func ssoRedirectURI(r *http.Request) (string, error) {
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	return scheme + "://" + r.Host + "/api/v1/auth/sso/callback"
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		return "", errors.New("missing Host header")
+	}
+	if err := validateRedirectHost(host); err != nil {
+		return "", err
+	}
+	return scheme + "://" + host + "/api/v1/auth/sso/callback", nil
+}
+
+// validateRedirectHost 校验 SSO redirect_uri 的 Host 部分只允许 host[:port]。
+func validateRedirectHost(host string) error {
+	if strings.ContainsAny(host, "/\\?#@ \t\r\n\"'<>") {
+		return errors.New("invalid redirect host")
+	}
+	hostname := host
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		hostname = parsed
+	} else if strings.Count(host, ":") > 1 {
+		// 可能是无端口的 IPv6 字面量
+		hostname = strings.Trim(host, "[]")
+	}
+	if hostname == "" {
+		return errors.New("invalid redirect host")
+	}
+	for _, char := range hostname {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '.' || char == '-' || char == ':' || char == '[' || char == ']' {
+			continue
+		}
+		return errors.New("invalid redirect host")
+	}
+	return nil
 }

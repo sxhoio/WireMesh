@@ -38,8 +38,13 @@ func newAuthenticator(store Store, secret string) *Authenticator {
 	return &Authenticator{secret: sum[:], store: store}
 }
 
+// bcryptCost 是本地密码哈希的工作因子（S14：由默认 10 提升到 12，
+// 单次哈希约 200-400ms，显著抬高离线爆破成本；旧哈希成本内嵌，
+// 无需迁移即可验证）。
+const bcryptCost = 12
+
 func hashPassword(password string) (string, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
 	return string(hash), err
 }
 

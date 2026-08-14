@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"mime"
 	"net"
@@ -674,6 +675,8 @@ func (a *App) testNotificationChannel(w http.ResponseWriter, r *http.Request, c 
 	envelope, err := a.decryptNotificationEnvelope(channel)
 	if err == nil {
 		data := notificationTemplateData{Event: "channel.test", Title: "通知渠道测试", Message: "这是一条来自 WireMesh 的测试通知。", NodeName: "系统", NodeStatus: "test", OccurredAt: time.Now().UTC().Format(time.RFC3339)}
+		// S13：测试通知同样走净化路径，验证渠道真实输出
+		data = sanitizeNotificationData(channel.Type, envelope.Config, data)
 		var body, subject string
 		body, err = renderNotificationTemplate(envelope.Template, data)
 		if err == nil {
@@ -707,6 +710,58 @@ func renderNotificationTemplate(source string, data notificationTemplateData) (s
 		return "", err
 	}
 	return out.String(), nil
+}
+
+// sanitizeNotificationData 净化进入通知模板渲染的不信任字段（S13：通知内容
+// 注入）。节点名、告警消息、Agent 上报信息都可能包含 HTML/控制字符：
+//   - 剥离换行与控制字符（防邮件头注入与多行伪造）；
+//   - HTML/markdown 类渠道（Telegram HTML、钉钉/企微/飞书 markdown、webhook
+//     HTML 正文）对字段做 HTML 转义，防止注入链接/脚本标签。
+//
+// 纯文本渠道（邮件正文、JSON webhook）保持原文，仅去控制字符。
+func sanitizeNotificationData(kind string, c NotificationConfig, data notificationTemplateData) notificationTemplateData {
+	out := data
+	escapeHTML := false
+	switch kind {
+	case "telegram":
+		escapeHTML = strings.EqualFold(c.ParseMode, "HTML")
+	case "dingtalk", "wecom", "feishu":
+		// 这些渠道的 markdown 渲染器普遍支持 HTML 片段，按 HTML 转义处理
+		escapeHTML = true
+	case "webhook":
+		escapeHTML = strings.Contains(strings.ToLower(c.ContentType), "text/html")
+	}
+	clean := func(value string) string {
+		// 统一换行、剥离控制字符（保留空格与可见字符）
+		value = strings.ReplaceAll(value, "\r\n", "\n")
+		value = strings.ReplaceAll(value, "\r", "\n")
+		var builder strings.Builder
+		for _, char := range value {
+			if char < 0x20 && char != '\n' && char != '\t' {
+				continue
+			}
+			builder.WriteRune(char)
+		}
+		value = builder.String()
+		if escapeHTML {
+			value = html.EscapeString(value)
+		}
+		return value
+	}
+	out.Event = clean(out.Event)
+	out.Title = clean(out.Title)
+	out.Message = clean(out.Message)
+	out.NodeName = clean(out.NodeName)
+	out.NodeID = clean(out.NodeID)
+	out.NodeStatus = clean(out.NodeStatus)
+	out.NetworkName = clean(out.NetworkName)
+	out.ProjectName = clean(out.ProjectName)
+	out.Endpoint = clean(out.Endpoint)
+	out.Region = clean(out.Region)
+	out.OS = clean(out.OS)
+	out.AgentVersion = clean(out.AgentVersion)
+	out.DashboardURL = clean(out.DashboardURL)
+	return out
 }
 
 func sendNotification(ctx context.Context, kind string, c NotificationConfig, subject, message string) error {

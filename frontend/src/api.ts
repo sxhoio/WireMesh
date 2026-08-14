@@ -122,6 +122,24 @@ export class ApiError extends Error {
   }
 }
 
+// onUnauthorized 由应用注册（main.ts）：任意已认证请求返回 401（会话过期/
+// 用户被停用/删除）时，清除内存敏感数据并跳转登录页（S12）。
+// 登录/初始化接口自身的 401 属于业务失败（密码错误等），不触发。
+let unauthorizedHandler: (() => void) | null = null
+
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler
+}
+
+function isAuthEndpoint(url: string) {
+  return url.includes('/auth/login') || url.includes('/auth/sso/login') || url.startsWith(apiBase + '/api/v1/setup')
+}
+
+function handleUnauthorized(url: string) {
+  session.clear()
+  if (!isAuthEndpoint(url) && unauthorizedHandler) unauthorizedHandler()
+}
+
 async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (session.token) headers.set('Authorization', 'Bearer ' + session.token)
@@ -129,7 +147,7 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(apiBase + url, { ...init, headers, credentials: 'include' })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { error?: string }
-    if (response.status === 401) session.clear()
+    if (response.status === 401) handleUnauthorized(url)
     throw new ApiError(response.status, payload.error || '请求失败（' + response.status + '）')
   }
   if (response.status === 204) return undefined as T
@@ -158,7 +176,7 @@ async function downloadBackupFile(): Promise<Blob> {
   const response = await fetch(apiBase + '/api/v1/settings/backup', { headers: authHeaders(), credentials: 'include' })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { error?: string }
-    if (response.status === 401) session.clear()
+    if (response.status === 401) handleUnauthorized('/api/v1/settings/backup')
     throw new ApiError(response.status, payload.error || '备份下载失败（' + response.status + '）')
   }
   return response.blob()
@@ -173,7 +191,7 @@ async function uploadRestoreFile(file: File): Promise<void> {
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { error?: string }
-    if (response.status === 401) session.clear()
+    if (response.status === 401) handleUnauthorized('/api/v1/settings/backup/restore')
     throw new ApiError(response.status, payload.error || '恢复失败（' + response.status + '）')
   }
 }
@@ -190,7 +208,7 @@ export const api = {
   mfaStatus: () => request<{ enabled: boolean }>('/api/v1/auth/mfa/status'),
   mfaSetup: () => request<{ secret: string; uri: string }>('/api/v1/auth/mfa/setup', { method: 'POST' }),
   mfaEnable: (otp: string) => request<{ enabled: boolean }>('/api/v1/auth/mfa/enable', { method: 'POST', body: JSON.stringify({ otp }) }),
-  mfaDisable: () => request<{ enabled: boolean }>('/api/v1/auth/mfa/disable', { method: 'POST' }),
+  mfaDisable: (payload: { password: string; otp?: string }) => request<{ enabled: boolean }>('/api/v1/auth/mfa/disable', { method: 'POST', body: JSON.stringify(payload) }),
   ssoConfig: () => request<{ issuer: string; client_id: string; client_secret_configured: boolean; enabled: boolean }>('/api/v1/settings/sso'),
   updateSSOConfig: (payload: { issuer: string; client_id: string; client_secret?: string; enabled: boolean }) => request<{ issuer: string; client_id: string; client_secret_configured: boolean; enabled: boolean }>('/api/v1/settings/sso', { method: 'PUT', body: JSON.stringify(payload) }),
   ssoLogin: (tenant?: string) => request<{ url?: string; tenants?: string[] }>('/api/v1/auth/sso/login' + (tenant ? '?tenant=' + encodeURIComponent(tenant) : '')),
@@ -265,7 +283,7 @@ export const api = {
   createUser: (payload: { name: string; email: string; password: string; role: ApiUser['role'] }) => request<ApiUser>('/api/v1/users', { method: 'POST', body: JSON.stringify(payload) }),
   updateUser: (id: string, payload: { name?: string; role?: ApiUser['role']; active?: boolean }) => request<ApiUser>('/api/v1/users/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteUser: (id: string) => request<void>('/api/v1/users/' + encodeURIComponent(id), { method: 'DELETE' }),
-  changePassword: (payload: { old_password: string; new_password: string }) => request<void>('/api/v1/auth/change-password', { method: 'POST', body: JSON.stringify(payload) }),
+  changePassword: (payload: { old_password: string; new_password: string; otp?: string }) => request<void>('/api/v1/auth/change-password', { method: 'POST', body: JSON.stringify(payload) }),
   backupDownload: downloadBackupFile,
   backupRestore: uploadRestoreFile,
 }

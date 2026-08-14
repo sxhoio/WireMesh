@@ -73,6 +73,8 @@ type App struct {
 	updateSigningKey       *ecdsa.PrivateKey
 	loginMu                sync.Mutex
 	loginFailures          map[string][]time.Time
+	changePasswordMu       sync.Mutex
+	changePasswordFailures map[string][]time.Time
 	setupMu                sync.Mutex
 	setupAttempts          map[string][]time.Time
 	setupToken             string
@@ -107,6 +109,7 @@ func NewApp(cfg Config) (*App, error) {
 		trustProxyAgentID:      cfg.TrustProxyAgentID,
 		agentInsecureHTTP:      cfg.AgentInsecureHTTP,
 		loginFailures:          map[string][]time.Time{},
+		changePasswordFailures: map[string][]time.Time{},
 		setupAttempts:          map[string][]time.Time{},
 		setupToken:             strings.TrimSpace(cfg.SetupToken),
 	}
@@ -229,6 +232,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("GET /agent/uninstall.sh", a.agentUninstallScript)
 	mux.HandleFunc("GET /agent/download", a.agentDownload)
 	mux.HandleFunc("POST /agent/v1/enroll", a.enroll)
+	mux.HandleFunc("POST /agent/v1/renew-cert", a.renewAgentCert)
 	mux.HandleFunc("GET /agent/v1/update", a.agentUpdate)
 	mux.HandleFunc("GET /agent/v1/config", a.agentConfig)
 	mux.HandleFunc("GET /agent/v1/peer-config", a.agentPeerConfig)
@@ -385,6 +389,46 @@ const (
 	loginWindow      = 15 * time.Minute
 )
 
+// maxRateLimitEntries 是内存限流表（login/change-password/setup）的全局条目
+// 上限（S11）：攻击者伪造海量源 IP 时，map 不会无界增长；超限时先清过期，
+// 仍超限则丢弃最旧条目。
+const maxRateLimitEntries = 10000
+
+// pruneRateLimitEntries 清理指定 key 的过期条目，并执行全局容量上限：
+// 先整体清一遍过期条目，若仍超过上限则删除最旧（时间戳最小）的条目。
+func pruneRateLimitEntries(entries map[string][]time.Time, window time.Duration) {
+	now := time.Now()
+	// 单 key 过期清理
+	for key, timestamps := range entries {
+		kept := timestamps[:0]
+		for _, at := range timestamps {
+			if now.Sub(at) <= window {
+				kept = append(kept, at)
+			}
+		}
+		if len(kept) == 0 {
+			delete(entries, key)
+		} else if len(kept) != len(timestamps) {
+			entries[key] = kept
+		}
+	}
+	// 全局容量上限：超限时删除最旧条目的 key
+	for len(entries) > maxRateLimitEntries {
+		var oldestKey string
+		var oldestAt time.Time
+		first := true
+		for key, timestamps := range entries {
+			if first || timestamps[0].Before(oldestAt) {
+				oldestKey, oldestAt, first = key, timestamps[0], false
+			}
+		}
+		if first {
+			break
+		}
+		delete(entries, oldestKey)
+	}
+}
+
 // clientIP 提取请求来源 IP（忽略端口），用于登录限流键。
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -415,12 +459,50 @@ func (a *App) recordLoginFailure(email, ip string) {
 	defer a.loginMu.Unlock()
 	key := strings.ToLower(strings.TrimSpace(email)) + "\x00" + ip
 	a.loginFailures[key] = append(a.loginFailures[key], time.Now())
+	pruneRateLimitEntries(a.loginFailures, loginWindow)
 }
 
 func (a *App) clearLoginFailures(email, ip string) {
 	a.loginMu.Lock()
 	defer a.loginMu.Unlock()
 	delete(a.loginFailures, strings.ToLower(strings.TrimSpace(email))+"\x00"+ip)
+}
+
+// ---- 修改密码限流（S10：旧密码错误按用户+IP 限流，防爆破）----
+
+const (
+	changePasswordMaxAttempts = 5
+	changePasswordWindow      = 15 * time.Minute
+)
+
+// checkChangePasswordAllowed 返回该用户+IP 组合是否允许继续尝试修改密码。
+func (a *App) checkChangePasswordAllowed(userID, ip string) bool {
+	a.changePasswordMu.Lock()
+	defer a.changePasswordMu.Unlock()
+	key := userID + "\x00" + ip
+	now := time.Now()
+	kept := make([]time.Time, 0, len(a.changePasswordFailures[key]))
+	for _, at := range a.changePasswordFailures[key] {
+		if now.Sub(at) <= changePasswordWindow {
+			kept = append(kept, at)
+		}
+	}
+	a.changePasswordFailures[key] = kept
+	return len(kept) < changePasswordMaxAttempts
+}
+
+func (a *App) recordChangePasswordFailure(userID, ip string) {
+	a.changePasswordMu.Lock()
+	defer a.changePasswordMu.Unlock()
+	key := userID + "\x00" + ip
+	a.changePasswordFailures[key] = append(a.changePasswordFailures[key], time.Now())
+	pruneRateLimitEntries(a.changePasswordFailures, changePasswordWindow)
+}
+
+func (a *App) clearChangePasswordFailures(userID, ip string) {
+	a.changePasswordMu.Lock()
+	defer a.changePasswordMu.Unlock()
+	delete(a.changePasswordFailures, userID+"\x00"+ip)
 }
 
 // ---- 初始化接口防护（setup / configureDatabase / testDatabase）----
@@ -463,6 +545,7 @@ func (a *App) recordSetupAttempt(ip string) {
 	a.setupMu.Lock()
 	defer a.setupMu.Unlock()
 	a.setupAttempts[ip] = append(a.setupAttempts[ip], time.Now())
+	pruneRateLimitEntries(a.setupAttempts, setupWindow)
 }
 
 func (a *App) clearSetupAttempts(ip string) {
@@ -519,11 +602,13 @@ func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// changePassword 允许登录用户修改自己的密码（需验证旧密码）。
+// changePassword 允许登录用户修改自己的密码（需验证旧密码；启用 MFA 时
+// 还需动态验证码；旧密码错误按用户限流，防止撞库与爆破）。
 func (a *App) changePassword(w http.ResponseWriter, r *http.Request, c claims) {
 	var in struct {
 		OldPassword string `json:"old_password"`
 		NewPassword string `json:"new_password"`
+		OTP         string `json:"otp"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -532,14 +617,32 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request, c claims) {
 		writeError(w, http.StatusBadRequest, "新密码至少需要 8 个字符")
 		return
 	}
+	ip := clientIP(r)
+	if !a.checkChangePasswordAllowed(c.Subject, ip) {
+		writeError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+		return
+	}
 	user, err := a.store.GetUser(c.Subject)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "account no longer exists")
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.OldPassword)) != nil {
+		a.recordChangePasswordFailure(c.Subject, ip)
 		writeError(w, http.StatusUnauthorized, "旧密码不正确")
 		return
+	}
+	if user.TotpEnabled {
+		secretBytes, decryptErr := a.box.Decrypt(user.TotpSecret)
+		if decryptErr != nil || !verifyTOTP(string(secretBytes), in.OTP, time.Now()) {
+			a.recordChangePasswordFailure(c.Subject, ip)
+			if strings.TrimSpace(in.OTP) == "" {
+				writeError(w, http.StatusUnauthorized, "otp_required")
+			} else {
+				writeError(w, http.StatusUnauthorized, "otp_invalid")
+			}
+			return
+		}
 	}
 	passwordHash, err := hashPassword(in.NewPassword)
 	if err != nil {
@@ -550,6 +653,7 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request, c claims) {
 		writeError(w, http.StatusInternalServerError, "保存密码失败")
 		return
 	}
+	a.clearChangePasswordFailures(c.Subject, ip)
 	a.auditEvent(c.TenantID, c.Subject, "auth.password.change", "user", user.ID, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1021,6 +1125,34 @@ func (a *App) enroll(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// renewAgentCert 为已认证节点签发新证书（S9：到期前续期）。沿用现有 mTLS
+// 身份（agentNode 已校验指纹），签发新密钥对并覆盖登记身份——旧证书的
+// 指纹随即失配，立即失效（等效 CRL，无需额外吊销列表）。
+func (a *App) renewAgentCert(w http.ResponseWriter, r *http.Request) {
+	node, ok := a.agentNode(w, r)
+	if !ok {
+		return
+	}
+	if !node.Enabled {
+		writeError(w, http.StatusLocked, "node is disabled")
+		return
+	}
+	cert, key, fingerprint, expires, err := a.issueAgentCertificate(node.ID)
+	if err != nil {
+		writeError(w, 500, "failed to issue agent certificate")
+		return
+	}
+	if err := a.store.CreateIdentity(AgentIdentity{NodeID: node.ID, CertificatePEM: cert, CertificateFingerprint: fingerprint, ExpiresAt: expires}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist renewed agent identity")
+		return
+	}
+	a.auditEvent(node.TenantID, node.ID, "agent.cert.renew", "node", node.ID, nil)
+	writeJSON(w, http.StatusOK, wireproto.EnrollmentResponse{
+		Node: wireproto.EnrollmentNode{ID: node.ID}, CertificatePEM: cert, PrivateKeyPEM: key,
+		CertificateFingerprint: fingerprint, ExpiresAt: formatWireTime(expires), CAPEM: a.caPEM(),
+	})
+}
+
 // agentNode authorizes an agent by its enrolled mTLS certificate when it reaches
 // the server directly. X-Agent-ID also supports local HTTP and TLS-terminating
 // reverse proxies; proxy deployments must keep the backend listener private.
@@ -1046,6 +1178,18 @@ func (a *App) agentNode(w http.ResponseWriter, r *http.Request) (Node, bool) {
 			return Node{}, false
 		}
 		nodeID = certificateNodeID
+		// S9：吊销/轮换即时生效——证书指纹必须与当前登记身份一致。
+		// 证书续期会覆盖登记指纹，旧证书从此拒绝（等效 CRL，无需额外吊销列表）。
+		if identity, identityErr := a.store.GetIdentity(nodeID); identityErr == nil {
+			sha := sha256.Sum256(r.TLS.PeerCertificates[0].Raw)
+			if hex.EncodeToString(sha[:]) != identity.CertificateFingerprint {
+				writeError(w, http.StatusUnauthorized, "agent certificate was revoked or rotated")
+				return Node{}, false
+			}
+		} else if !errors.Is(identityErr, errNotFound) {
+			writeError(w, http.StatusInternalServerError, "failed to verify agent certificate")
+			return Node{}, false
+		}
 	}
 	if nodeID == "" {
 		writeError(w, 401, "missing agent identity")

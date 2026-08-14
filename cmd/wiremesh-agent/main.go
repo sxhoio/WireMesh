@@ -89,7 +89,9 @@ func main() {
 	}
 	probeState := state
 	probeState.Server = *server
-	probeClient, probeErr := authenticatedClient(probeState, *useMTLS)
+	// 探活仅做 URL 发现（无敏感数据），尚未持有证书材料时允许无证书探测；
+	// 主客户端（携带节点身份）在 --mtls 下必须 fail-closed（见下）。
+	probeClient, probeErr := authenticatedClient(probeState, *useMTLS && probeState.CertificatePEM != "" && probeState.PrivateKeyPEM != "")
 	if probeErr != nil {
 		log.Printf("warning: configure control plane URL discovery transport: %v", probeErr)
 	} else if resolvedServer, resolveErr := resolveControlPlaneURL(*server, probeClient); resolveErr != nil {
@@ -133,11 +135,36 @@ func main() {
 
 	mtlsActive := *useMTLS && state.CertificatePEM != "" && state.PrivateKeyPEM != ""
 	if *useMTLS && !mtlsActive {
-		log.Printf("warning: --mtls requested but enrolled certificate material is unavailable; using the Agent identity header")
+		// S8：--mtls 请求的证书材料缺失时 fail-closed，不再静默回退到
+		// X-Agent-ID 头（该头可被伪造窃取节点身份/私钥）。
+		log.Fatal("--mtls requested but the enrolled client certificate material is missing; re-enroll the agent or drop --mtls")
 	}
 	client, err := authenticatedClient(state, *useMTLS)
 	if err != nil {
 		log.Fatalf("configure agent transport: %v", err)
+	}
+	agentAPI := newAgentClient(client, state)
+	// S9：证书到期前自动续期（30 天窗口）。服务端签发新证书并覆盖登记指纹，
+	// 旧证书立即失效；续期成功后重建客户端（旧证书已被吊销），失败不致命，
+	// 后续周期会重试。
+	if state.ExpiresAt != "" && certRenewalDue(state.ExpiresAt) {
+		log.Printf("agent certificate expires %s; requesting renewal", state.ExpiresAt)
+		if renewed, renewErr := agentAPI.RenewCert(context.Background()); renewErr != nil {
+			log.Printf("certificate renewal failed (will retry): %v", renewErr)
+		} else {
+			state = renewed
+			if err := saveState(statePath, state); err != nil {
+				log.Printf("persist renewed certificate: %v", err)
+			} else {
+				log.Printf("agent certificate renewed, new expiry %s", state.ExpiresAt)
+			}
+			// 旧证书已被服务端吊销，用新证书重建传输与客户端
+			client, err = authenticatedClient(state, *useMTLS)
+			if err != nil {
+				log.Fatalf("configure renewed agent transport: %v", err)
+			}
+			agentAPI = newAgentClient(client, state)
+		}
 	}
 	// Resolve the real public IPv4 once at startup and reuse it for the whole
 	// process lifetime; it is refreshed only when the agent process restarts.
@@ -151,7 +178,6 @@ func main() {
 		state.PublicIP = publicIP
 		log.Printf("public IPv4 discovered at startup: %s", publicIP)
 	}
-	agentAPI := newAgentClient(client, state)
 	hostname, _ := os.Hostname()
 	baseHeartbeat := heartbeatRequest{
 		Hostname: hostname, OS: runtime.GOOS + "/" + runtime.GOARCH,
@@ -160,9 +186,9 @@ func main() {
 	manager := wireGuardManager{runner: execCommandRunner{}, configDir: "/etc/wireguard"}
 	transportMode := "HTTP development identity"
 	if mtlsActive && strings.HasPrefix(strings.ToLower(state.Server), "https://") {
-		transportMode = "HTTPS mutual TLS with Agent identity header fallback"
+		transportMode = "HTTPS mutual TLS"
 	} else if mtlsActive {
-		transportMode = "HTTP redirect with mutual TLS and Agent identity header fallback"
+		transportMode = "HTTP redirect with mutual TLS"
 	} else if strings.HasPrefix(strings.ToLower(state.Server), "https://") {
 		transportMode = "HTTPS Agent identity header"
 	}
@@ -400,8 +426,41 @@ func main() {
 			sendHeartbeat()
 		case <-probeTicker.C:
 			reconcileConfiguration()
+			// S9：运行期周期性检查证书续期（启动时已检查一次；此处覆盖
+			// 长时间运行、启动时尚未到窗口的情况）。
+			if state.ExpiresAt != "" && certRenewalDue(state.ExpiresAt) {
+				if renewed, renewErr := agentAPI.RenewCert(ctx); renewErr != nil {
+					log.Printf("certificate renewal failed (will retry): %v", renewErr)
+				} else {
+					state = renewed
+					if err := saveState(statePath, state); err != nil {
+						log.Printf("persist renewed certificate: %v", err)
+					} else {
+						log.Printf("agent certificate renewed, new expiry %s", state.ExpiresAt)
+					}
+					client, err = authenticatedClient(state, *useMTLS)
+					if err != nil {
+						log.Printf("reconfigure renewed agent transport: %v", err)
+						continue
+					}
+					agentAPI = newAgentClient(client, state)
+				}
+			}
 		}
 	}
+}
+
+// certRenewalWindow 是证书到期前触发自动续期的时间窗口。
+const certRenewalWindow = 30 * 24 * time.Hour
+
+// certRenewalDue 判断证书是否进入续期窗口（RFC3339 解析失败时视为已到期，
+// 触发续期以自愈）。
+func certRenewalDue(expiresAt string) bool {
+	expiry, err := time.Parse(time.RFC3339, strings.TrimSpace(expiresAt))
+	if err != nil {
+		return true
+	}
+	return time.Now().Add(certRenewalWindow).After(expiry)
 }
 
 func readEnrollmentToken(value, filename string) (string, error) {

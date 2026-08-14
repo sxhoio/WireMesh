@@ -82,6 +82,9 @@ func TestTOTPRFCVectors(t *testing.T) {
 }
 
 func TestOIDCIDTokenVerification(t *testing.T) {
+	// SSO 外呼私网过滤（S7）默认拒绝回环地址；测试用本地 httptest 服务器，
+	// 显式放开私网以验证签名/声明校验逻辑本身。
+	t.Setenv("WIREMESH_SSO_ALLOW_PRIVATE", "1")
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)

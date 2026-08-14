@@ -12,11 +12,16 @@ import (
 	"time"
 )
 
-// generateTOTPSecret 生成 base32 编码的 20 字节 TOTP 密钥（RFC 6238）。
+// generateTOTPSecret 生成 base32 编码的 32 字节（256 位）TOTP 密钥（RFC 6238，
+// 高于 RFC 要求的 128 位最低熵）。
 func generateTOTPSecret() string {
-	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(randomBytes(20))
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(randomBytes(32))
 }
 
+// totpCode 按 SHA-1 计算 TOTP 码。算法有意保留 SHA-1：RFC 6238 将 SHA-1 列为
+// 必须支持且为默认算法，Google Authenticator 等主流认证器仅支持 SHA-1；
+// HMAC-SHA1 的抗碰撞性不适用于一次性口令场景（弱点是 6 位码空间而非哈希），
+// 切换为 SHA-256 反而会破坏现有用户绑定（S14 评估结论）。
 func totpCode(secret string, at time.Time) (string, error) {
 	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(strings.TrimSpace(secret)))
 	if err != nil {

@@ -40,10 +40,10 @@ async function ssoLogin() {
   try {
     const result = await api.ssoLogin()
     if (result.url) {
-      window.location.href = result.url
+      navigateToSSO(result.url)
     } else if (result.tenants?.length) {
       const first = await api.ssoLogin(result.tenants[0])
-      if (first.url) window.location.href = first.url
+      if (first.url) navigateToSSO(first.url)
       else error.value = '单点登录暂不可用'
     } else {
       error.value = '单点登录尚未配置'
@@ -51,6 +51,17 @@ async function ssoLogin() {
   } catch {
     error.value = '单点登录暂不可用'
   }
+}
+
+// S7：SSO 授权地址仅允许 http/https，防后端配置或发现文档异常时
+// location.href 被赋值为 javascript: 等可执行协议。
+function navigateToSSO(url: string) {
+  const parsed = new URL(url, window.location.href)
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    error.value = '单点登录地址无效'
+    return
+  }
+  window.location.href = parsed.href
 }
 </script>
 

@@ -4,6 +4,30 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.6`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.5.0（S7-S14 中危项专项）
+
+- S7 SSO：OIDC 外呼（discovery/JWKS/token/userinfo）统一走私网过滤拨号
+  （防 SSRF，`WIREMESH_SSO_ALLOW_PRIVATE=1` 可放开本地测试）；redirect_uri
+  由 Host 头构建时校验字符集，且登录/回调两端强制一致（防授权码劫持）；
+  issuer 仅允许 http/https 完整 URL；前端 `location.href` 仅放行 http/https
+- S8 Agent：`--mtls` 材料缺失时 fail-closed（拒绝启动），不再静默回退
+  X-Agent-ID 头；探活（URL 发现）与主客户端分离
+- S9 Agent 证书：新增 `POST /agent/v1/renew-cert` 续期端点（mTLS 认证，
+  签发新证书并覆盖登记指纹）；`agentNode` 校验证书指纹与登记一致，
+  轮换/吊销即时生效（等效 CRL）；Agent 到期前 30 天自动续期并重建传输
+- S10 账户安全：修改密码增加按用户+IP 限流（5 次/15 分钟），启用 MFA 时
+  必须提供动态验证码（otp_required/otp_invalid）；关闭 MFA 需当前密码 +
+  动态验证码双重复核
+- S11 内存上限：登录/改密/初始化限流表全局条目上限（10000），
+  SSO state 表上限（5000），超限清理最旧条目，防内存放大
+- S12 前端：任意已认证请求 401（会话过期/用户停用删除）时清空 app/mesh
+  内存数据并跳转登录页，登录接口自身的 401 不触发
+- S13 通知注入：渲染前按渠道净化节点名/消息等不信任字段——HTML/markdown
+  类渠道（Telegram HTML、钉钉/企微/飞书）HTML 转义，全部渠道剥离控制字符
+- S14 密码学参数：master key 经 Argon2id KDF 派生（旧 SHA-256 数据解密
+  回退兼容）；bcrypt cost 10→12；TOTP 密钥 20→32 字节（SHA-1 保留，
+  RFC 6238 默认且主流认证器仅支持）；SQLite 主库/WAL/SHM 权限收紧 0600
+
 ## v0.4.20（P1 专项，未发布 tag 前为当前 HEAD）
 
 - MySQL DSN 启用 clientFoundRows，修复三驱动 RowsAffected 语义不一致

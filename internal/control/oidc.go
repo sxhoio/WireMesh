@@ -14,7 +14,9 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -35,6 +37,61 @@ type jsonWebKey struct {
 
 type jsonWebKeySet struct {
 	Keys []jsonWebKey `json:"keys"`
+}
+
+// oidcHTTPClient 返回用于 OIDC 外呼（discovery/JWKS/token/userinfo）的 HTTP
+// 客户端。它复用通知渠道的私网过滤拨号逻辑（S7：SSO 外呼私网过滤），
+// 拒绝解析到私网/回环/保留地址的目标，防止恶意或配置错误的 IdP 端点被用于
+// 探测内网（SSRF）。IdP 一般位于公网，不需要 allowPrivate 逃生舱。
+func oidcHTTPClient() *http.Client {
+	return &http.Client{Timeout: 10 * time.Second, Transport: oidcHTTPTransport()}
+}
+
+func oidcHTTPTransport() http.RoundTripper {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dialOIDCAddress(ctx, dialer, network, address)
+	}
+	return transport
+}
+
+// dialOIDCAddress 解析目标并拒绝私网/回环地址后直连，复用同一批解析结果
+// 做策略判断与拨号，封堵 DNS rebinding 窗口。设置
+// WIREMESH_SSO_ALLOW_PRIVATE=1 可显式放开（本地 IdP 测试等场景）。
+func dialOIDCAddress(ctx context.Context, dialer *net.Dialer, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("WIREMESH_SSO_ALLOW_PRIVATE")), "1") {
+		return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
+	}
+	var lastErr error
+	for _, ip := range ips {
+		if isUnsafeOIDCIP(ip.IP) {
+			return nil, errors.New("oidc endpoint resolves to a private or local address")
+		}
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errors.New("oidc endpoint did not resolve")
+}
+
+// isUnsafeOIDCIP 判定 OIDC 外呼不可达的地址：与通知渠道/数据库一致的
+// 私网、保留、链路本地、组播与回环段。
+func isUnsafeOIDCIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
 }
 
 // verifyOIDCIDToken 校验 OIDC ID token：签名（经 JWKS）、issuer、audience、过期时间与 nonce。
@@ -121,7 +178,7 @@ func fetchOIDCSigningKey(ctx context.Context, jwksURI, kid, alg string) (any, er
 	if err != nil {
 		return nil, err
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := oidcHTTPClient().Do(request)
 	if err != nil {
 		return nil, err
 	}

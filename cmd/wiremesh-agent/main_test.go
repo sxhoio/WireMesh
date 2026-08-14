@@ -66,13 +66,19 @@ func TestSetDevelopmentIdentityAttachesPublicIP(t *testing.T) {
 	}
 }
 
+// TestAuthenticatedClientAllowsPreEnrollmentHTTPSProbe：预注册探活（无证书
+// 材料）必须走 useMTLS=false 路径；useMTLS=true 而材料缺失则 fail-closed（S8）。
 func TestAuthenticatedClientAllowsPreEnrollmentHTTPSProbe(t *testing.T) {
-	client, err := authenticatedClient(agentState{Server: "http://wiremesh.example.com"}, true)
+	client, err := authenticatedClient(agentState{Server: "http://wiremesh.example.com"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if client.Transport == nil {
 		t.Fatal("expected a configured TLS transport")
+	}
+	// --mtls 但无证书材料：必须报错，不允许静默回退到 X-Agent-ID 头
+	if _, err := authenticatedClient(agentState{Server: "http://wiremesh.example.com"}, true); err == nil {
+		t.Fatal("useMTLS without certificate material must fail closed")
 	}
 }
 
