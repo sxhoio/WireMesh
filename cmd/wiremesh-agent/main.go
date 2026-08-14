@@ -253,6 +253,16 @@ func main() {
 			lastCollectionError = heartbeat.CollectionError
 		}
 		if err := agentAPI.PostHeartbeat(ctx, heartbeat); err != nil {
+			// 身份被服务端拒绝：明确诊断并降频，避免请求风暴；节点被
+			// 停用同样停止上报。其余错误（网络/5xx）保持重试自愈。
+			if isTerminalAgentError(err) {
+				log.Printf("heartbeat stopped: %v", err)
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Minute):
+				}
+				return len(heartbeat.WireGuard), heartbeat.CollectionError, err
+			}
 			log.Printf("heartbeat failed: %v", err)
 			return len(heartbeat.WireGuard), heartbeat.CollectionError, err
 		}
@@ -268,7 +278,16 @@ func main() {
 		defer configMu.Unlock()
 		payload, found, err := agentAPI.PollConfig(ctx)
 		if err != nil {
-			log.Printf("configuration check failed: %v", err)
+			// 身份被拒/节点停用：明确诊断并降频（见 sendHeartbeat 注释）
+			if isTerminalAgentError(err) {
+				log.Printf("configuration check stopped: %v", err)
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Minute):
+				}
+			} else {
+				log.Printf("configuration check failed: %v", err)
+			}
 			return "", err
 		}
 		if !found {
@@ -379,6 +398,15 @@ func main() {
 			if err != nil {
 				if ctx.Err() != nil {
 					return
+				}
+				if isTerminalAgentError(err) {
+					log.Printf("command polling stopped: %v", err)
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(time.Minute):
+					}
+					continue
 				}
 				log.Printf("agent command long poll failed: %v", err)
 				select {

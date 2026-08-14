@@ -344,11 +344,33 @@ func setDevelopmentIdentity(request *http.Request, state agentState) {
 	}
 }
 
+// errAgentIdentityRejected 表示服务端拒绝该节点的身份（401/403）：
+// 节点已被删除、证书被吊销/轮换、或身份失配。此时重试没有意义，
+// Agent 应给出明确诊断并停止无谓的请求风暴，等待管理员重新登记。
+var errAgentIdentityRejected = errors.New("agent identity was rejected by the control plane (node deleted, certificate revoked, or identity mismatch); re-register this node")
+
+// errAgentDisabled 表示节点被管理员停用（423 Locked）。
+var errAgentDisabled = errors.New("node is disabled by the control plane")
+
 func responseError(response *http.Response) error {
 	data, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 	message := strings.TrimSpace(string(data))
 	if message == "" {
 		message = response.Status
 	}
-	return fmt.Errorf("control plane returned %s: %s", response.Status, message)
+	switch response.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return errAgentIdentityRejected
+	case http.StatusLocked:
+		return errAgentDisabled
+	default:
+		return fmt.Errorf("control plane returned %s: %s", response.Status, message)
+	}
+}
+
+// isTerminalAgentError 判断错误是否需要停止重试（身份被拒/节点停用）。
+// 网络错误、5xx 与 4xx 业务错误都应继续重试（服务端可能短暂不可用或
+// 配置未就绪），实现断网自愈。
+func isTerminalAgentError(err error) bool {
+	return errors.Is(err, errAgentIdentityRejected) || errors.Is(err, errAgentDisabled)
 }
