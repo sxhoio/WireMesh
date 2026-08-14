@@ -101,8 +101,12 @@ func TestDatabaseSetupRejectsInvalidSQLitePath(t *testing.T) {
 	body, _ := json.Marshal(DatabaseConfig{Driver: "sqlite", SQLitePath: directory})
 	response := httptest.NewRecorder()
 	app.Router().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/setup/database", strings.NewReader(string(body))))
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "文件") {
+	// M-1：无效路径同样只回通用文案（不泄露路径/文件系统细节）
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "数据库连接失败") {
 		t.Fatalf("unexpected invalid SQLite path response: %d %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), directory) {
+		t.Fatalf("response must not leak the filesystem path: %s", response.Body.String())
 	}
 }
 

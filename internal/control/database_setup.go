@@ -560,6 +560,11 @@ func validateRemoteConfig(cfg *DatabaseConfig, defaultPort int, defaultSSL strin
 		if err := validateDatabaseHost(cfg.Host); err != nil {
 			return err
 		}
+		// M-2：把域名替换为已校验的 IP 字面量——连接时不再重新解析，
+		// 封堵校验与连接之间的 DNS rebinding 窗口（与通知/OIDC 外呼一致）。
+		if resolved, ok := resolveDatabaseHostIP(cfg.Host); ok {
+			cfg.Host = resolved
+		}
 	}
 	if cfg.Port == 0 {
 		cfg.Port = defaultPort
@@ -613,6 +618,27 @@ func validateDatabaseHost(host string) error {
 		}
 	}
 	return nil
+}
+
+// resolveDatabaseHostIP 解析域名并返回第一个安全的公网 IP 字面量。
+// 调用前已通过 validateDatabaseHost 校验（无私网解析结果），此处把主机名
+// 换成 IP，连接阶段不再重新解析（封堵 DNS rebinding，M-2）。
+func resolveDatabaseHostIP(host string) (string, bool) {
+	trimmed := strings.TrimSpace(host)
+	if net.ParseIP(trimmed) != nil || strings.EqualFold(trimmed, "localhost") {
+		return trimmed, false // IP 字面量或本机别名无需替换
+	}
+	ips, err := net.LookupIP(trimmed)
+	if err != nil {
+		return "", false
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || isUnsafeDatabaseIP(ip) {
+			continue
+		}
+		return ip.String(), true
+	}
+	return "", false
 }
 
 // isUnsafeDatabaseIP 判定不可外呼的地址：与通知渠道的私网判定一致，并补齐
@@ -735,7 +761,10 @@ func (a *App) configureDatabase(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "WireMesh 已完成初始化")
 			return
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		// M-1：统一通用文案，细节只写服务端日志（脱敏），避免驱动差异
+		// 被用作内网探测 oracle（与 testDatabase 一致）。
+		log.Printf("database configure failed: %s", RedactCredentials(err.Error()))
+		writeError(w, http.StatusBadRequest, "数据库连接失败，请检查主机、端口、凭据与网络配置")
 		return
 	}
 	a.clearSetupAttempts(ip)

@@ -4,6 +4,19 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.7`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.7.5（P1 安全专项 M-1 + M-2：数据库向导加固）
+
+0day 审计 P1 修复：
+
+- **M-1 探测 oracle**：`configureDatabase` 失败不再回显驱动级错误
+  （dial/连接拒绝/主机名等），统一通用文案；细节只进服务端日志
+  （脱敏），与 testDatabase 一致，封堵内网探测
+- **M-2 DNS rebinding**：远程数据库主机在校验时解析为安全 IP 并替换
+  进 DSN，连接阶段不再重新解析（与通知/OIDC 外呼的单次解析一致），
+  封堵校验与连接之间的重绑定窗口
+- 新增 M-1/M-2 专项测试
+- go vet/go test 全绿
+
 ## v0.7.4（P1 安全专项 H-3：SSO 授权码劫持修复）
 
 0day 审计 P1 首项修复（High）：
