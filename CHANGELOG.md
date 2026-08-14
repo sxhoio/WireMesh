@@ -4,6 +4,18 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.7`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.7.11（P2 安全专项 L-1 + L-3：viewer 私钥导出 + Agent 默认验签）
+
+0day 审计 P2 修复：
+
+- **L-1**：`client-config`/`peer-config`（含 WireGuard 私钥/PresharedKey）
+  从 viewer 提升为 operator 级——viewer 不再能导出任意节点私钥
+- **L-3**：Agent 自更新 fail-closed——未配置 `--update-public-key` 时
+  拒绝执行 `update_agent`（防纯 HTTP 下更新包被 MITM 替换为 root
+  恶意二进制）；需要远程更新的部署必须配置公钥或手动重装
+- 新增 L-1 专项测试
+- go vet/go test 全绿
+
 ## v0.7.10（P2 安全专项 M-7 + M-8：MFA 密码复核 + 改密吊销会话）
 
 0day 审计 P2 修复：

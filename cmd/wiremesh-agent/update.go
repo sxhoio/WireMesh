@@ -117,11 +117,13 @@ func performAgentUpdate(ctx context.Context, client agentClient, statePath, stat
 	if manifest.SHA256 == "" || manifest.Size <= 0 {
 		return "", errors.New("server returned an incomplete update manifest")
 	}
-	// 配置了更新公钥时，清单必须携带有效签名（fail-closed）
-	if updatePublicKey != nil {
-		if err := verifyUpdateManifestSignature(updatePublicKey, manifest); err != nil {
-			return "更新清单签名校验失败", err
-		}
+	// L-3：更新必须验签——未配置公钥时拒绝执行 update_agent（fail-closed）。
+	// 防止纯 HTTP 信道下更新包被 MITM 替换为恶意二进制（root 权限执行）。
+	if updatePublicKey == nil {
+		return "", errors.New("agent self-update requires --update-public-key for signature verification; reinstall manually or configure the key")
+	}
+	if err := verifyUpdateManifestSignature(updatePublicKey, manifest); err != nil {
+		return "更新清单签名校验失败", err
 	}
 	updateDir := filepath.Join(stateDir, "update")
 	if err := os.MkdirAll(updateDir, 0o700); err != nil {
