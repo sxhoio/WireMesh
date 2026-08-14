@@ -4,6 +4,18 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.7`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.7.1（P0 安全专项 H-1：心跳标签覆写 → 访问策略绕过/拓扑自授）
+
+0day 审计 P0 第二项修复（High）：
+
+- Agent 心跳不再接受标签覆写：`wiremesh.role`/`wiremesh.relay` 等
+  拓扑角色标签与自定义标签（访问策略 source_label 依据）只能由控制台
+  operator/admin 维护，任意节点无法再自授 hub 角色或伪造 team=ops
+  绕过访问策略
+- 注册（enroll）时剥离 Agent 自报的 `wiremesh.*` 保留前缀管理标签
+- 新增 H-1 专项测试（心跳不可覆写标签、注册剥离保留标签）
+- go vet/go test 全绿
+
 ## v0.7.0（P0 安全专项 C-1：备份/恢复跨租户越权）
 
 0day 审计 P0 首项修复（Critical）：

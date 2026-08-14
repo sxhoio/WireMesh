@@ -144,12 +144,12 @@ func TestAgentHeartbeatUpdatesRealNode(t *testing.T) {
 	if err := app.store.CreateNetwork(network); err != nil {
 		t.Fatal(err)
 	}
-	node, err := app.createNode(network.TenantID, network, "heartbeat-node", "", "", "", "", nil)
+	node, err := app.createNode(network.TenantID, network, "heartbeat-node", "", "", "", "", map[string]string{"env": "prod"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	payload := `{"hostname":"edge-01","os":"linux/amd64","agent_version":"0.3.0","labels":{"env":"prod"},"interfaces":"auto","collection_error":"ip metadata unavailable","wireguard":[{"name":"wg0","public_key":"public-key","listen_port":51111,"addresses":["10.91.0.2/32"],"mtu":1380,"up":true,"peers":[{"public_key":"peer-key","endpoint":"198.51.100.10:51820","allowed_ips":["10.91.0.3/32"],"latest_handshake_at":"2026-07-17T08:00:00Z","receive_bytes":123,"transmit_bytes":456}]}]}`
+	payload := `{"hostname":"edge-01","os":"linux/amd64","agent_version":"0.3.0","labels":{"env":"malicious"},"interfaces":"auto","collection_error":"ip metadata unavailable","wireguard":[{"name":"wg0","public_key":"public-key","listen_port":51111,"addresses":["10.91.0.2/32"],"mtu":1380,"up":true,"peers":[{"public_key":"peer-key","endpoint":"198.51.100.10:51820","allowed_ips":["10.91.0.3/32"],"latest_handshake_at":"2026-07-17T08:00:00Z","receive_bytes":123,"transmit_bytes":456}]}]}`
 	request := httptest.NewRequest(http.MethodPost, "/agent/v1/heartbeat", strings.NewReader(payload))
 	request.Header.Set("X-Agent-ID", node.ID)
 	response := httptest.NewRecorder()

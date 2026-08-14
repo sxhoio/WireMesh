@@ -1107,7 +1107,7 @@ func (a *App) enroll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "network not found")
 		return
 	}
-	node, err := a.createNode(enrollment.TenantID, network, in.Name, in.Endpoint, in.Region, in.OS, in.AgentVersion, in.Labels)
+	node, err := a.createNode(enrollment.TenantID, network, in.Name, in.Endpoint, in.Region, in.OS, in.AgentVersion, sanitizeAgentLabels(in.Labels))
 	if err != nil {
 		writeError(w, 400, err.Error())
 		return
@@ -1284,6 +1284,25 @@ func (a *App) agentStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "recorded"})
 }
 
+// sanitizeAgentLabels 剥离 Agent 自报标签中的保留管理前缀（wiremesh.*），
+// 防止节点通过注册/心跳自授拓扑角色或伪造策略标签（H-1）。
+func sanitizeAgentLabels(labels map[string]string) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(labels))
+	for key, value := range labels {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "wiremesh.") {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	node, ok := a.agentNode(w, r)
 	if !ok {
@@ -1305,9 +1324,11 @@ func (a *App) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(in.AgentVersion) != "" {
 		node.AgentVersion = strings.TrimSpace(in.AgentVersion)
 	}
-	if in.Labels != nil {
-		node.Labels = in.Labels
-	}
+	// H-1（P0）：标签是管理字段（wiremesh.role / wiremesh.relay 决定拓扑角色，
+	// 自定义标签决定访问策略源节点），不再接受 Agent 心跳覆写——否则任意
+	// 节点可自授 hub 角色或伪造 team=ops 绕过访问策略。标签只能由控制台
+	// operator/admin 维护。
+	_ = in.Labels
 	adoptedInterface := ""
 	adoptedConfiguration := false
 	if in.WireGuard != nil {
