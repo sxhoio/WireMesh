@@ -254,7 +254,7 @@ func (a *App) ssoCallback(w http.ResponseWriter, r *http.Request) {
 	_ = a.store.UpdateUserLastLogin(user.ID, time.Now().UTC())
 	a.recordSession(user, sessionToken, r.UserAgent())
 	a.auditEvent(user.TenantID, user.ID, "auth.login.sso", "user", user.ID, nil)
-	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: sessionToken, Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: int(ttl.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: sessionToken, Path: "/", HttpOnly: true, Secure: a.cookieSecure(r), SameSite: http.SameSiteLaxMode, MaxAge: int(ttl.Seconds())})
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 

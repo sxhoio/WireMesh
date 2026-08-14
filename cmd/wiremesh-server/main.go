@@ -114,6 +114,8 @@ func main() {
 		// 可选：SSO 回调使用的固定公网源（redirect_uri 不再信任 Host 头），
 		// 例如 https://wiremesh.example.com（H-3）
 		PublicURL: os.Getenv("WIREMESH_PUBLIC_URL"),
+		// 反代终结 TLS 的部署显式开启，保证会话 Cookie 带 Secure
+		SecureCookies: os.Getenv("WIREMESH_COOKIE_SECURE") == "true" || os.Getenv("WIREMESH_COOKIE_SECURE") == "1",
 	})
 	if err != nil {
 		log.Fatal(err)

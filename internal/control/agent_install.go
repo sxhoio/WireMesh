@@ -82,7 +82,7 @@ if [ -z "$SERVER" ]; then
   echo "安装脚本无法确定 WireMesh 服务地址，请通过 --server 手动指定" >&2
   exit 2
 fi
-case "$SERVER$NAME$LABELS$PROJECT$NETWORK" in
+case "$SERVER$NAME$LABELS$PROJECT$NETWORK$INTERFACES$REPORT_INTERVAL$PROBE_INTERVAL$TOKEN" in
   *$'\n'*|*$'\r'*) echo "参数中不能包含换行符" >&2; exit 2 ;;
 esac
 SERVER="${SERVER%/}"
@@ -170,7 +170,7 @@ umask 077
 printf '%s' "$TOKEN" > /etc/wiremesh-agent/enrollment-token
 
 escape_env() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\$/\\$/g'
 }
 cat > /etc/wiremesh-agent/agent.env <<EOF
 WIREMESH_SERVER="$(escape_env "$SERVER")"

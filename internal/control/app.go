@@ -47,6 +47,7 @@ type Config struct {
 	AgentInsecureHTTP      bool
 	UpdateSigningKey       string
 	PublicURL              string
+	SecureCookies          bool
 }
 type App struct {
 	store                  Store
@@ -74,6 +75,7 @@ type App struct {
 	agentInsecureHTTP      bool
 	updateSigningKey       *ecdsa.PrivateKey
 	publicURL              string
+	secureCookies          bool
 	startTime              time.Time
 	loginMu                sync.Mutex
 	loginFailures          map[string][]time.Time
@@ -117,6 +119,7 @@ func NewApp(cfg Config) (*App, error) {
 		setupAttempts:          map[string][]time.Time{},
 		setupToken:             strings.TrimSpace(cfg.SetupToken),
 		publicURL:              strings.TrimRight(strings.TrimSpace(cfg.PublicURL), "/"),
+		secureCookies:          cfg.SecureCookies,
 		startTime:              time.Now(),
 	}
 	if strings.TrimSpace(cfg.UpdateSigningKey) != "" {
@@ -604,8 +607,18 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	a.recordSession(user, token, r.UserAgent())
 	// 设置 HttpOnly + SameSite cookie，浏览器后续请求自动携带；Authorization 头仍作为非浏览器客户端的回退。
 	ttl := a.auth.sessionTTL(user.TenantID)
-	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: token, Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode, MaxAge: int(ttl.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: token, Path: "/", HttpOnly: true, Secure: a.cookieSecure(r), SameSite: http.SameSiteLaxMode, MaxAge: int(ttl.Seconds())})
 	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": publicUser(user)})
+}
+
+// cookieSecure 决定会话 Cookie 是否带 Secure 标志：直连 TLS 时自动开启；
+// 反代终结 TLS 的部署可显式配置 WIREMESH_COOKIE_SECURE=true（否则明文
+// HTTP 通道也可能携带会话 Cookie）。
+func (a *App) cookieSecure(r *http.Request) bool {
+	if a.secureCookies {
+		return true
+	}
+	return r.TLS != nil
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
@@ -1668,6 +1681,10 @@ func cors(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", allowOrigin)
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Agent-ID")
+		// 基础安全响应头（L-5）：防 MIME 嗅探、点击劫持、Referrer 泄漏
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "same-origin")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

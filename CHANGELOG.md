@@ -4,6 +4,19 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.7`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.7.12（P2 安全专项：其余 Low 项）
+
+0day 审计 P2 收尾：
+
+- **安装脚本加固**：换行校验覆盖全部参数（INTERFACES/间隔/TOKEN），
+  escape_env 增加 `$` 转义（防 agent.env 被 source 时注入）
+- **Cookie Secure**：新增 `WIREMESH_COOKIE_SECURE` 配置，反代终结
+  TLS 的部署可显式开启（防明文通道携带会话 Cookie）
+- **安全响应头**：全局 X-Content-Type-Options/X-Frame-Options/
+  Referrer-Policy
+- MFA 枚举保持现状（otp_required 仅在密码验证通过后返回，已是最小暴露）
+- go vet/go test 全绿
+
 ## v0.7.11（P2 安全专项 L-1 + L-3：viewer 私钥导出 + Agent 默认验签）
 
 0day 审计 P2 修复：
