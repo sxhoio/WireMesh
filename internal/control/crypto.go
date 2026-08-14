@@ -64,6 +64,17 @@ func (b *SecretBox) Decrypt(secret EncryptedSecret) ([]byte, error) {
 	return b.decryptWith(b.legacy, secret)
 }
 
+// HMACKey 返回主密钥派生密钥，供平台级绑定标记（如备份 instance_id 的
+// HMAC）使用——只有持有相同 master key 的本实例能校验。
+func (b *SecretBox) HMACKey() ([]byte, error) {
+	if len(b.key) == 0 {
+		return nil, errors.New("secret box is not initialized")
+	}
+	key := make([]byte, len(b.key))
+	copy(key, b.key)
+	return key, nil
+}
+
 func (b *SecretBox) decryptWith(key []byte, secret EncryptedSecret) ([]byte, error) {
 	wrapped, err := base64.StdEncoding.DecodeString(secret.WrappedDEK)
 	if err != nil {

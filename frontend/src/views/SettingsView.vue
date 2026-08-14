@@ -586,15 +586,24 @@ async function restoreBackup() {
     variant: 'danger',
   })
   if (!confirmed) return
+  // C-1 二次认证：需验证当前密码（启用 MFA 时还需动态验证码）
+  const password = window.prompt('恢复会替换整个数据库，请输入当前密码确认操作：', '')
+  if (password === null) return
+  let otp: string | undefined
+  if (mfaEnabled.value) {
+    otp = window.prompt('请输入认证器中的 6 位动态验证码：', '') ?? undefined
+    if (otp === undefined) return
+  }
   restoring.value = true
   try {
-    await api.backupRestore(restoreFile.value)
+    await api.backupRestore(restoreFile.value, { password, otp: otp?.trim() || undefined })
     restoreFile.value = null
     mesh.notice = '数据库已恢复；请重新登录以继续'
     app.logout()
     router.push({ name: 'login' })
   } catch (reason) {
-    mesh.error = reason instanceof Error ? reason.message : '恢复失败'
+    const message = reason instanceof Error ? reason.message : '恢复失败'
+    mesh.error = message.includes('otp_required') ? '请输入动态验证码后重试' : message.includes('otp_invalid') ? '动态验证码错误，请重试' : message
   } finally {
     restoring.value = false
   }

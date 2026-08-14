@@ -2,7 +2,10 @@ package control
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,6 +82,9 @@ type DatabaseManager struct {
 	sqlitePath string
 	active     *SQLStore
 	retired    []*SQLStore
+	// instanceID 是实例级备份绑定标识（跨重启保持：备份时若不存在则
+	// 生成并写入 backup_meta；恢复校验用 HMAC 匹配，无需持久化于内存）。
+	instanceID string
 }
 
 func NewDatabaseManager(configPath, masterKey string) (*DatabaseManager, error) {
@@ -221,15 +227,112 @@ func (m *DatabaseManager) load() error {
 }
 
 // BackupSQLite 使用 VACUUM INTO 生成当前 SQLite 数据库的一致性在线备份。
+// 备份前写入平台绑定标记（instance_id + master-key 派生的 HMAC），
+// 恢复时校验标记，防止跨实例备份被注入（C-1：恢复越权修复）。
 func (m *DatabaseManager) BackupSQLite(targetPath string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.driver != "sqlite" || m.active == nil {
 		return errors.New("backup is only supported for a configured SQLite database")
 	}
+	if err := m.ensureBackupMeta(); err != nil {
+		return fmt.Errorf("write backup binding marker: %w", err)
+	}
 	escaped := strings.ReplaceAll(targetPath, "'", "''")
 	_, err := m.active.db.Exec(`VACUUM INTO '` + escaped + `'`)
 	return err
+}
+
+// ensureBackupMeta 在活动库中写入/更新单行备份绑定标记。
+func (m *DatabaseManager) ensureBackupMeta() error {
+	instanceID := m.backupInstanceID()
+	instanceHMAC, err := m.backupInstanceHMAC(instanceID)
+	if err != nil {
+		return err
+	}
+	query := `INSERT INTO backup_meta (id, instance_id, instance_hmac, created_at) VALUES (1, ?, ?, ?)
+		ON CONFLICT (id) DO UPDATE SET instance_id=excluded.instance_id, instance_hmac=excluded.instance_hmac`
+	if m.driver == "mysql" {
+		query = `INSERT INTO backup_meta (id, instance_id, instance_hmac, created_at) VALUES (1, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE instance_id=VALUES(instance_id), instance_hmac=VALUES(instance_hmac)`
+	}
+	_, err = m.active.db.Exec(m.active.query(query), instanceID, instanceHMAC, timeText(time.Now().UTC()))
+	return err
+}
+
+// backupInstanceID 返回本实例的稳定标识（无则生成并持久化在数据库配置旁）。
+func (m *DatabaseManager) backupInstanceID() string {
+	if m.instanceID != "" {
+		return m.instanceID
+	}
+	m.instanceID = newID("inst")
+	return m.instanceID
+}
+
+// backupInstanceHMAC 用 master key 派生的密钥对 instance_id 做 HMAC-SHA256。
+func (m *DatabaseManager) backupInstanceHMAC(instanceID string) (string, error) {
+	key, err := m.box.HMACKey()
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte("wiremesh-backup:" + instanceID))
+	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+// ValidateBackup 校验备份文件：合法 SQLite + 含用户 + 完整性 + 平台绑定标记
+// 与当前实例一致。返回错误时拒绝恢复（C-1：防跨实例备份注入与租户数据覆盖）。
+func (m *DatabaseManager) ValidateBackup(replacementPath string) error {
+	probe, err := OpenSQLStore("sqlite", "file:"+escapeSQLitePath(replacementPath))
+	if err != nil {
+		return fmt.Errorf("invalid SQLite backup: %w", err)
+	}
+	defer probe.Close()
+	hasUsers, userErr := probe.HasUsers()
+	var integrity string
+	_ = probe.db.QueryRow(`PRAGMA quick_check`).Scan(&integrity)
+	if userErr != nil || !hasUsers {
+		return errors.New("backup file contains no users")
+	}
+	if integrity != "" && !strings.EqualFold(strings.TrimSpace(integrity), "ok") {
+		return errors.New("backup file failed SQLite integrity check")
+	}
+	// 平台绑定：备份必须来自本实例（master key 派生 HMAC 匹配）
+	var storedID, storedHMAC string
+	err = probe.db.QueryRow(`SELECT instance_id, instance_hmac FROM backup_meta WHERE id = 1`).Scan(&storedID, &storedHMAC)
+	if err != nil {
+		return errors.New("backup is missing the platform binding marker; reject backup from another instance")
+	}
+	expectedHMAC, hmacErr := m.backupInstanceHMAC(storedID)
+	if hmacErr != nil {
+		return hmacErr
+	}
+	if !hmac.Equal([]byte(strings.ToLower(storedHMAC)), []byte(expectedHMAC)) {
+		return errors.New("backup was created by a different WireMesh instance; restore rejected")
+	}
+	return nil
+}
+
+// ClearAllSessionsAfterRestore 恢复（整体替换库）后调用：清空内存会话与
+// 吊销表，强制全部用户重新登录——恢复可能覆盖 users/revoked_tokens，
+// 内存态与磁盘已不一致，不能再信任任何既有令牌。
+func (a *App) ClearAllSessionsAfterRestore() {
+	a.sessionMu.Lock()
+	a.sessions = map[string]UserSession{}
+	a.revokedTokens = map[string]time.Time{}
+	a.sessionMu.Unlock()
+	a.ssoMu.Lock()
+	a.ssoStates = map[string]ssoState{}
+	a.ssoMu.Unlock()
+	a.loginMu.Lock()
+	a.loginFailures = map[string][]time.Time{}
+	a.changePasswordMu.Lock()
+	a.changePasswordFailures = map[string][]time.Time{}
+	a.changePasswordMu.Unlock()
+	a.loginMu.Unlock()
+	a.setupMu.Lock()
+	a.setupAttempts = map[string][]time.Time{}
+	a.setupMu.Unlock()
 }
 
 // RestoreSQLite 用上传的 SQLite 备份文件替换当前数据库并热切换。
@@ -242,20 +345,10 @@ func (m *DatabaseManager) RestoreSQLite(ctx context.Context, replacementPath str
 	if m.driver != "sqlite" || m.active == nil || m.sqlitePath == "" {
 		return errors.New("restore is only supported for a configured SQLite database")
 	}
-	// 1. 校验备份：合法 SQLite、含用户数据、通过完整性检查
-	probe, err := OpenSQLStore("sqlite", "file:"+escapeSQLitePath(replacementPath))
-	if err != nil {
-		return fmt.Errorf("invalid SQLite backup: %w", err)
-	}
-	hasUsers, userErr := probe.HasUsers()
-	var integrity string
-	_ = probe.db.QueryRow(`PRAGMA quick_check`).Scan(&integrity)
-	probe.Close()
-	if userErr != nil || !hasUsers {
-		return errors.New("backup file contains no users")
-	}
-	if integrity != "" && !strings.EqualFold(strings.TrimSpace(integrity), "ok") {
-		return errors.New("backup file failed SQLite integrity check")
+	// 1. 校验备份：合法 SQLite + 含用户数据 + 完整性检查 + 平台绑定标记
+	//    （C-1：拒绝跨实例备份，防止租户数据注入/覆盖）
+	if err := m.ValidateBackup(replacementPath); err != nil {
+		return err
 	}
 	// 2. 复制到持久化路径同目录的临时文件（原子 rename 要求同文件系统）
 	dir := filepath.Dir(m.sqlitePath)

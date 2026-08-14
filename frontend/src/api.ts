@@ -182,17 +182,21 @@ async function downloadBackupFile(): Promise<Blob> {
   return response.blob()
 }
 
-async function uploadRestoreFile(file: File): Promise<void> {
+async function uploadRestoreFile(file: File, payload: { password: string; otp?: string }): Promise<void> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('password', payload.password)
+  if (payload.otp) form.append('otp', payload.otp)
   const response = await fetch(apiBase + '/api/v1/settings/backup/restore', {
     method: 'POST',
     headers: authHeaders(),
     credentials: 'include',
-    body: file,
+    body: form,
   })
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({})) as { error?: string }
+    const payload2 = await response.json().catch(() => ({})) as { error?: string }
     if (response.status === 401) handleUnauthorized('/api/v1/settings/backup/restore')
-    throw new ApiError(response.status, payload.error || '恢复失败（' + response.status + '）')
+    throw new ApiError(response.status, payload2.error || '恢复失败（' + response.status + '）')
   }
 }
 
