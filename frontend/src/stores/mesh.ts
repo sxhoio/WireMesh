@@ -731,23 +731,27 @@ export const useMeshStore = defineStore('mesh', {
     },
     async collectNow(id: string) {
       this.error = ''
-      const previousLastSeen = new Map([[id, this.agentById(id)?.lastSeen || 0]])
       try {
+        // 先立即拉取服务端当前状态，界面秒更；再下发即时采集并等待增量上报
+        await this.refreshNodeTelemetry(true)
+        const previousLastSeen = new Map([[id, this.agentById(id)?.lastSeen || 0]])
         await api.collectNode(id)
         const result = await this.waitForCollectedTelemetry([id], previousLastSeen)
         this.notice = result.expected === 0
-          ? '即时采集请求已发送；节点当前离线，恢复连接后会立即执行'
+          ? '已获取节点当前状态；节点当前离线，恢复连接后会自动执行即时采集'
           : result.received === result.expected
             ? '已收到节点最新状态，界面已更新'
-            : '即时采集请求已发送，但节点暂未在 10 秒内返回最新状态'
+            : '已获取节点当前状态；即时采集请求已发送，节点暂未在 10 秒内返回最新状态'
         return true
       }
       catch (reason) { this.error = reason instanceof Error ? reason.message : '下发采集命令失败'; return false }
     },
     async collectAll() {
       this.error = ''
-      const knownLastSeen = new Map(this.agents.filter((agent) => agent.enabled).map((agent) => [agent.id, agent.lastSeen]))
       try {
+        // 先立即拉取服务端当前状态（界面立刻更新），再下发即时采集并边等边增量刷新
+        await this.refreshNodeTelemetry(true)
+        const knownLastSeen = new Map(this.agents.filter((agent) => agent.enabled).map((agent) => [agent.id, agent.lastSeen]))
         // 只对在线节点下发即时采集，避免离线节点让等待流程走满 10 秒超时
         const onlineIDs = this.agents.filter((agent) => agent.enabled && agent.status === 'online').map((agent) => agent.id)
         const result = await api.collectAllNodes(onlineIDs)
@@ -757,9 +761,9 @@ export const useMeshStore = defineStore('mesh', {
         const previousLastSeen = new Map(targetIDs.map((id) => [id, knownLastSeen.get(id) || 0]))
         const received = await this.waitForCollectedTelemetry(targetIDs, previousLastSeen)
         this.notice = result.created === 0
-          ? '没有可即时采集的在线节点'
+          ? '已获取当前节点状态；没有可即时采集的在线节点'
           : received.expected === 0
-            ? '已向 ' + result.created + ' 个节点发送即时采集请求；当前没有在线节点'
+            ? '已获取当前节点状态；已向 ' + result.created + ' 个节点发送即时采集请求'
             : received.received === received.expected
               ? '已收到 ' + received.received + ' 个在线节点的最新状态，界面已更新'
               : '已收到 ' + received.received + '/' + received.expected + ' 个在线节点的最新状态，其余节点仍在等待回传'
@@ -769,14 +773,16 @@ export const useMeshStore = defineStore('mesh', {
     async collectSelected(ids: string[]) {
       this.error = ''
       if (!ids.length) return false
-      const knownLastSeen = new Map(this.agents.filter((agent) => ids.includes(agent.id) && agent.enabled).map((agent) => [agent.id, agent.lastSeen]))
       try {
+        // 立即拉取当前状态，再下发批量即时采集
+        await this.refreshNodeTelemetry(true)
+        const knownLastSeen = new Map(this.agents.filter((agent) => ids.includes(agent.id) && agent.enabled).map((agent) => [agent.id, agent.lastSeen]))
         const result = await api.collectAllNodes(ids)
         const targetIDs = result.node_ids?.length ? result.node_ids : ids
         const previousLastSeen = new Map(targetIDs.map((id) => [id, knownLastSeen.get(id) || 0]))
         const received = await this.waitForCollectedTelemetry(targetIDs, previousLastSeen)
         this.notice = result.created === 0
-          ? '所选节点均为离线状态，没有下发采集命令'
+          ? '已获取当前节点状态；所选节点均为离线，没有下发采集命令'
           : received.received === received.expected
             ? '已收到 ' + received.received + ' 个所选节点的最新状态，界面已更新'
             : '已收到 ' + received.received + '/' + received.expected + ' 个所选节点的最新状态，其余节点仍在等待回传'
