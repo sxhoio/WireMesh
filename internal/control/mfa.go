@@ -21,10 +21,22 @@ func (a *App) mfaStatus(w http.ResponseWriter, r *http.Request, c claims) {
 	writeJSON(w, http.StatusOK, MFAStatusResponse{Enabled: user.TotpEnabled})
 }
 
+// mfaSetup 生成并暂存新 TOTP 秘密。M-7：要求当前密码复核——会话劫持者
+// 不能再零验证轮换 MFA 秘密接管账号。
 func (a *App) mfaSetup(w http.ResponseWriter, r *http.Request, c claims) {
+	var in struct {
+		Password string `json:"password"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
 	user, err := a.store.GetUser(c.Subject)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.Password)) != nil {
+		writeError(w, http.StatusUnauthorized, "当前密码不正确")
 		return
 	}
 	secret := generateTOTPSecret()
@@ -42,21 +54,28 @@ func (a *App) mfaSetup(w http.ResponseWriter, r *http.Request, c claims) {
 	writeJSON(w, http.StatusOK, map[string]string{"secret": secret, "uri": otpauthURI(secret, user.Email)})
 }
 
+// mfaEnable 启用 MFA。M-7：要求当前密码复核（会话劫持者需先知道密码
+// 才能用自己控制的 OTP 接管账号）。
 func (a *App) mfaEnable(w http.ResponseWriter, r *http.Request, c claims) {
+	var in struct {
+		Password string `json:"password"`
+		OTP      string `json:"otp"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
 	user, err := a.store.GetUser(c.Subject)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.Password)) != nil {
+		writeError(w, http.StatusUnauthorized, "当前密码不正确")
+		return
+	}
 	secretBytes, err := a.box.Decrypt(user.TotpSecret)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "mfa setup required first")
-		return
-	}
-	var in struct {
-		OTP string `json:"otp"`
-	}
-	if !decode(w, r, &in) {
 		return
 	}
 	if !verifyTOTP(string(secretBytes), in.OTP, time.Now()) {

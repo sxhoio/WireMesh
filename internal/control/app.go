@@ -672,6 +672,9 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request, c claims) {
 		return
 	}
 	a.clearChangePasswordFailures(c.Subject, ip)
+	// M-8：改密后吊销该用户其它会话（当前请求的令牌保留）——
+	// 已窃取的其他会话令牌不再有效，缩小令牌重放窗口。
+	a.revokeUserSessionsExcept(c.TenantID, user.ID, requestToken(r))
 	a.auditEvent(c.TenantID, c.Subject, "auth.password.change", "user", user.ID, nil)
 	w.WriteHeader(http.StatusNoContent)
 }

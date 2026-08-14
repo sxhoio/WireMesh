@@ -652,8 +652,11 @@ async function loadMFA() {
 }
 
 async function setupMFA() {
+  // M-7：需当前密码复核（防会话劫持者轮换 MFA 秘密）
+  const password = window.prompt('开启多因素认证需要验证当前密码，请输入密码：', '')
+  if (password === null) return
   try {
-    const result = await api.mfaSetup()
+    const result = await api.mfaSetup(password)
     mfaSecret.value = result.secret
     mfaUri.value = result.uri
     mfaQr.value = await QRCode.toDataURL(result.uri, { width: 240, margin: 1 })
@@ -664,8 +667,10 @@ async function setupMFA() {
 }
 
 async function enableMFA() {
+  const password = window.prompt('请再次输入当前密码确认启用：', '')
+  if (password === null) return
   try {
-    await api.mfaEnable(mfaOtp.value.trim())
+    await api.mfaEnable(password, mfaOtp.value.trim())
     mfaEnabled.value = true
     mfaSecret.value = ''
     mfaUri.value = ''

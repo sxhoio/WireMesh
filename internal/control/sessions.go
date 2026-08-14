@@ -136,10 +136,20 @@ func (a *App) revokeCurrentSession(token, tenant string) {
 
 // revokeUserSessions 吊销某用户的全部会话令牌（停用或删除用户时调用）。
 func (a *App) revokeUserSessions(tenant, userID string) {
+	a.revokeUserSessionsExcept(tenant, userID, "")
+}
+
+// revokeUserSessionsExcept 吊销某用户的会话令牌，但保留 exceptToken（如
+// 改密请求的当前会话，M-8）。exceptToken 为空时吊销全部。
+func (a *App) revokeUserSessionsExcept(tenant, userID, exceptToken string) {
+	exceptHash := ""
+	if exceptToken != "" && !strings.HasPrefix(exceptToken, apiTokenPrefix) {
+		exceptHash = sessionTokenHash(exceptToken)
+	}
 	a.sessionMu.Lock()
 	targets := make([]string, 0)
 	for hash, session := range a.sessions {
-		if session.TenantID == tenant && session.UserID == userID {
+		if session.TenantID == tenant && session.UserID == userID && hash != exceptHash {
 			targets = append(targets, hash)
 			delete(a.sessions, hash)
 		}
