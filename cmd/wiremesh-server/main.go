@@ -127,8 +127,19 @@ func main() {
 	log.Printf("WireMesh control plane listening on %s", address)
 	log.Printf("database driver: %s", databaseDriver)
 	handler := withFrontend(app.Router(), os.Getenv("WIREMESH_WEB_DIR"))
+	// 设置服务级超时：无超时 HTTP 服务在长期运行后可能出现连接悬挂/
+	// 请求堆积（配合 SQLite 单连接），导致闲置后请求 500 或永久挂起。
+	// ReadHeaderTimeout 防慢速连接占用；IdleTimeout 复用空闲连接。
+	server := &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	if certFile != "" && keyFile != "" {
-		server := &http.Server{Addr: address, Handler: handler, TLSConfig: app.AgentTLSConfig()}
+		server.TLSConfig = app.AgentTLSConfig()
 		log.Printf("agent mTLS verification enabled")
 		if err := server.ListenAndServeTLS(certFile, keyFile); err != nil {
 			log.Fatal(err)
@@ -136,7 +147,7 @@ func main() {
 		return
 	}
 	log.Printf("WARNING: HTTP mode enables the development X-Agent-ID adapter; configure TLS for production")
-	if err := http.ListenAndServe(address, handler); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

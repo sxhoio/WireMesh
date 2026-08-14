@@ -539,13 +539,72 @@ func (s *SQLStore) ListTrafficSamples(tenant, node, iface string, since time.Tim
 }
 
 // DeleteTrafficSamplesBefore 删除指定租户早于 before 的流量采样（保留策略，
-// 防心跳高频写入导致的无限增长）。
+// 防心跳高频写入导致的无限增长）。分批小事务（每批 500 行）执行：避免
+// 单一大事务长时间持有 SQLite 写锁，导致并发读请求 busy_timeout 超时
+// 返回 500（闲置后页面刷新失败的根因之一）。
 func (s *SQLStore) DeleteTrafficSamplesBefore(tenant string, before time.Time) (int64, error) {
-	result, err := s.db.Exec(s.query(`DELETE FROM traffic_samples WHERE tenant_id=? AND recorded_at < ?`), tenant, timeText(before))
-	if err != nil {
-		return 0, err
+	const batchSize = 500
+	var deleted int64
+	for {
+		count, err := s.deleteBatch(`traffic_samples`, "tenant_id=? AND recorded_at < ?", tenant, timeText(before))
+		if err != nil {
+			return deleted, err
+		}
+		deleted += count
+		if count < batchSize {
+			return deleted, nil
+		}
 	}
-	return result.RowsAffected()
+}
+
+// deleteBatch 按条件分批删除：先取最多 batchSize 个 id 再按主键删，
+// 循环直到删完。三驱动统一（SQLite 的 DELETE LIMIT 依赖编译扩展，
+// PostgreSQL/MySQL 语法各异，先查后删最可移植）。短事务避免长时间
+// 持有写锁，防止并发读请求 busy_timeout 超时 500。
+func (s *SQLStore) deleteBatch(table, condition string, args ...any) (int64, error) {
+	const batchSize = 500
+	var deleted int64
+	for {
+		ids, err := queryList(s, `SELECT id FROM `+table+` WHERE `+condition+` LIMIT ?`, scanID, append(args, batchSize)...)
+		if err != nil {
+			return deleted, err
+		}
+		if len(ids) == 0 {
+			return deleted, nil
+		}
+		placeholders := make([]string, len(ids))
+		for i := range placeholders {
+			placeholders[i] = "?"
+		}
+		result, err := s.db.Exec(s.query(`DELETE FROM `+table+` WHERE id IN (`+strings.Join(placeholders, ",")+`)`), idsToArgs(ids)...)
+		if err != nil {
+			return deleted, err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return deleted, err
+		}
+		deleted += count
+		if count < batchSize {
+			return deleted, nil
+		}
+	}
+}
+
+func scanID(row scanner) (string, error) {
+	var id string
+	if err := row.Scan(&id); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func idsToArgs(ids []string) []any {
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	return args
 }
 
 func (s *SQLStore) AddPeer(v PeerRelation) error {
@@ -581,11 +640,7 @@ func (s *SQLStore) LatestRevision(tenant, network string) (ConfigRevision, error
 // DeleteRevisionsBefore 删除网络中小于 keepVersion 的历史修订（保留策略：
 // 每次发布都会累积，长期运行需按网络保留最近 N 个版本）。
 func (s *SQLStore) DeleteRevisionsBefore(tenant, network string, keepVersion uint64) (int64, error) {
-	result, err := s.db.Exec(s.query(`DELETE FROM config_revisions WHERE tenant_id=? AND network_id=? AND version < ?`), tenant, network, keepVersion)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
+	return s.deleteBatch(`config_revisions`, `tenant_id=? AND network_id=? AND version < ?`, tenant, network, keepVersion)
 }
 
 func (s *SQLStore) CreateDelivery(v ConfigDelivery) error {

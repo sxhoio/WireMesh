@@ -490,7 +490,9 @@ func normalizeDatabaseConfig(cfg DatabaseConfig, baseDir string) (DatabaseConfig
 			return DatabaseConfig{}, "", fmt.Errorf("create SQLite directory: %w", err)
 		}
 		query := url.Values{}
-		query.Add("_pragma", "busy_timeout(5000)")
+		// busy_timeout 15s：housekeeping 分批清理与前端轮询并发时，
+		// 读请求有更充裕时间等待写锁（原 5s 在大表清理时易超时 → 500）
+		query.Add("_pragma", "busy_timeout(15000)")
 		query.Add("_pragma", "journal_mode(WAL)")
 		query.Add("_pragma", "foreign_keys(1)")
 		// modernc SQLite expects file:C:/path on Windows; file:///C:/path is

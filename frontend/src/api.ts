@@ -144,7 +144,7 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (session.token) headers.set('Authorization', 'Bearer ' + session.token)
   if (init.body) headers.set('Content-Type', 'application/json')
-  const response = await fetch(apiBase + url, { ...init, headers, credentials: 'include' })
+  const response = await fetchWithTimeout(apiBase + url, { ...init, headers, credentials: 'include' })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { error?: string }
     if (response.status === 401) handleUnauthorized(url)
@@ -152,6 +152,19 @@ async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
+}
+
+// 默认请求超时：防止后端闲置/挂起时前端 loading 永久卡住、轮询失效
+const DEFAULT_TIMEOUT_MS = 30_000
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } finally {
+    window.clearTimeout(timer)
+  }
 }
 
 async function requestArray<T>(url: string): Promise<T[]> {

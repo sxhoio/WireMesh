@@ -459,7 +459,10 @@ export const useMeshStore = defineStore('mesh', {
     async refresh() {
       return enqueueNodeLoad(async () => {
       const app = useAppStore()
-      if (!app.authed || this.loading) return
+      if (!app.authed) return
+      // 不再用 this.loading 短路：轮询间隔 30s，若上一次请求因后端挂起/超时
+      // 未完成，loading 会一直为 true 并永久丢弃后续轮询（页面停止刷新）。
+      // 串行队列已保证顺序，超时由 api 层兜底，这里始终执行真实刷新。
       this.loading = true
       this.error = ''
       try {

@@ -4,6 +4,27 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.7`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.7.14-fix（闲置后页面停止刷新 / 请求 500 修复）
+
+用户报告：页面长时间无操作后数据无法获取、不再自动刷新、报错 500。
+三层根因与修复：
+
+- **后端 HTTP 服务无超时**：`http.Server` 补上 ReadHeaderTimeout/
+  ReadTimeout/WriteTimeout/IdleTimeout——防连接悬挂与请求堆积
+- **SQLite 锁竞争 → 500**：housekeeping 每 10 分钟全量删除 30 天前的
+  流量采样（单一大事务持写锁），与前端 30s 轮询读请求竞争，
+  busy_timeout 到期返回 `database is locked` → 500。修复：
+  - `busy_timeout` 5s → 15s
+  - 大表清理改**分批小事务**（每批 500 行，三驱动统一"先查 id 再删"
+    路径，避免 SQLite/PostgreSQL/MySQL 的 DELETE LIMIT 语法差异）
+- **前端轮询被 loading 短路永久丢弃**：`refresh()` 的 `if (this.loading)
+  return` 在请求挂起时永久丢弃后续轮询（页面不再刷新）；移除短路，
+  串行队列保证顺序，超时由 API 层兜底
+- **前端 fetch 无超时**：所有请求加 30s AbortController 超时，防止
+  loading 永久卡住
+- 新增分批删除专项测试（1200 行跨批完整清理 + 近期数据不受影响）
+- go vet/go test/npm run build 全绿
+
 ## v0.7.13（README 重构为 GitHub 标准格式）
 
 - README 按 GitHub 流行规范重构：徽章区（Go/Vue/Vite/CI/License）、
