@@ -87,6 +87,7 @@ func main() {
 		AgentBinaryPath: strings.TrimSpace(os.Getenv("WIREMESH_AGENT_BINARY")),
 		AgentVersion:    strings.TrimSpace(os.Getenv("WIREMESH_AGENT_VERSION")),
 		CAFile:          envOrDefault("WIREMESH_CA_FILE", "wiremesh-ca.json"),
+		SetupToken:      os.Getenv("WIREMESH_SETUP_TOKEN"),
 		// 直接 TLS 监听时要求 Agent 携带有效客户端证书；仅当流量经过
 		// 可信反向代理（由代理注入 X-Agent-ID）时设置 WIREMESH_TRUST_PROXY_AGENT_ID=true
 		RequireAgentClientCert: certFile != "" && keyFile != "" && os.Getenv("WIREMESH_TRUST_PROXY_AGENT_ID") != "true",

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -379,6 +380,13 @@ func validateRemoteConfig(cfg *DatabaseConfig, defaultPort int, defaultSSL strin
 	if cfg.Host == "" || strings.ContainsAny(cfg.Host, "/\\\r\n\t@#?&;% ") {
 		return errors.New("database host is required")
 	}
+	// 拒绝解析结果落在私网/保留/链路本地/组播的主机，防止未初始化窗口的内网探测（SSRF）；
+	// 回环地址（本机数据库）放行；设置 WIREMESH_DATABASE_ALLOW_PRIVATE=1 可显式放开。
+	if !allowPrivateDatabaseHosts() {
+		if err := validateDatabaseHost(cfg.Host); err != nil {
+			return err
+		}
+	}
 	if cfg.Port == 0 {
 		cfg.Port = defaultPort
 	}
@@ -395,6 +403,60 @@ func validateRemoteConfig(cfg *DatabaseConfig, defaultPort int, defaultSSL strin
 		cfg.SSLMode = defaultSSL
 	}
 	return nil
+}
+
+// allowPrivateDatabaseHosts 是否允许数据库指向私网/保留地址（默认关闭，SSRF 防护）。
+func allowPrivateDatabaseHosts() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("WIREMESH_DATABASE_ALLOW_PRIVATE")), "1")
+}
+
+// validateDatabaseHost 校验数据库主机：IP 字面量直接判定，域名解析后判定；
+// 回环（本机数据库）放行，其余私网/保留/链路本地/组播地址拒绝。
+func validateDatabaseHost(host string) error {
+	trimmed := strings.TrimSpace(host)
+	if strings.EqualFold(trimmed, "localhost") {
+		return nil
+	}
+	if ip := net.ParseIP(trimmed); ip != nil {
+		if ip.IsLoopback() {
+			return nil
+		}
+		if isUnsafeDatabaseIP(ip) {
+			return errors.New("database host must not be a private, reserved, or link-local address")
+		}
+		return nil
+	}
+	ips, err := net.LookupIP(trimmed)
+	if err != nil {
+		return errors.New("database host could not be resolved")
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() {
+			continue
+		}
+		if isUnsafeDatabaseIP(ip) {
+			return errors.New("database host must not resolve to a private, reserved, or link-local address")
+		}
+	}
+	return nil
+}
+
+// isUnsafeDatabaseIP 判定不可外呼的地址：与通知渠道的私网判定一致，并补齐
+// CGNAT/benchmark/文档网络等常见保留段。
+func isUnsafeDatabaseIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	for _, cidr := range []string{
+		"100.64.0.0/10", "198.18.0.0/15", "192.0.0.0/24", "192.0.2.0/24",
+		"198.51.100.0/24", "203.0.113.0/24", "240.0.0.0/4", "169.254.0.0/16",
+	} {
+		_, network, _ := net.ParseCIDR(cidr)
+		if network != nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func oneOf(value string, values ...string) bool {
@@ -445,6 +507,15 @@ func (a *App) testDatabase(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "数据库由服务端环境变量管理")
 		return
 	}
+	ip := clientIP(r)
+	if !a.checkSetupAllowed(ip) {
+		writeError(w, http.StatusTooManyRequests, "请求过于频繁，请稍后再试")
+		return
+	}
+	a.recordSetupAttempt(ip)
+	if !a.requireSetupToken(w, r) {
+		return
+	}
 	var cfg DatabaseConfig
 	if !decode(w, r, &cfg) {
 		return
@@ -457,7 +528,9 @@ func (a *App) testDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.database.Test(r.Context(), cfg); err != nil {
-		writeError(w, http.StatusBadRequest, "数据库连接失败："+err.Error())
+		// 细节写入服务端日志（供排障），响应保持通用，避免驱动差异被用作内网探测 oracle
+		log.Printf("database connectivity test failed: %v", err)
+		writeError(w, http.StatusBadRequest, "数据库连接失败，请检查主机、端口、凭据与网络配置")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"connected": true})
@@ -466,6 +539,15 @@ func (a *App) testDatabase(w http.ResponseWriter, r *http.Request) {
 func (a *App) configureDatabase(w http.ResponseWriter, r *http.Request) {
 	if a.database == nil {
 		writeError(w, http.StatusConflict, "数据库由服务端环境变量管理")
+		return
+	}
+	ip := clientIP(r)
+	if !a.checkSetupAllowed(ip) {
+		writeError(w, http.StatusTooManyRequests, "请求过于频繁，请稍后再试")
+		return
+	}
+	a.recordSetupAttempt(ip)
+	if !a.requireSetupToken(w, r) {
 		return
 	}
 	var cfg DatabaseConfig
@@ -481,5 +563,6 @@ func (a *App) configureDatabase(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	a.clearSetupAttempts(ip)
 	writeJSON(w, http.StatusOK, map[string]any{"configured": status.Configured, "driver": status.Driver, "initialized": initialized})
 }

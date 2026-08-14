@@ -46,7 +46,9 @@ go run ./cmd/wiremesh-server
 
 `WIREMESH_DATABASE_DRIVER` accepts `sqlite`, `mysql`, or `postgres`. When `WIREMESH_DATABASE_DRIVER` / `WIREMESH_DATABASE_DSN` are omitted, the first-run web wizard lets an administrator choose SQLite, MySQL, or PostgreSQL, tests the connection, creates the schema, and stores the encrypted connection configuration in `wiremesh-database.json`. Set `WIREMESH_DATABASE_CONFIG` to change that bootstrap file path. Environment variables continue to take precedence and disable database changes from the web wizard.
 
-WireMesh does not seed an administrator. `GET /api/v1/setup/status` reports whether any user exists, and the onboarding page calls the one-time `POST /api/v1/setup` endpoint to create the initial tenant and administrator. The endpoint returns `409 Conflict` after the first user exists.
+> **Security**: the first-run wizard endpoints (`/api/v1/setup*`) are unauthenticated by design. If the instance may be reachable before initialization completes, set `WIREMESH_SETUP_TOKEN` — the wizard then requires the token in the `X-Setup-Token` header for database configuration and initial-admin creation. The wizard also refuses to connect to private/reserved/link-local database hosts (loopback allowed); set `WIREMESH_DATABASE_ALLOW_PRIVATE=1` only if you must point at an internal database.
+
+WireMesh does not seed an administrator. `GET /api/v1/setup/status` reports whether any user exists (plus `setup_token_required`), and the onboarding page calls the one-time `POST /api/v1/setup` endpoint to create the initial tenant and administrator. The endpoint returns `409 Conflict` after the first user exists.
 
 ## Docker
 

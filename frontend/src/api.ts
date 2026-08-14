@@ -90,6 +90,16 @@ export interface SetupStatus {
   database_configured: boolean
   database_configurable?: boolean
   database_driver?: DatabaseDriver
+  setup_token_required?: boolean
+}
+
+// 初始化口令：仅在未初始化向导流程中使用（后端启用 WIREMESH_SETUP_TOKEN 时必填），
+// 仅存内存，不落任何持久化存储。
+let setupToken = ''
+
+export const setupAuth = {
+  set token(value: string) { setupToken = value.trim() },
+  clear() { setupToken = '' },
 }
 
 // 认证 token 仅保留在内存中（不写入 localStorage），浏览器认证依赖后端下发的
@@ -138,6 +148,12 @@ function authHeaders(extra?: HeadersInit): Headers {
   return headers
 }
 
+/** 初始化接口的 X-Setup-Token 头（后端启用 WIREMESH_SETUP_TOKEN 时必填）。 */
+function setupTokenHeader(): HeadersInit | undefined {
+  if (!setupToken) return undefined
+  return { 'X-Setup-Token': setupToken }
+}
+
 async function downloadBackupFile(): Promise<Blob> {
   const response = await fetch(apiBase + '/api/v1/settings/backup', { headers: authHeaders(), credentials: 'include' })
   if (!response.ok) {
@@ -165,9 +181,9 @@ async function uploadRestoreFile(file: File): Promise<void> {
 export const api = {
   setupStatus: () => request<SetupStatus>('/api/v1/setup/status'),
   databaseStatus: () => request<{ configured: boolean; driver?: DatabaseDriver }>('/api/v1/setup/database'),
-  testDatabase: (payload: DatabaseSetupConfig) => request<{ connected: boolean }>('/api/v1/setup/database/test', { method: 'POST', body: JSON.stringify(payload) }),
-  configureDatabase: (payload: DatabaseSetupConfig) => request<{ configured: boolean; driver: DatabaseDriver; initialized: boolean }>('/api/v1/setup/database', { method: 'POST', body: JSON.stringify(payload) }),
-  setup: (payload: { email: string; name: string; password: string }) => request<{ user: ApiUser }>('/api/v1/setup', { method: 'POST', body: JSON.stringify(payload) }),
+  testDatabase: (payload: DatabaseSetupConfig) => request<{ connected: boolean }>('/api/v1/setup/database/test', { method: 'POST', body: JSON.stringify(payload), headers: setupTokenHeader() }),
+  configureDatabase: (payload: DatabaseSetupConfig) => request<{ configured: boolean; driver: DatabaseDriver; initialized: boolean }>('/api/v1/setup/database', { method: 'POST', body: JSON.stringify(payload), headers: setupTokenHeader() }),
+  setup: (payload: { email: string; name: string; password: string }) => request<{ user: ApiUser }>('/api/v1/setup', { method: 'POST', body: JSON.stringify(payload), headers: setupTokenHeader() }),
   login: (email: string, password: string, otp?: string) => request<{ token: string; user: ApiUser }>('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ email, password, otp }) }),
   logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
   me: () => request<ApiUser>('/api/v1/auth/me'),

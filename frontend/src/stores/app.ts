@@ -20,6 +20,7 @@ export const useAppStore = defineStore('app', {
     databaseConfigured: false,
     databaseConfigurable: true,
     databaseDriver: '' as DatabaseDriver | '',
+    setupTokenRequired: false,
     loading: false,
     error: '',
     user: null as ApiUser | null,
@@ -39,6 +40,7 @@ export const useAppStore = defineStore('app', {
         this.databaseConfigured = status.database_configured ?? true
         this.databaseConfigurable = status.database_configurable ?? true
         this.databaseDriver = status.database_driver || ''
+        this.setupTokenRequired = status.setup_token_required ?? false
         if (!status.initialized) {
           session.clear()
           this.user = null

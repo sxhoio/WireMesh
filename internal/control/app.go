@@ -4,6 +4,7 @@ import (
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -33,6 +34,7 @@ import (
 
 type Config struct {
 	MasterKey              string
+	SetupToken             string
 	Store                  Store
 	Database               *DatabaseManager
 	DatabaseDriver         string
@@ -65,6 +67,9 @@ type App struct {
 	requireAgentClientCert bool
 	loginMu                sync.Mutex
 	loginFailures          map[string][]time.Time
+	setupMu                sync.Mutex
+	setupAttempts          map[string][]time.Time
+	setupToken             string
 }
 
 func NewApp(cfg Config) (*App, error) {
@@ -94,6 +99,8 @@ func NewApp(cfg Config) (*App, error) {
 		agentVersion:           strings.TrimSpace(cfg.AgentVersion),
 		requireAgentClientCert: cfg.RequireAgentClientCert,
 		loginFailures:          map[string][]time.Time{},
+		setupAttempts:          map[string][]time.Time{},
+		setupToken:             strings.TrimSpace(cfg.SetupToken),
 	}
 	app.geoLookup = app.lookupGeoIPLocation
 	app.auth = newAuthenticator(store, cfg.MasterKey+"-auth")
@@ -237,10 +244,20 @@ func (a *App) setupStatus(w http.ResponseWriter, r *http.Request) {
 		"database_configured":   status.Configured,
 		"database_driver":       status.Driver,
 		"database_configurable": a.database != nil,
+		"setup_token_required":  a.setupToken != "",
 	})
 }
 
 func (a *App) setup(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !a.checkSetupAllowed(ip) {
+		writeError(w, http.StatusTooManyRequests, "请求过于频繁，请稍后再试")
+		return
+	}
+	a.recordSetupAttempt(ip)
+	if !a.requireSetupToken(w, r) {
+		return
+	}
 	if a.database != nil && !a.database.Status().Configured {
 		writeError(w, http.StatusConflict, "请先配置数据库再创建管理员")
 		return
@@ -300,6 +317,7 @@ func (a *App) setup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "创建管理员失败")
 		return
 	}
+	a.clearSetupAttempts(ip)
 	writeJSON(w, http.StatusCreated, map[string]any{"user": publicUser(user)})
 }
 func (a *App) withUser(required Role, next func(http.ResponseWriter, *http.Request, claims)) http.HandlerFunc {
@@ -379,6 +397,54 @@ func (a *App) clearLoginFailures(email, ip string) {
 	a.loginMu.Lock()
 	defer a.loginMu.Unlock()
 	delete(a.loginFailures, strings.ToLower(strings.TrimSpace(email))+"\x00"+ip)
+}
+
+// ---- 初始化接口防护（setup / configureDatabase / testDatabase）----
+
+const (
+	setupMaxAttempts = 5
+	setupWindow      = time.Minute
+)
+
+// requireSetupToken 校验初始化接口令牌（constant-time 比较）。
+// 未配置 WIREMESH_SETUP_TOKEN 时放行（兼容单机快速体验），配置后所有初始化接口必须携带。
+func (a *App) requireSetupToken(w http.ResponseWriter, r *http.Request) bool {
+	if a.setupToken == "" {
+		return true
+	}
+	if !hmac.Equal([]byte(r.Header.Get("X-Setup-Token")), []byte(a.setupToken)) {
+		writeError(w, http.StatusUnauthorized, "初始化口令无效")
+		return false
+	}
+	return true
+}
+
+// checkSetupAllowed 初始化接口按 IP 限流（5 次/分钟），未初始化窗口同样受限，
+// 防止未认证探测与初始化口令爆破。
+func (a *App) checkSetupAllowed(ip string) bool {
+	a.setupMu.Lock()
+	defer a.setupMu.Unlock()
+	now := time.Now()
+	kept := make([]time.Time, 0, len(a.setupAttempts[ip]))
+	for _, at := range a.setupAttempts[ip] {
+		if now.Sub(at) <= setupWindow {
+			kept = append(kept, at)
+		}
+	}
+	a.setupAttempts[ip] = kept
+	return len(kept) < setupMaxAttempts
+}
+
+func (a *App) recordSetupAttempt(ip string) {
+	a.setupMu.Lock()
+	defer a.setupMu.Unlock()
+	a.setupAttempts[ip] = append(a.setupAttempts[ip], time.Now())
+}
+
+func (a *App) clearSetupAttempts(ip string) {
+	a.setupMu.Lock()
+	defer a.setupMu.Unlock()
+	delete(a.setupAttempts, ip)
 }
 
 func (a *App) login(w http.ResponseWriter, r *http.Request) {

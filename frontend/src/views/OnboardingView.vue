@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
-import type { DatabaseDriver, DatabaseSetupConfig } from '../api'
+import { setupAuth, type DatabaseDriver, type DatabaseSetupConfig } from '../api'
 
 const router = useRouter()
 const app = useAppStore()
+
+const setupToken = ref('')
+
+/** 调用初始化接口前把向导口令同步到 api 模块（仅内存，不持久化） */
+function syncSetupToken() {
+  setupAuth.token = setupToken.value
+}
+onUnmounted(() => setupAuth.clear())
 
 const step = ref(0)
 const steps = ['欢迎', '数据库', '管理员账号', '确认配置', '完成']
@@ -108,10 +116,12 @@ function databasePayload(): DatabaseSetupConfig {
 
 async function testConnection() {
   if (!validateDatabase()) return
+  syncSetupToken()
   tested.value = await app.testDatabase(databasePayload())
 }
 
 async function next() {
+  syncSetupToken()
   if (step.value === 1 && app.databaseConfigurable && (!databaseReady.value || databaseDirty.value)) {
     if (!validateDatabase()) return
     if (!tested.value && !await app.testDatabase(databasePayload())) return
@@ -173,6 +183,11 @@ function finish() { router.replace({ name: 'login' }) }
             <div class="rounded-xl bg-ink-800/70 p-4 ring-1 ring-ink-600"><p class="text-sm font-semibold text-emerald-300">选择存储</p><p class="mt-1 text-xs leading-relaxed text-slate-500">支持本地 SQLite、MySQL 与 PostgreSQL</p></div>
             <div class="rounded-xl bg-ink-800/70 p-4 ring-1 ring-ink-600"><p class="text-sm font-semibold text-cyan-300">连接验证</p><p class="mt-1 text-xs leading-relaxed text-slate-500">保存前测试连接，避免错误配置</p></div>
             <div class="rounded-xl bg-ink-800/70 p-4 ring-1 ring-ink-600"><p class="text-sm font-semibold text-violet-300">自动建表</p><p class="mt-1 text-xs leading-relaxed text-slate-500">连接成功后自动创建 WireMesh 所需表</p></div>
+          </div>
+          <div v-if="app.setupTokenRequired" class="mt-6 rounded-xl bg-amber-500/10 p-4 text-left ring-1 ring-amber-500/30">
+            <label class="label">初始化口令</label>
+            <input v-model="setupToken" type="password" class="input font-mono" placeholder="服务端配置的 WIREMESH_SETUP_TOKEN" autocomplete="off" />
+            <p class="mt-1.5 text-[11px] leading-relaxed text-amber-300">服务端已启用初始化口令保护，向导的数据库配置与管理员创建请求必须携带该口令；它仅保存在当前页面内存中。</p>
           </div>
         </div>
 
