@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -211,27 +212,86 @@ func (m *DatabaseManager) BackupSQLite(targetPath string) error {
 }
 
 // RestoreSQLite 用上传的 SQLite 备份文件替换当前数据库并热切换。
+// 流程：校验备份 → 复制到持久化路径（sqlitePath）同目录临时文件 →
+// 原子 rename 覆盖 → 重新打开并切换。活动库始终指向持久化路径，
+// 临时文件可安全删除，恢复在进程重启后仍然生效。
 func (m *DatabaseManager) RestoreSQLite(ctx context.Context, replacementPath string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.driver != "sqlite" || m.active == nil || m.sqlitePath == "" {
 		return errors.New("restore is only supported for a configured SQLite database")
 	}
-	store, err := OpenSQLStore("sqlite", "file:"+strings.ReplaceAll(filepath.ToSlash(replacementPath), "#", "%23"))
+	// 1. 校验备份：合法 SQLite、含用户数据、通过完整性检查
+	probe, err := OpenSQLStore("sqlite", "file:"+escapeSQLitePath(replacementPath))
 	if err != nil {
 		return fmt.Errorf("invalid SQLite backup: %w", err)
 	}
-	hasUsers, err := store.HasUsers()
-	if err != nil || !hasUsers {
-		store.Close()
+	hasUsers, userErr := probe.HasUsers()
+	var integrity string
+	_ = probe.db.QueryRow(`PRAGMA quick_check`).Scan(&integrity)
+	probe.Close()
+	if userErr != nil || !hasUsers {
 		return errors.New("backup file contains no users")
 	}
+	if integrity != "" && !strings.EqualFold(strings.TrimSpace(integrity), "ok") {
+		return errors.New("backup file failed SQLite integrity check")
+	}
+	// 2. 复制到持久化路径同目录的临时文件（原子 rename 要求同文件系统）
+	dir := filepath.Dir(m.sqlitePath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create database directory: %w", err)
+	}
+	temp, err := os.CreateTemp(dir, ".wiremesh-restore-*.db")
+	if err != nil {
+		return fmt.Errorf("create restore temp file: %w", err)
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	src, err := os.Open(replacementPath)
+	if err != nil {
+		temp.Close()
+		return fmt.Errorf("open backup file: %w", err)
+	}
+	_, copyErr := io.Copy(temp, src)
+	src.Close()
+	if copyErr != nil {
+		temp.Close()
+		return fmt.Errorf("copy backup file: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tempName, 0600); err != nil {
+		return err
+	}
+	// 3. 关闭活动库以释放文件句柄（Windows 上 rename 要求目标未被占用），
+	//    再原子替换并重新打开。rename 失败时尝试重开旧库自愈，尽量保持服务可用。
 	previous := m.active
-	m.active = store
-	m.retired = append(m.retired, previous)
-	m.store.Switch(store)
 	_ = previous.Close()
+	if err := os.Rename(tempName, m.sqlitePath); err != nil {
+		if reopened, openErr := OpenSQLStore("sqlite", "file:"+escapeSQLitePath(m.sqlitePath)); openErr == nil {
+			m.active = reopened
+			m.store.Switch(reopened)
+		}
+		return fmt.Errorf("commit restore: %w", err)
+	}
+	replacement, err := OpenSQLStore("sqlite", "file:"+escapeSQLitePath(m.sqlitePath))
+	if err != nil {
+		return fmt.Errorf("reopen restored database: %w", err)
+	}
+	m.active = replacement
+	m.retired = append(m.retired, previous)
+	m.store.Switch(replacement)
 	return nil
+}
+
+// escapeSQLitePath 转义 SQLite DSN 中的特殊字符。
+func escapeSQLitePath(path string) string {
+	return strings.ReplaceAll(filepath.ToSlash(path), "#", "%23")
 }
 
 func (m *DatabaseManager) save(cfg DatabaseConfig) error {

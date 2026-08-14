@@ -61,7 +61,16 @@ func main() {
 	reportInterval := flag.Duration("report-interval", 10*time.Second, "heartbeat interval")
 	probeInterval := flag.Duration("probe-interval", 15*time.Second, "configuration polling interval")
 	useMTLS := flag.Bool("mtls", false, "use the enrolled client certificate for HTTPS")
+	updatePublicKeyText := flag.String("update-public-key", "", "PEM ECDSA public key to verify signed update manifests (recommended for production)")
 	flag.Parse()
+
+	if strings.TrimSpace(*updatePublicKeyText) != "" {
+		key, keyErr := parseUpdatePublicKeyPEM(*updatePublicKeyText)
+		if keyErr != nil {
+			log.Fatalf("parse update public key: %v", keyErr)
+		}
+		updatePublicKey = key
+	}
 
 	if *reportInterval < time.Second || *probeInterval < time.Second {
 		log.Fatal("report and probe intervals must be at least one second")

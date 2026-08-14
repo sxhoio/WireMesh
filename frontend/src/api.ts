@@ -70,7 +70,7 @@ export interface ApiAlertEvent { id: string; rule_id: string; rule_name: string;
 export interface ApiAccessResource { id: string; network_id: string; name: string; gateway_node_id: string; target: string; port?: number; protocol?: string; description?: string; created_at: string }
 export interface ApiAccessPolicy { id: string; network_id: string; name: string; source_label?: string; source_node_ids: string[]; resource_ids: string[]; enabled: boolean; created_at: string; updated_at: string }
 export interface ApiDNSRecord { id: string; network_id: string; name: string; address: string; description?: string; created_at: string }
-export interface ApiAPIToken { id: string; name: string; expires_at?: string | null; last_used_at?: string; created_at: string }
+export interface ApiAPIToken { id: string; name: string; created_by?: string; expires_at?: string | null; last_used_at?: string; created_at: string }
 export interface ApiEgressConfig { network_id: string; egress_node_id: string; cidrs: string[]; updated_at: string }
 export interface ApiUserSession { id: string; user_id: string; user_name: string; user_agent: string; created_at: string; last_seen_at: string; current: boolean }
 

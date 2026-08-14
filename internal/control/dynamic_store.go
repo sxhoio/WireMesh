@@ -255,6 +255,9 @@ func (s *SwitchableStore) GetAPITokenByHash(hash string) (APIToken, error) {
 func (s *SwitchableStore) DeleteAPIToken(tenant, id string) error {
 	return s.store().DeleteAPIToken(tenant, id)
 }
+func (s *SwitchableStore) DeleteAPITokensByCreator(tenant, userID string) error {
+	return s.store().DeleteAPITokensByCreator(tenant, userID)
+}
 func (s *SwitchableStore) ListAPITokens(tenant string) ([]APIToken, error) {
 	return s.store().ListAPITokens(tenant)
 }

@@ -129,6 +129,9 @@ type AgentUpdateManifest struct {
 	MinAgentVersion   string `json:"min_agent_version,omitempty"`
 	CurrentCompatible bool   `json:"current_compatible"`
 	Error             string `json:"error,omitempty"`
+	// Signature 是服务端对清单关键字段的 ECDSA 签名（base64），供 Agent 端
+	// 用配置的更新公钥离线验证，防止仅凭同信道哈希被篡改。
+	Signature string `json:"signature,omitempty"`
 }
 
 type AgentLocation struct {

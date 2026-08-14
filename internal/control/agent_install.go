@@ -142,12 +142,21 @@ HEADER_FILE="$(mktemp)"
 trap 'rm -f "$TMP_FILE" "$HEADER_FILE"' EXIT
 curl -fL -D "$HEADER_FILE" "$SERVER/agent/download?os=$OS&arch=$ARCH" -o "$TMP_FILE"
 EXPECTED_SHA256="$(awk 'tolower($1)=="x-wiremesh-agent-sha256:"{gsub("\r","",$2); print $2}' "$HEADER_FILE" | tail -n 1)"
-if [ -n "$EXPECTED_SHA256" ] && command -v sha256sum >/dev/null 2>&1; then
+if [ -z "$EXPECTED_SHA256" ]; then
+  echo "未获取到 Agent 二进制的 SHA-256 期望值，拒绝安装（请确保使用 HTTPS 且响应头完整）" >&2
+  exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
   ACTUAL_SHA256="$(sha256sum "$TMP_FILE" | awk '{print $1}')"
-  if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-    echo "Agent 二进制校验失败，已中止安装" >&2
-    exit 1
-  fi
+elif command -v openssl >/dev/null 2>&1; then
+  ACTUAL_SHA256="$(openssl dgst -sha256 "$TMP_FILE" | awk '{print $NF}')"
+else
+  echo "缺少 sha256sum 与 openssl，无法校验 Agent 二进制完整性，拒绝安装" >&2
+  exit 1
+fi
+if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+  echo "Agent 二进制校验失败，已中止安装" >&2
+  exit 1
 fi
 install -m 0755 "$TMP_FILE" /usr/local/bin/wiremesh-agent
 
@@ -381,11 +390,19 @@ func (a *App) agentUpdateManifest(r *http.Request, requestedOS, requestedArch, c
 	version := a.currentAgentVersion()
 	minVersion := defaultAgentUpdateMinVersion
 	compatible := currentVersion == "" || compareAgentVersions(currentVersion, minVersion) >= 0 || !looksSemanticVersion(minVersion)
-	return AgentUpdateManifest{
+	manifest := AgentUpdateManifest{
 		Available: true, Version: version, OS: requestedOS, Arch: requestedArch, Size: info.Size(), SHA256: sha,
 		DownloadURL: agentDownloadURL(r, requestedOS, requestedArch, sha), MinAgentVersion: minVersion,
 		CurrentCompatible: compatible,
-	}, nil
+	}
+	if a.updateSigningKey != nil {
+		signature, signErr := signUpdateManifest(a.updateSigningKey, manifest)
+		if signErr != nil {
+			return AgentUpdateManifest{}, fmt.Errorf("sign update manifest: %w", signErr)
+		}
+		manifest.Signature = signature
+	}
+	return manifest, nil
 }
 
 func (a *App) agentBinaryFor(requestedOS, requestedArch string) (string, error) {

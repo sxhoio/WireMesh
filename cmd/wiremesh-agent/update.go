@@ -2,13 +2,19 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,6 +33,60 @@ const (
 )
 
 var errAgentUpdateHandedOff = errors.New("agent update handed off to helper")
+
+// updatePublicKey 由 --update-public-key 提供；配置后更新清单必须携带有效签名，
+// 否则拒绝更新（防止仅依赖同信道哈希被 MITM 篡改）。
+var updatePublicKey *ecdsa.PublicKey
+
+// parseUpdatePublicKeyPEM 解析 PEM 编码的 ECDSA P-256 公钥。
+func parseUpdatePublicKeyPEM(pemText string) (*ecdsa.PublicKey, error) {
+	block, _ := pem.Decode([]byte(pemText))
+	if block == nil {
+		return nil, errors.New("invalid PEM block")
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	key, ok := parsed.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, errors.New("update public key must be an ECDSA key")
+	}
+	return key, nil
+}
+
+// verifyUpdateManifestSignature 用配置的公钥验证清单签名（与服务端
+// signUpdateManifest 使用同一规范 JSON 载荷）。
+func verifyUpdateManifestSignature(public *ecdsa.PublicKey, manifest agentUpdateManifest) error {
+	if strings.TrimSpace(manifest.Signature) == "" {
+		return errors.New("update manifest is missing a signature")
+	}
+	raw, err := base64.StdEncoding.DecodeString(manifest.Signature)
+	if err != nil || len(raw) != 64 {
+		return errors.New("update manifest signature is malformed")
+	}
+	payload, err := json.Marshal(struct {
+		Version         string `json:"version"`
+		OS              string `json:"os"`
+		Arch            string `json:"arch"`
+		Size            int64  `json:"size"`
+		SHA256          string `json:"sha256"`
+		MinAgentVersion string `json:"min_agent_version"`
+	}{
+		Version: manifest.Version, OS: manifest.OS, Arch: manifest.Arch,
+		Size: manifest.Size, SHA256: manifest.SHA256, MinAgentVersion: manifest.MinAgentVersion,
+	})
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(payload)
+	r := new(big.Int).SetBytes(raw[:32])
+	s := new(big.Int).SetBytes(raw[32:])
+	if !ecdsa.Verify(public, digest[:], r, s) {
+		return errors.New("update manifest signature verification failed")
+	}
+	return nil
+}
 
 type agentUpdateManifest = wireproto.AgentUpdateManifest
 
@@ -56,6 +116,12 @@ func performAgentUpdate(ctx context.Context, client agentClient, statePath, stat
 	}
 	if manifest.SHA256 == "" || manifest.Size <= 0 {
 		return "", errors.New("server returned an incomplete update manifest")
+	}
+	// 配置了更新公钥时，清单必须携带有效签名（fail-closed）
+	if updatePublicKey != nil {
+		if err := verifyUpdateManifestSignature(updatePublicKey, manifest); err != nil {
+			return "更新清单签名校验失败", err
+		}
 	}
 	updateDir := filepath.Join(stateDir, "update")
 	if err := os.MkdirAll(updateDir, 0o700); err != nil {

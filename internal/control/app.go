@@ -44,6 +44,7 @@ type Config struct {
 	RequireAgentClientCert bool
 	TrustProxyAgentID      bool
 	AgentInsecureHTTP      bool
+	UpdateSigningKey       string
 }
 type App struct {
 	store                  Store
@@ -69,6 +70,7 @@ type App struct {
 	requireAgentClientCert bool
 	trustProxyAgentID      bool
 	agentInsecureHTTP      bool
+	updateSigningKey       *ecdsa.PrivateKey
 	loginMu                sync.Mutex
 	loginFailures          map[string][]time.Time
 	setupMu                sync.Mutex
@@ -107,6 +109,13 @@ func NewApp(cfg Config) (*App, error) {
 		loginFailures:          map[string][]time.Time{},
 		setupAttempts:          map[string][]time.Time{},
 		setupToken:             strings.TrimSpace(cfg.SetupToken),
+	}
+	if strings.TrimSpace(cfg.UpdateSigningKey) != "" {
+		key, parseErr := parseECDSAPrivateKeyPEM(cfg.UpdateSigningKey)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse update signing key: %w", parseErr)
+		}
+		app.updateSigningKey = key
 	}
 	app.geoLookup = app.lookupGeoIPLocation
 	app.auth = newAuthenticator(store, cfg.MasterKey+"-auth")

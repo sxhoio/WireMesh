@@ -1279,7 +1279,7 @@ onUnmounted(() => { if (savedTimer) window.clearTimeout(savedTimer) })
           <div v-for="token in apiTokens" :key="token.id" class="flex items-center gap-3 rounded-xl bg-ink-800/60 px-4 py-3 ring-1 ring-ink-600">
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm font-medium text-slate-200">{{ token.name }}</p>
-              <p class="text-[11px] text-slate-500">创建于 {{ fmtDateTime(Date.parse(token.created_at)) }}<span v-if="token.last_used_at"> · 最近使用 {{ ago(Date.parse(token.last_used_at)) }}</span><span v-else> · 从未使用</span><span v-if="token.expires_at" class="text-amber-400"> · 有效期至 {{ fmtDateTime(Date.parse(token.expires_at)) }}</span></p>
+              <p class="text-[11px] text-slate-500">创建于 {{ fmtDateTime(Date.parse(token.created_at)) }}<span v-if="token.created_by"> · 创建者 {{ mesh.users.find((u) => u.id === token.created_by)?.name || token.created_by }}</span><span v-if="token.last_used_at"> · 最近使用 {{ ago(Date.parse(token.last_used_at)) }}</span><span v-else> · 从未使用</span><span v-if="token.expires_at" class="text-amber-400"> · 有效期至 {{ fmtDateTime(Date.parse(token.expires_at)) }}</span></p>
             </div>
             <button class="chip bg-red-500/10 text-red-300 ring-1 ring-red-500/30" :disabled="!app.isAdmin" @click="removeAPIToken(token.id)">撤销</button>
           </div>

@@ -114,6 +114,8 @@ func (a *App) deleteUser(w http.ResponseWriter, r *http.Request, c claims) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	// 级联吊销该用户创建的全部 API 令牌，避免删号后遗留管理员权限的长期凭据
+	_ = a.store.DeleteAPITokensByCreator(c.TenantID, id)
 	a.revokeUserSessions(c.TenantID, id)
 	a.auditEvent(c.TenantID, c.Subject, "user.delete", "user", id, map[string]string{"email": current.Email})
 	w.WriteHeader(http.StatusNoContent)

@@ -371,6 +371,7 @@ type APIToken struct {
 	ID         string     `json:"id"`
 	TenantID   string     `json:"-"`
 	Name       string     `json:"name"`
+	CreatedBy  string     `json:"created_by,omitempty"`
 	TokenHash  string     `json:"-"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	LastUsedAt time.Time  `json:"last_used_at,omitempty"`

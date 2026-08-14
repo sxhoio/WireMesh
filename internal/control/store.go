@@ -105,6 +105,7 @@ type Store interface {
 	CreateAPIToken(APIToken) error
 	GetAPITokenByHash(string) (APIToken, error)
 	DeleteAPIToken(string, string) error
+	DeleteAPITokensByCreator(string, string) error
 	ListAPITokens(string) ([]APIToken, error)
 	UpdateAPITokenLastUsed(string, time.Time) error
 	GetEgressConfig(string, string) (EgressConfig, error)
@@ -843,6 +844,17 @@ func (s *MemoryStore) DeleteAPIToken(tenant, id string) error {
 	}
 	delete(s.apiTokens, id)
 	delete(s.apiTokenByHash, v.TokenHash)
+	return nil
+}
+func (s *MemoryStore) DeleteAPITokensByCreator(tenant, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, v := range s.apiTokens {
+		if v.TenantID == tenant && v.CreatedBy == userID {
+			delete(s.apiTokens, id)
+			delete(s.apiTokenByHash, v.TokenHash)
+		}
+	}
 	return nil
 }
 func (s *MemoryStore) ListAPITokens(tenant string) ([]APIToken, error) {

@@ -95,6 +95,9 @@ func main() {
 		// 纯 HTTP 模式下 Agent 端点默认拒绝（X-Agent-ID 可伪造窃取私钥）；
 		// 仅本地开发显式开启 WIREMESH_AGENT_INSECURE_HTTP=1
 		AgentInsecureHTTP: os.Getenv("WIREMESH_AGENT_INSECURE_HTTP") == "1",
+		// 可选：更新清单签名私钥（PEM ECDSA P-256），配置后清单携带签名，
+		// Agent 端可用 --update-public-key 离线验证
+		UpdateSigningKey: os.Getenv("WIREMESH_UPDATE_SIGNING_KEY"),
 	})
 	if err != nil {
 		log.Fatal(err)

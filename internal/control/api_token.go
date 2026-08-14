@@ -41,7 +41,7 @@ func (a *App) apiTokens(w http.ResponseWriter, r *http.Request, c claims) {
 	hash := sha256.Sum256([]byte(plaintext))
 	now := time.Now().UTC()
 	token := APIToken{
-		ID: newID("apitok"), TenantID: c.TenantID, Name: in.Name,
+		ID: newID("apitok"), TenantID: c.TenantID, Name: in.Name, CreatedBy: c.Subject,
 		TokenHash: hex.EncodeToString(hash[:]), CreatedAt: now,
 	}
 	if in.TTLDays > 0 {

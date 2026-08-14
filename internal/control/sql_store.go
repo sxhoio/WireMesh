@@ -112,7 +112,10 @@ func (s *SQLStore) migrate(ctx context.Context) error {
 	if err := s.ensureNodeAddressManualColumn(ctx); err != nil {
 		return err
 	}
-	return s.ensureUserActiveColumn(ctx)
+	if err := s.ensureUserActiveColumn(ctx); err != nil {
+		return err
+	}
+	return s.ensureAPITokenCreatedByColumn(ctx)
 }
 
 func (s *SQLStore) ensureNodeAddressManualColumn(ctx context.Context) error {
@@ -132,6 +135,16 @@ func (s *SQLStore) ensureUserActiveColumn(ctx context.Context) error {
 		schemaColumn{name: "active", definition: "BOOLEAN NOT NULL DEFAULT TRUE", mysqlDefinition: "BOOLEAN NOT NULL DEFAULT TRUE"},
 		"inspect users schema",
 		"add users active column",
+	)
+}
+
+func (s *SQLStore) ensureAPITokenCreatedByColumn(ctx context.Context) error {
+	return s.ensureSchemaColumn(
+		ctx,
+		"api_tokens",
+		schemaColumn{name: "created_by", definition: "TEXT NOT NULL DEFAULT ''", mysqlDefinition: "VARCHAR(191) NOT NULL DEFAULT ''"},
+		"inspect api tokens schema",
+		"add api tokens created by column",
 	)
 }
 
@@ -1242,17 +1255,21 @@ func (s *SQLStore) ListDNSRecords(tenant, network string) ([]DNSRecord, error) {
 }
 
 func (s *SQLStore) CreateAPIToken(v APIToken) error {
-	_, err := s.db.Exec(s.query(`INSERT INTO api_tokens (id, tenant_id, name, token_hash, expires_at, last_used_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.Name, v.TokenHash, optionalTimeText(v.ExpiresAt), timeText(v.LastUsedAt), timeText(v.CreatedAt))
+	_, err := s.db.Exec(s.query(`INSERT INTO api_tokens (id, tenant_id, name, created_by, token_hash, expires_at, last_used_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), v.ID, v.TenantID, v.Name, v.CreatedBy, v.TokenHash, optionalTimeText(v.ExpiresAt), timeText(v.LastUsedAt), timeText(v.CreatedAt))
 	return err
 }
 func (s *SQLStore) GetAPITokenByHash(hash string) (APIToken, error) {
-	return scanAPIToken(s.db.QueryRow(s.query(`SELECT id, tenant_id, name, token_hash, expires_at, last_used_at, created_at FROM api_tokens WHERE token_hash = ?`), hash))
+	return scanAPIToken(s.db.QueryRow(s.query(`SELECT id, tenant_id, name, created_by, token_hash, expires_at, last_used_at, created_at FROM api_tokens WHERE token_hash = ?`), hash))
 }
 func (s *SQLStore) DeleteAPIToken(tenant, id string) error {
 	return changed(s.db.Exec(s.query(`DELETE FROM api_tokens WHERE tenant_id=? AND id=?`), tenant, id))
 }
+func (s *SQLStore) DeleteAPITokensByCreator(tenant, userID string) error {
+	_, err := s.db.Exec(s.query(`DELETE FROM api_tokens WHERE tenant_id=? AND created_by=?`), tenant, userID)
+	return err
+}
 func (s *SQLStore) ListAPITokens(tenant string) ([]APIToken, error) {
-	return queryList(s, `SELECT id, tenant_id, name, token_hash, expires_at, last_used_at, created_at FROM api_tokens WHERE tenant_id = ? ORDER BY created_at`, scanAPIToken, tenant)
+	return queryList(s, `SELECT id, tenant_id, name, created_by, token_hash, expires_at, last_used_at, created_at FROM api_tokens WHERE tenant_id = ? ORDER BY created_at`, scanAPIToken, tenant)
 }
 func (s *SQLStore) UpdateAPITokenLastUsed(id string, at time.Time) error {
 	return changed(s.db.Exec(s.query(`UPDATE api_tokens SET last_used_at=? WHERE id=?`), timeText(at), id))
@@ -1350,7 +1367,7 @@ func scanAPIToken(row scanner) (APIToken, error) {
 	var v APIToken
 	var expires sql.NullString
 	var lastUsed, created string
-	if err := row.Scan(&v.ID, &v.TenantID, &v.Name, &v.TokenHash, &expires, &lastUsed, &created); err != nil {
+	if err := row.Scan(&v.ID, &v.TenantID, &v.Name, &v.CreatedBy, &v.TokenHash, &expires, &lastUsed, &created); err != nil {
 		return APIToken{}, notFound(err)
 	}
 	if expires.Valid && strings.TrimSpace(expires.String) != "" {

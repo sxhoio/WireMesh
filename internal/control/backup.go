@@ -1,12 +1,9 @@
 package control
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
-	"time"
 )
 
 // backupDatabase 使用 VACUUM INTO 生成一致性在线备份并下载（仅 SQLite）。
@@ -15,15 +12,24 @@ func (a *App) backupDatabase(w http.ResponseWriter, r *http.Request, c claims) {
 		writeError(w, http.StatusConflict, "database is managed by server environment settings")
 		return
 	}
-	target := filepath.Join(os.TempDir(), fmt.Sprintf("wiremesh-backup-%d.db", time.Now().Unix()))
-	if err := a.database.BackupSQLite(target); err != nil {
-		writeError(w, http.StatusBadRequest, "database backup failed: "+err.Error())
+	// 随机临时文件（CreateTemp 默认 0600），避免可预测路径与同机可读
+	target, err := os.CreateTemp(os.TempDir(), "wiremesh-backup-*.db")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create backup file")
 		return
 	}
-	defer os.Remove(target)
+	targetPath := target.Name()
+	target.Close()
+	defer os.Remove(targetPath)
+	if err := a.database.BackupSQLite(targetPath); err != nil {
+		writeError(w, http.StatusBadRequest, "database backup failed")
+		return
+	}
+	a.auditEvent(c.TenantID, c.Subject, "database.backup", "tenant", c.TenantID, nil)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="wiremesh-backup.db"`)
-	http.ServeFile(w, r, target)
+	w.Header().Set("Cache-Control", "no-store, private")
+	http.ServeFile(w, r, targetPath)
 }
 
 // restoreDatabase 接收上传的 SQLite 备份文件并热切换到恢复后的数据库。
@@ -33,23 +39,23 @@ func (a *App) restoreDatabase(w http.ResponseWriter, r *http.Request, c claims) 
 		return
 	}
 	defer r.Body.Close()
-	target := filepath.Join(os.TempDir(), fmt.Sprintf("wiremesh-restore-%d.db", time.Now().Unix()))
-	file, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	target, err := os.CreateTemp(os.TempDir(), "wiremesh-restore-*.db")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to receive backup")
 		return
 	}
-	defer os.Remove(target)
-	if _, err := io.Copy(file, io.LimitReader(r.Body, 512<<20)); err != nil {
-		file.Close()
+	targetPath := target.Name()
+	defer os.Remove(targetPath)
+	if _, err := io.Copy(target, io.LimitReader(r.Body, 512<<20)); err != nil {
+		target.Close()
 		writeError(w, http.StatusBadRequest, "failed to receive backup")
 		return
 	}
-	if err := file.Close(); err != nil {
+	if err := target.Close(); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to store backup")
 		return
 	}
-	if err := a.database.RestoreSQLite(r.Context(), target); err != nil {
+	if err := a.database.RestoreSQLite(r.Context(), targetPath); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
