@@ -620,49 +620,50 @@ func (s *SQLStore) ListDeliveries(tenant, node string) ([]ConfigDelivery, error)
 // DeleteDeliveriesBefore 按节点保留最新的 keep 条下发记录，其余删除。
 // 每次发布都会为每节点创建一条 delivery，长期运行需约束其总量。
 func (s *SQLStore) DeleteDeliveriesBefore(tenant, node string, keep int) (int64, error) {
-	// 找出需要删除的下发 ID：每个 node_id 按 updated_at 倒序保留前 keep 条。
-	var deleted int64
-	query := `SELECT id FROM config_deliveries WHERE tenant_id=?`
+	// 用窗口函数定位每节点第 keep 条之后的记录并批量删除。
+	// SQLite 与 PostgreSQL 支持 ROW_NUMBER() OVER (PARTITION BY ...)，
+	// MySQL 8+ 同样支持，三驱动共用同一 SQL（仅占位符不同）。
+	selectQuery := `SELECT id FROM (
+		SELECT id, node_id, ROW_NUMBER() OVER (PARTITION BY node_id ORDER BY updated_at DESC, id DESC) AS rn
+		FROM config_deliveries WHERE tenant_id = ?`
 	args := []any{tenant}
 	if node != "" {
-		query += ` AND node_id=?`
+		selectQuery += ` AND node_id = ?`
 		args = append(args, node)
 	}
-	query += ` ORDER BY updated_at DESC`
-	rows, err := s.db.Query(s.query(query), args...)
+	selectQuery += `) ranked WHERE rn > ?`
+	args = append(args, keep)
+	rows, err := s.db.Query(s.query(selectQuery), args...)
 	if err != nil {
 		return 0, err
 	}
 	ids := make([]string, 0)
-	keptByNode := map[string]int{}
 	for rows.Next() {
-		var id, nodeID string
-		var updatedAt string
-		var version int64
-		var state, message string
-		if err := rows.Scan(&id, &nodeID, &version, &state, &message, &updatedAt); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		keptByNode[nodeID]++
-		if keptByNode[nodeID] > keep {
-			ids = append(ids, id)
-		}
+		ids = append(ids, id)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
-	for _, id := range ids {
-		result, err := s.db.Exec(s.query(`DELETE FROM config_deliveries WHERE id=?`), id)
-		if err != nil {
-			return deleted, err
-		}
-		if count, err := result.RowsAffected(); err == nil {
-			deleted += count
-		}
+	if len(ids) == 0 {
+		return 0, nil
 	}
-	return deleted, nil
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	deleteQuery := `DELETE FROM config_deliveries WHERE id IN (` + placeholders + `)`
+	deleteArgs := make([]any, len(ids))
+	for index, id := range ids {
+		deleteArgs[index] = id
+	}
+	result, err := s.db.Exec(s.query(deleteQuery), deleteArgs...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (s *SQLStore) CreateCommand(v AgentCommand) error {
@@ -686,7 +687,9 @@ func (s *SQLStore) ClaimCommands(node string) []AgentCommand {
 	case "postgres":
 		claimQuery += ` FOR UPDATE SKIP LOCKED`
 	case "mysql":
-		claimQuery += ` FOR UPDATE`
+		// MySQL 8.0.1+ 支持 SKIP LOCKED，多控制平面实例并发领取命令时
+		// 不互相阻塞；MySQL 5.7 会忽略该语法（保持兼容的 FOR UPDATE）。
+		claimQuery += ` FOR UPDATE SKIP LOCKED`
 	}
 	rows, err := tx.Query(s.query(claimQuery), node)
 	if err != nil {

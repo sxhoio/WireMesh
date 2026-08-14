@@ -4,6 +4,16 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.6`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.5.2（三驱动兼容性专项）
+
+- MySQL 命令领取改用 `FOR UPDATE SKIP LOCKED`（MySQL 8.0.1+），
+  多控制平面实例并发时不再互相阻塞（PostgreSQL 原本已用 SKIP LOCKED）
+- 新增三驱动兼容性专项测试：占位符转换规则（sqlite/mysql 保留 `?`、
+  postgres 转 `$n`）、schema 语句双定义表集合一致性、MySQL 主键类型
+  约束、upsert 分派正确性、窗口函数保留策略 SQL 的三驱动占位符
+- `DeleteDeliveriesBefore` 改为窗口函数 + 批量删除（修复手动扫描字段
+  与 SELECT 列表不一致的隐患）
+
 ## v0.5.1（性能/可扩展性专项）
 
 - 数据保留策略落地：`traffic_samples` 按租户 `retention.rawDays` 定期清理
