@@ -3,11 +3,11 @@
 #   1. 生成 master key：openssl rand -base64 32，写入 ./secrets/master.key
 #   2. 准备 TLS 证书：./secrets/tls.crt 与 ./secrets/tls.key（域名指向本机）
 #   3. GeoIP 数据库：将 GeoLite2-City.mmdb 放入 ./data/（MaxMind 许可适用）
-# 镜像标签：使用与目标控制平面版本一致的镜像，例如 wiremesh:0.5.6；
+# 镜像标签：使用与目标控制平面版本一致的镜像，例如 wiremesh:0.6.0；
 # 升级时保持 WIREMESH_MASTER_KEY 不变（加密数据依赖它解密）。
 services:
   wiremesh:
-    image: wiremesh:0.5.6
+    image: wiremesh:0.6.0
     restart: unless-stopped
     ports:
       - "8443:8443"

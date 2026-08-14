@@ -9,7 +9,7 @@ const settings: SystemSettings = {
   statusRules: { agentOfflineSec: 120, handshakeSec: 180, redFailCount: 3 },
   collect: { reportSec: 10, probeSec: 15, mapRefreshSec: 30 },
   retention: { rawDays: 0, hourlyDays: 0, dailyDays: 0 },
-  agent: { labels: '', upgradePolicy: 'manual' },
+  agent: { labels: '', upgradePolicy: 'manual', defaultMTLS: false },
 }
 
 export const useAppStore = defineStore('app', {

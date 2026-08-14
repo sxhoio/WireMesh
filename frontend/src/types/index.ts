@@ -245,7 +245,7 @@ export interface SystemSettings {
   statusRules: { agentOfflineSec: number; handshakeSec: number; redFailCount: number }
   collect: { reportSec: number; probeSec: number; mapRefreshSec: number }
   retention: { rawDays: number; hourlyDays: number; dailyDays: number }
-  agent: { labels: string; upgradePolicy: 'manual' | 'auto-stable' }
+  agent: { labels: string; upgradePolicy: 'manual' | 'auto-stable'; defaultMTLS: boolean }
 }
 
 export const stateMeta: Record<PeerState, { label: string; color: string; text: string }> = {

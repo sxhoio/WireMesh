@@ -247,6 +247,10 @@ type RetentionSettings struct {
 type AgentSettings struct {
 	Labels        string `json:"labels"`
 	UpgradePolicy string `json:"upgradePolicy"`
+	// DefaultMTLS 控制台「接入新节点」生成命令时默认是否启用 mTLS。
+	// 默认 false：HTTP/HTTPS 部署开箱即用，无需手动取消 mTLS；
+	// 需要双向证书认证的环境可在此开启（并提示客户端更新接入命令）。
+	DefaultMTLS bool `json:"defaultMTLS"`
 }
 
 type SystemSettings struct {

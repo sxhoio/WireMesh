@@ -121,16 +121,21 @@ func publicAddress(value string) (netip.Addr, bool) {
 	return address, true
 }
 
-// requestPublicIP determines the client's public IPv4 address. An agent that
-// resolved its own address at startup reports it in X-Agent-Public-IP, which
-// is the most reliable value because it is the node's own public IP rather
-// than whatever NAT or proxy egress address the reporting connection shows.
-// Otherwise the connection source address is used, honoring forwarded headers
-// only when the direct peer is a private/loopback proxy.
+// requestPublicIP determines the client's public IP address, preferring IPv4.
+// An agent that resolved its own address at startup reports it in
+// X-Agent-Public-IP, which is the most reliable value because it is the node's
+// own public IP rather than whatever NAT or proxy egress address the reporting
+// connection shows. Otherwise the connection source address is used (IPv4
+// preferred over IPv6 so a dual-stack host is GeoIP-located consistently with
+// its public IPv4 endpoint), honoring forwarded headers only when the direct
+// peer is a private/loopback proxy.
 func requestPublicIP(r *http.Request) string {
-	if address, ok := publicAddress(r.Header.Get("X-Agent-Public-IP")); ok && address.Is4() {
+	// 1. Agent 自报地址（IPv4 优先；若 Agent 上报 IPv6 也接受，仅在无
+	//    IPv4 时使用）
+	if address, ok := publicAddress(r.Header.Get("X-Agent-Public-IP")); ok {
 		return address.String()
 	}
+	// 2. 转发头（仅当直连来源是私网/回环代理时信任）
 	remote, remoteOK := parseAddress(r.RemoteAddr)
 	remoteIsProxy := !remoteOK || remote.IsPrivate() || remote.IsLoopback() || remote.IsLinkLocalUnicast()
 	if remoteIsProxy {
@@ -143,10 +148,15 @@ func requestPublicIP(r *http.Request) string {
 			return address.String()
 		}
 	}
+	// 3. 连接源地址：IPv4 优先于 IPv6（双栈主机与节点 IPv4 端点一致）
+	var fallbackIPv6 string
 	if address, ok := publicAddress(r.RemoteAddr); ok {
-		return address.String()
+		if address.Is4() {
+			return address.String()
+		}
+		fallbackIPv6 = address.String()
 	}
-	return ""
+	return fallbackIPv6
 }
 
 func (a *App) geoReaderForTenant(tenant string) (*geoReaderState, error) {

@@ -6,6 +6,7 @@ import { useAppStore } from '../stores/app'
 import { useMeshStore } from '../stores/mesh'
 import type { Agent } from '../types'
 import { requestConfirm } from '../utils/confirm'
+import BaseModal from '../components/BaseModal.vue'
 
 const app = useAppStore()
 const mesh = useMeshStore()
@@ -43,6 +44,9 @@ const editingResourceId = ref<string | null>(null)
 const editingPolicyId = ref<string | null>(null)
 const savingResource = ref(false)
 const savingPolicy = ref(false)
+// 资源/策略表单改为居中弹窗呈现（优化：表单不再内嵌在列表下方）
+const resourceModalOpen = ref(false)
+const policyModalOpen = ref(false)
 
 // 出口网关（Egress）
 const egress = ref<ApiEgressConfig>({ network_id: '', egress_node_id: '', cidrs: [], updated_at: '' })
@@ -250,6 +254,16 @@ function resetPolicyForm() {
   policyForm.enabled = true
 }
 
+function openNewResource() {
+  resetResourceForm()
+  resourceModalOpen.value = true
+}
+
+function openNewPolicy() {
+  resetPolicyForm()
+  policyModalOpen.value = true
+}
+
 function editResource(resource: ApiAccessResource) {
   editingResourceId.value = resource.id
   resourceForm.name = resource.name
@@ -258,6 +272,7 @@ function editResource(resource: ApiAccessResource) {
   resourceForm.port = resource.port || 0
   resourceForm.protocol = (resource.protocol || 'any') as typeof resourceForm.protocol
   resourceForm.description = resource.description || ''
+  resourceModalOpen.value = true
 }
 
 function editPolicy(policy: ApiAccessPolicy) {
@@ -267,6 +282,7 @@ function editPolicy(policy: ApiAccessPolicy) {
   policyForm.source_node_ids = [...policy.source_node_ids]
   policyForm.resource_ids = [...policy.resource_ids]
   policyForm.enabled = policy.enabled
+  policyModalOpen.value = true
 }
 
 function toggleSourceNode(id: string) {
@@ -314,6 +330,7 @@ async function saveResource() {
     if (isEdit && resourceId) await api.updateAccessResource(selectedNetworkId.value, resourceId, payload)
     else await api.createAccessResource(selectedNetworkId.value, payload)
     resetResourceForm()
+    resourceModalOpen.value = false
     markDirty()
     notice.value = isEdit ? '资源已更新，点「保存并发布」后生效' : '资源已创建，点「保存并发布」后生效'
     await load(true)
@@ -369,6 +386,7 @@ async function savePolicy() {
     if (editingPolicyId.value) await api.updateAccessPolicy(selectedNetworkId.value, editingPolicyId.value, payload)
     else await api.createAccessPolicy(selectedNetworkId.value, payload)
     resetPolicyForm()
+    policyModalOpen.value = false
     markDirty()
     notice.value = '策略已保存，点「保存并发布」后生效'
     await load(true)
@@ -520,9 +538,14 @@ onUnmounted(() => window.clearInterval(refreshTimer))
             <h2 class="text-sm font-semibold text-white">资源（{{ resources.length }}）</h2>
             <p class="mt-0.5 text-xs text-slate-500">节点上的可访问服务：目标 CIDR + 可选端口。</p>
           </div>
+          <button v-if="app.canOperate && selectedNetworkId" class="btn-secondary !py-1.5 text-xs" @click="openNewResource">+ 添加资源</button>
         </div>
         <p v-if="!selectedNetworkId" class="py-6 text-center text-xs text-slate-500">请先选择网络</p>
         <p v-else-if="loading && !resources.length" class="py-6 text-center text-xs text-slate-500">加载中…</p>
+        <div v-else-if="!resources.length" class="py-8 text-center">
+          <p class="text-xs text-slate-400">暂无资源</p>
+          <p class="mt-1 text-[11px] text-slate-600">点击右上角「添加资源」创建第一个可访问服务。</p>
+        </div>
         <template v-else>
           <div class="space-y-2">
             <div v-for="resource in resources" :key="resource.id" class="rounded-xl bg-ink-800/60 p-3.5 ring-1 ring-ink-600">
@@ -542,45 +565,6 @@ onUnmounted(() => window.clearInterval(refreshTimer))
                 <span v-if="resource.description" class="truncate text-slate-600">· {{ resource.description }}</span>
               </p>
             </div>
-            <p v-if="!resources.length" class="py-5 text-center text-xs text-slate-500">暂无资源</p>
-          </div>
-          <div class="mt-4 rounded-xl border border-ink-700 bg-ink-900/50 p-4">
-            <div class="mb-3 flex items-center justify-between">
-              <p class="text-xs font-semibold text-slate-300">{{ editingResourceId ? '编辑资源' : '新建资源' }}</p>
-              <button v-if="editingResourceId" class="text-xs text-cyan-300" @click="resetResourceForm">取消编辑</button>
-            </div>
-            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div class="sm:col-span-2"><label class="label">资源名称</label><input v-model="resourceForm.name" class="input" placeholder="如：数据库 PostgreSQL" /></div>
-              <div class="sm:col-span-2">
-                <label class="label">网关节点（资源所在节点）</label>
-                <select v-model="resourceForm.gateway_node_id" class="input">
-                  <option value="">选择节点</option>
-                  <optgroup v-if="agentNodes.length" label="节点（Agent）">
-                    <option v-for="a in agentNodes" :key="a.id" :value="a.id">[{{ agentStatusText(a) }}] {{ a.name }}（{{ a.address }}）</option>
-                  </optgroup>
-                  <optgroup v-if="clientNodes.length" label="客户端设备">
-                    <option v-for="a in clientNodes" :key="a.id" :value="a.id">[{{ agentStatusText(a) }}] {{ a.name }}（{{ a.address }}）</option>
-                  </optgroup>
-                </select>
-                <p v-if="!networkNodes.length" class="mt-1 text-[11px] text-amber-400">该网络暂无节点，接入节点后再配置资源。</p>
-              </div>
-              <div>
-                <label class="label">目标 CIDR（留空 = 节点地址/32）</label>
-                <input v-model="resourceForm.target" class="input font-mono" placeholder="10.0.0.0/24" />
-                <p v-if="defaultTargetPreview" class="mt-1 text-[11px] text-slate-600">将使用 <span class="font-mono text-slate-400">{{ defaultTargetPreview }}</span></p>
-              </div>
-              <div><label class="label">端口（可选）</label><input v-model.number="resourceForm.port" type="number" min="0" max="65535" class="input" /></div>
-              <div>
-                <label class="label">协议</label>
-                <select v-model="resourceForm.protocol" class="input">
-                  <option value="any">任意</option>
-                  <option value="tcp">TCP</option>
-                  <option value="udp">UDP</option>
-                </select>
-              </div>
-              <div><label class="label">描述（可选）</label><input v-model="resourceForm.description" class="input" /></div>
-            </div>
-            <div class="mt-3 flex justify-end"><button class="btn-secondary" :disabled="!app.canOperate || savingResource" @click="saveResource">{{ savingResource ? '保存中…' : editingResourceId ? '保存修改' : '创建资源' }}</button></div>
           </div>
         </template>
       </div>
@@ -592,9 +576,14 @@ onUnmounted(() => window.clearInterval(refreshTimer))
             <h2 class="text-sm font-semibold text-white">策略（{{ policies.length }}）</h2>
             <p class="mt-0.5 text-xs text-slate-500">定义哪些源节点可以访问哪些资源；源留空表示网络内全部节点。</p>
           </div>
+          <button v-if="app.canOperate && selectedNetworkId" class="btn-secondary !py-1.5 text-xs" @click="openNewPolicy">+ 添加策略</button>
         </div>
         <p v-if="!selectedNetworkId" class="py-6 text-center text-xs text-slate-500">请先选择网络</p>
         <p v-else-if="loading && !policies.length" class="py-6 text-center text-xs text-slate-500">加载中…</p>
+        <div v-else-if="!policies.length" class="py-8 text-center">
+          <p class="text-xs text-slate-400">暂无策略</p>
+          <p class="mt-1 text-[11px] text-slate-600">点击右上角「添加策略」创建第一条访问策略。</p>
+        </div>
         <template v-else>
           <div class="space-y-2">
             <div v-for="policy in policies" :key="policy.id" class="rounded-xl bg-ink-800/60 p-3.5 ring-1 ring-ink-600">
@@ -622,54 +611,6 @@ onUnmounted(() => window.clearInterval(refreshTimer))
                 {{ policyUnlinkedCount(policy) }} 对「源 ↔ 网关」在当前拓扑中未互联，对应路由不会下发{{ selectedNetwork?.topology === 'custom' ? '；请在 系统设置 → 自定义 Peer 中添加配对' : '；Hub-Spoke 拓扑请确保一方为 Hub' }}
               </p>
             </div>
-            <p v-if="!policies.length" class="py-5 text-center text-xs text-slate-500">暂无策略</p>
-          </div>
-          <div class="mt-4 rounded-xl border border-ink-700 bg-ink-900/50 p-4">
-            <div class="mb-3 flex items-center justify-between">
-              <p class="text-xs font-semibold text-slate-300">{{ editingPolicyId ? '编辑策略' : '新建策略' }}</p>
-              <button v-if="editingPolicyId" class="text-xs text-cyan-300" @click="resetPolicyForm">取消编辑</button>
-            </div>
-            <div class="grid grid-cols-1 gap-3">
-              <div><label class="label">策略名称</label><input v-model="policyForm.name" class="input" placeholder="如：运维组访问数据库" /></div>
-              <div>
-                <label class="label">源标签选择器（key=value，可选）</label>
-                <input v-model="policyForm.source_label" class="input font-mono" placeholder="如：team=ops（与节点选择二选一）" @input="onSourceLabelInput" />
-                <p class="mt-1 text-[11px] text-slate-600">标签与节点二选一；留空则作用于网络内全部节点。<span v-if="policyForm.source_label.trim()" class="text-cyan-300">当前匹配 {{ labelMatchCount(policyForm.source_label) }} 个节点（发布时以节点实际标签为准）</span></p>
-              </div>
-              <div>
-                <label class="label">源节点（可多选，填写标签后禁用）</label>
-                <div class="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto rounded-lg bg-ink-950/50 p-2 ring-1 ring-ink-600" :class="{ 'opacity-50': policyForm.source_label.trim() }">
-                  <button
-                    v-for="a in networkNodes"
-                    :key="a.id"
-                    class="chip transition"
-                    :class="policyForm.source_node_ids.includes(a.id) ? 'bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-500/40' : 'bg-ink-800 text-slate-400 ring-1 ring-ink-600 hover:text-slate-200'"
-                    :disabled="Boolean(policyForm.source_label.trim())"
-                    @click="toggleSourceNode(a.id)"
-                  >
-                    {{ a.name }}
-                  </button>
-                  <span v-if="!networkNodes.length" class="text-[11px] text-slate-500">该网络暂无节点（仍可保存「全部节点」策略）</span>
-                </div>
-              </div>
-              <div>
-                <label class="label">允许访问的资源（可多选）</label>
-                <div class="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto rounded-lg bg-ink-950/50 p-2 ring-1 ring-ink-600">
-                  <button
-                    v-for="resource in resources"
-                    :key="resource.id"
-                    class="chip transition"
-                    :class="policyForm.resource_ids.includes(resource.id) ? 'bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/40' : 'bg-ink-800 text-slate-400 ring-1 ring-ink-600 hover:text-slate-200'"
-                    @click="toggleResource(resource.id)"
-                  >
-                    {{ resource.name }}
-                  </button>
-                  <span v-if="!resources.length" class="text-[11px] text-amber-400">请先在左侧创建资源</span>
-                </div>
-              </div>
-              <label class="flex items-center gap-2 text-xs text-slate-400"><input v-model="policyForm.enabled" type="checkbox" class="accent-emerald-500" />启用策略</label>
-            </div>
-            <div class="mt-3 flex justify-end"><button class="btn-secondary" :disabled="!app.canOperate || savingPolicy" @click="savePolicy">{{ savingPolicy ? '保存中…' : editingPolicyId ? '保存修改' : '创建策略' }}</button></div>
           </div>
         </template>
       </div>
@@ -700,5 +641,104 @@ onUnmounted(() => window.clearInterval(refreshTimer))
         <button class="btn-secondary" :disabled="!app.canOperate || savingEgress" @click="saveEgress">{{ savingEgress ? '保存中…' : '保存出口配置' }}</button>
       </div>
     </div>
+
+    <!-- 新建/编辑资源（居中弹窗） -->
+    <BaseModal v-if="resourceModalOpen" :aria-label="editingResourceId ? '编辑访问资源' : '新建访问资源'" @close="resourceModalOpen = false">
+      <template #header>
+        <div>
+          <h2 class="text-sm font-semibold text-white">{{ editingResourceId ? '编辑资源' : '新建资源' }}</h2>
+          <p class="mt-0.5 text-xs text-slate-500">节点上的可访问服务：目标 CIDR + 可选端口。</p>
+        </div>
+      </template>
+      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div class="sm:col-span-2"><label class="label">资源名称</label><input v-model="resourceForm.name" class="input" placeholder="如：数据库 PostgreSQL" /></div>
+        <div class="sm:col-span-2">
+          <label class="label">网关节点（资源所在节点）</label>
+          <select v-model="resourceForm.gateway_node_id" class="input">
+            <option value="">选择节点</option>
+            <optgroup v-if="agentNodes.length" label="节点（Agent）">
+              <option v-for="a in agentNodes" :key="a.id" :value="a.id">[{{ agentStatusText(a) }}] {{ a.name }}（{{ a.address }}）</option>
+            </optgroup>
+            <optgroup v-if="clientNodes.length" label="客户端设备">
+              <option v-for="a in clientNodes" :key="a.id" :value="a.id">[{{ agentStatusText(a) }}] {{ a.name }}（{{ a.address }}）</option>
+            </optgroup>
+          </select>
+          <p v-if="!networkNodes.length" class="mt-1 text-[11px] text-amber-400">该网络暂无节点，接入节点后再配置资源。</p>
+        </div>
+        <div>
+          <label class="label">目标 CIDR（留空 = 节点地址/32）</label>
+          <input v-model="resourceForm.target" class="input font-mono" placeholder="10.0.0.0/24" />
+          <p v-if="defaultTargetPreview" class="mt-1 text-[11px] text-slate-600">将使用 <span class="font-mono text-slate-400">{{ defaultTargetPreview }}</span></p>
+        </div>
+        <div><label class="label">端口（可选）</label><input v-model.number="resourceForm.port" type="number" min="0" max="65535" class="input" /></div>
+        <div>
+          <label class="label">协议</label>
+          <select v-model="resourceForm.protocol" class="input">
+            <option value="any">任意</option>
+            <option value="tcp">TCP</option>
+            <option value="udp">UDP</option>
+          </select>
+        </div>
+        <div><label class="label">描述（可选）</label><input v-model="resourceForm.description" class="input" /></div>
+      </div>
+      <template #footer>
+        <button class="btn-ghost !py-1.5 text-xs" @click="resourceModalOpen = false">取消</button>
+        <button class="btn-secondary" :disabled="!app.canOperate || savingResource" @click="saveResource">{{ savingResource ? '保存中…' : editingResourceId ? '保存修改' : '创建资源' }}</button>
+      </template>
+    </BaseModal>
+
+    <!-- 新建/编辑策略（居中弹窗） -->
+    <BaseModal v-if="policyModalOpen" :aria-label="editingPolicyId ? '编辑访问策略' : '新建访问策略'" @close="policyModalOpen = false">
+      <template #header>
+        <div>
+          <h2 class="text-sm font-semibold text-white">{{ editingPolicyId ? '编辑策略' : '新建策略' }}</h2>
+          <p class="mt-0.5 text-xs text-slate-500">定义哪些源节点可以访问哪些资源；源留空表示网络内全部节点。</p>
+        </div>
+      </template>
+      <div class="grid grid-cols-1 gap-3">
+        <div><label class="label">策略名称</label><input v-model="policyForm.name" class="input" placeholder="如：运维组访问数据库" /></div>
+        <div>
+          <label class="label">源标签选择器（key=value，可选）</label>
+          <input v-model="policyForm.source_label" class="input font-mono" placeholder="如：team=ops（与节点选择二选一）" @input="onSourceLabelInput" />
+          <p class="mt-1 text-[11px] text-slate-600">标签与节点二选一；留空则作用于网络内全部节点。<span v-if="policyForm.source_label.trim()" class="text-cyan-300">当前匹配 {{ labelMatchCount(policyForm.source_label) }} 个节点（发布时以节点实际标签为准）</span></p>
+        </div>
+        <div>
+          <label class="label">源节点（可多选，填写标签后禁用）</label>
+          <div class="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto rounded-lg bg-ink-950/50 p-2 ring-1 ring-ink-600" :class="{ 'opacity-50': policyForm.source_label.trim() }">
+            <button
+              v-for="a in networkNodes"
+              :key="a.id"
+              class="chip transition"
+              :class="policyForm.source_node_ids.includes(a.id) ? 'bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-500/40' : 'bg-ink-800 text-slate-400 ring-1 ring-ink-600 hover:text-slate-200'"
+              :disabled="Boolean(policyForm.source_label.trim())"
+              @click="toggleSourceNode(a.id)"
+            >
+              {{ a.name }}
+            </button>
+            <span v-if="!networkNodes.length" class="text-[11px] text-slate-500">该网络暂无节点（仍可保存「全部节点」策略）</span>
+          </div>
+        </div>
+        <div>
+          <label class="label">允许访问的资源（可多选）</label>
+          <div class="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto rounded-lg bg-ink-950/50 p-2 ring-1 ring-ink-600">
+            <button
+              v-for="resource in resources"
+              :key="resource.id"
+              class="chip transition"
+              :class="policyForm.resource_ids.includes(resource.id) ? 'bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/40' : 'bg-ink-800 text-slate-400 ring-1 ring-ink-600 hover:text-slate-200'"
+              @click="toggleResource(resource.id)"
+            >
+              {{ resource.name }}
+            </button>
+            <span v-if="!resources.length" class="text-[11px] text-amber-400">请先创建资源</span>
+          </div>
+        </div>
+        <label class="flex items-center gap-2 text-xs text-slate-400"><input v-model="policyForm.enabled" type="checkbox" class="accent-emerald-500" />启用策略</label>
+      </div>
+      <template #footer>
+        <button class="btn-ghost !py-1.5 text-xs" @click="policyModalOpen = false">取消</button>
+        <button class="btn-secondary" :disabled="!app.canOperate || savingPolicy" @click="savePolicy">{{ savingPolicy ? '保存中…' : editingPolicyId ? '保存修改' : '创建策略' }}</button>
+      </template>
+    </BaseModal>
   </div>
 </template>

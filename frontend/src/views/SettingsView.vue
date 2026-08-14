@@ -114,6 +114,9 @@ const geoTestResult = ref<string | null>(null)
 const geoDbPath = ref(mesh.geoip.dbPath)
 const geoSaving = ref(false)
 const geoReloading = ref(false)
+// 重载进度条：区间模拟（mmdb 解析为同步阻塞，无法拿到真实百分比）
+const geoReloadProgress = ref(0)
+let geoReloadTimer: number | undefined
 
 watch(
   () => mesh.geoip.dbPath,
@@ -136,10 +139,18 @@ async function saveGeoDbPath() {
 async function reloadGeoDb() {
   if (geoReloading.value || !mesh.geoip.dbPath) return
   geoReloading.value = true
+  geoReloadProgress.value = 0
+  // 区间模拟：重载期间缓慢推进（0→90%），完成后补到 100% 再复位
+  geoReloadTimer = window.setInterval(() => {
+    geoReloadProgress.value = Math.min(90, geoReloadProgress.value + 7)
+  }, 120)
   try {
     await mesh.reloadGeoIP(app.username)
+    geoReloadProgress.value = 100
   } finally {
-    geoReloading.value = false
+    if (geoReloadTimer) window.clearInterval(geoReloadTimer)
+    geoReloadTimer = undefined
+    window.setTimeout(() => { geoReloadProgress.value = 0; geoReloading.value = false }, 350)
   }
 }
 
@@ -844,6 +855,16 @@ onUnmounted(() => { if (savedTimer) window.clearTimeout(savedTimer) })
         <div class="mt-4 flex gap-2.5">
           <button class="btn-ghost" :disabled="geoReloading || !mesh.geoip.dbPath" @click="reloadGeoDb">{{ geoReloading ? '正在重新加载…' : '重新加载数据库' }}</button>
         </div>
+        <!-- 重载进度条 -->
+        <div v-if="geoReloading || geoReloadProgress > 0" class="mt-3">
+          <div class="flex items-center gap-2.5">
+            <div class="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-ink-700">
+              <div class="h-full rounded-full bg-cyan-400 transition-all duration-150" :style="{ width: geoReloadProgress + '%' }"></div>
+            </div>
+            <span class="shrink-0 font-mono text-[11px] text-cyan-300">{{ geoReloadProgress }}%</span>
+          </div>
+          <p class="mt-1 text-[11px] text-slate-500">正在解析 GeoIP 数据库，大文件可能需要几秒…</p>
+        </div>
         <div class="mt-5 border-t border-ink-700 pt-4">
           <label class="label">定位测试</label>
           <div class="flex gap-2.5">
@@ -862,6 +883,28 @@ onUnmounted(() => { if (savedTimer) window.clearTimeout(savedTimer) })
             <p class="mt-0.5 max-w-xl text-xs leading-relaxed text-slate-500">节点 Agent 使用后端签发的一次性注册令牌接入（浏览器不保存全局 Token）；本页汇总服务端更新包状态与各节点版本。</p>
           </div>
           <button class="btn-primary" @click="router.push({ name: 'nodes' })">前往节点列表接入 / 更新</button>
+        </div>
+
+        <!-- 接入默认开关：默认不强制 mTLS，HTTP 部署开箱即用 -->
+        <div class="mt-4 flex items-start justify-between gap-4 rounded-xl bg-ink-800/60 p-4 ring-1 ring-ink-600">
+          <div class="min-w-0">
+            <p class="text-xs font-semibold text-slate-300">接入命令默认启用 mTLS</p>
+            <p class="mt-1 text-[11px] leading-5 text-slate-500">
+              关闭（默认）：控制台生成的接入命令不强制客户端证书，HTTP/HTTPS 部署复制即用。
+              开启：接入命令默认带 <code class="text-cyan-300">--mtls</code>，Agent 用注册签发的证书双向认证；
+              修改此项后，<span class="text-amber-300">已部署的客户端需重新生成接入命令并更新</span>。
+            </p>
+          </div>
+          <button
+            class="relative h-6 w-11 shrink-0 rounded-full transition"
+            :class="form.agent.defaultMTLS ? 'bg-emerald-500' : 'bg-ink-600'"
+            :disabled="!app.isAdmin"
+            :title="form.agent.defaultMTLS ? '点击关闭' : '点击开启'"
+            :aria-label="form.agent.defaultMTLS ? '关闭默认 mTLS' : '开启默认 mTLS'"
+            @click="form.agent.defaultMTLS = !form.agent.defaultMTLS"
+          >
+            <span class="absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all" :class="form.agent.defaultMTLS ? 'left-[22px]' : 'left-0.5'"></span>
+          </button>
         </div>
 
         <!-- 更新包状态 + 版本分布 -->

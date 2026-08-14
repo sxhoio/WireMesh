@@ -44,7 +44,7 @@ export interface ApiSystemSettings {
   statusRules: { agentOfflineSec: number; handshakeSec: number; redFailCount: number }
   collect: { reportSec: number; probeSec: number; mapRefreshSec: number }
   retention: { rawDays: number; hourlyDays: number; dailyDays: number }
-  agent: { labels: string; upgradePolicy: 'manual' | 'auto-stable' }
+  agent: { labels: string; upgradePolicy: 'manual' | 'auto-stable'; defaultMTLS: boolean }
   updatedAt?: string
 }
 export interface ApiGeoIPStatus { dbPath: string; version: string; updatedAt: string; entryCount: number }

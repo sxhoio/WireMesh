@@ -23,7 +23,7 @@ const (
 	commandPollFallbackRetryDelay = 2 * time.Second
 )
 
-var agentVersion = "0.3.6"
+var agentVersion = "0.3.7"
 
 type enrollmentRequest = wireproto.EnrollmentRequest
 type enrollmentResponse = wireproto.EnrollmentResponse
@@ -189,6 +189,10 @@ func main() {
 		state.PublicIP = publicIP
 		log.Printf("public IPv4 discovered at startup: %s", publicIP)
 	}
+	// agentClient 持有 state 的值副本：PublicIP 赋值后必须重建 agentAPI，
+	// 否则后续请求的 X-Agent-Public-IP 头始终为空，服务端会回退到连接
+	// 源地址（如 IPv6），导致 GeoIP 定位与节点真实 IPv4 不一致。
+	agentAPI = newAgentClient(client, state)
 	hostname, _ := os.Hostname()
 	baseHeartbeat := heartbeatRequest{
 		Hostname: hostname, OS: runtime.GOOS + "/" + runtime.GOARCH,

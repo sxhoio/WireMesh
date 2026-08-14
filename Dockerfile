@@ -4,7 +4,7 @@ ARG NODE_VERSION=24-alpine
 # 1.26.6 修复多个标准库漏洞（见 go.mod go 指令），构建镜像不得低于该版本
 ARG GO_VERSION=1.26.6-alpine
 # 与 cmd/wiremesh-agent/main.go 的 agentVersion 保持一致（Agent 版本线）
-ARG WIREMESH_VERSION=0.3.6
+ARG WIREMESH_VERSION=0.3.7
 
 FROM node:${NODE_VERSION} AS frontend-build
 WORKDIR /src/frontend
@@ -15,7 +15,7 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM golang:${GO_VERSION} AS server-build
-ARG WIREMESH_VERSION=0.3.6
+ARG WIREMESH_VERSION=0.3.7
 WORKDIR /src
 RUN mkdir -p /out/data
 COPY go.mod go.sum ./
@@ -38,7 +38,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     -o /out/wiremesh-agent-linux-arm64 ./cmd/wiremesh-agent
 
 FROM gcr.io/distroless/static-debian12:nonroot AS runtime
-ARG WIREMESH_VERSION=0.3.6
+ARG WIREMESH_VERSION=0.3.7
 WORKDIR /data
 COPY --from=server-build --chown=nonroot:nonroot /out/wiremesh-server /app/wiremesh-server
 COPY --from=server-build --chown=nonroot:nonroot /out/wiremesh-agent-linux-amd64 /app/wiremesh-agent-linux-amd64

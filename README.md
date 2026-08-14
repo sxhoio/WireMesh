@@ -98,7 +98,7 @@ SQLite, MySQL, and PostgreSQL are supported through the same SQL repository and 
 
 ## Upgrading
 
-Upgrades are in-place and forward-compatible; the server applies schema migrations automatically on startup. Version history is tracked in `CHANGELOG.md`; the control-plane line is `v0.5.x` and the Agent binary has its own version line (`cmd/wiremesh-agent/main.go`, currently `0.3.6`).
+Upgrades are in-place and forward-compatible; the server applies schema migrations automatically on startup. Version history is tracked in `CHANGELOG.md`; the control-plane line is `v0.6.x` and the Agent binary has its own version line (`cmd/wiremesh-agent/main.go`, currently `0.3.7`).
 
 1. **Back up first**: download `GET /api/v1/settings/backup` (SQLite) or use your PostgreSQL/MySQL dump tooling. Restore is available through `POST /api/v1/settings/backup/restore` (SQLite) and is atomic — it validates the file, replaces the live database, and survives restarts.
 2. **Keep the same `WIREMESH_MASTER_KEY`**: encrypted blobs (node private keys, agent CA, database configuration, notification secrets) are unwrapped with the master key. Changing it makes existing data undecryptable. Since v0.5.0 the master key is stretched with Argon2id; data encrypted by older versions remains readable through a legacy-key fallback, so no re-encryption pass is needed.

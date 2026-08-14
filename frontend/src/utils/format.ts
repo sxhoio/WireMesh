@@ -27,6 +27,20 @@ export function shortKey(key: string): string {
   return `${key.slice(0, 10)}…${key.slice(-6)}`
 }
 
+/**
+ * 压缩公网端点显示：IPv6（含 [::1]:port 形式）通常很长，保留头尾、
+ * 中间用省略号压缩，避免撑宽表格；IPv4/短值原样返回。
+ */
+export function shortEndpoint(endpoint: string): string {
+  const value = endpoint || ''
+  if (!value) return '—'
+  const isIPv6 = value.includes(':') && !/^\d+\.\d+\.\d+\.\d+/.test(value)
+  const maxLength = isIPv6 ? 22 : 32
+  if (value.length <= maxLength) return value
+  // 保留协议/前缀前 8 个字符 + 尾部 12 个字符（覆盖端口），中间省略
+  return `${value.slice(0, 8)}…${value.slice(-12)}`
+}
+
 export function fmtMbps(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : '0.00'
 }

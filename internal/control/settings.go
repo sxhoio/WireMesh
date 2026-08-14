@@ -38,7 +38,7 @@ func defaultSystemSettings(tenant string) SystemSettings {
 		NetDefaults: NetworkDefaults{Port: 51820, MTU: 1420, Keepalive: 25, DefaultTopology: "full-mesh"},
 		StatusRules: StatusRules{AgentOfflineSec: 120, HandshakeSec: 180, RedFailCount: 3},
 		Collect:     CollectionSettings{ReportSec: 10, ProbeSec: 15, MapRefreshSec: 30},
-		Retention:   RetentionSettings{}, Agent: AgentSettings{UpgradePolicy: "manual"},
+		Retention:   RetentionSettings{}, Agent: AgentSettings{UpgradePolicy: "manual", DefaultMTLS: false},
 	}
 }
 

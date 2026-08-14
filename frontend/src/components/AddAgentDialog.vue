@@ -10,6 +10,7 @@ const app = useAppStore()
 const mesh = useMeshStore()
 
 const tab = ref<'script' | 'manual' | 'uninstall'>('script')
+const showAdvancedOptions = ref(false) // 安装选项默认折叠，减少首屏杂乱
 const { copied, copyText } = useClipboard<'script' | 'manual' | 'uninstall' | ''>('', 1600)
 const issuing = ref(false)
 const enrollmentToken = ref('')
@@ -27,9 +28,11 @@ const networks = computed(() => mesh.networks.filter((network) => network.projec
 const serverUrl = computed(() => (apiBase || location.origin).replace(/\/$/, ''))
 const isInsecure = computed(() => serverUrl.value.toLowerCase().startsWith('http://'))
 
-// 安装开关：预置进生成的一键脚本 / 手动命令，不同环境直接复制即用
+// 安装开关：预置进生成的一键脚本 / 手动命令，不同环境直接复制即用。
+// 默认跟随系统设置「接入默认启用 mTLS」（关闭则 HTTP/HTTPS 都开箱即用），
+// 可在此弹窗内按目标环境覆盖。
 const options = reactive({
-  useMtls: !isInsecure.value, // 默认 HTTPS 开、HTTP 关（与脚本自动判断一致）
+  useMtls: Boolean(app.settings.agent.defaultMTLS),
   verifyUpdateSignature: true,
 })
 
@@ -218,21 +221,26 @@ async function copy(kind: 'script' | 'manual' | 'uninstall') {
           </div>
 
           <div class="mb-4 space-y-2 rounded-xl bg-ink-900/60 p-3 ring-1 ring-ink-700">
-            <p class="text-[11px] font-semibold text-slate-400">安装选项（预置进生成的命令，按目标环境调整）</p>
-            <label class="flex cursor-pointer items-start gap-2.5">
-              <input v-model="options.useMtls" type="checkbox" class="mt-0.5 h-4 w-4 shrink-0 accent-emerald-500" />
-              <span class="min-w-0 text-xs leading-5">
-                <span class="font-medium text-slate-300">启用 mTLS 客户端证书（--mtls）</span>
-                <span class="block text-[11px] text-slate-500">Agent 用注册时签发的证书与服务端双向认证；HTTPS 部署建议开启，HTTP 开发环境请关闭。</span>
-              </span>
-            </label>
-            <label class="flex cursor-pointer items-start gap-2.5">
-              <input v-model="options.verifyUpdateSignature" type="checkbox" class="mt-0.5 h-4 w-4 shrink-0 accent-emerald-500" />
-              <span class="min-w-0 text-xs leading-5">
-                <span class="font-medium text-slate-300">校验 Agent 自更新签名</span>
-                <span class="block text-[11px] text-slate-500">一键脚本会把服务端更新签名公钥写入 Agent 配置，强制校验更新包签名；服务端未配置签名密钥时自动忽略。</span>
-              </span>
-            </label>
+            <button type="button" class="flex w-full items-center justify-between text-left" @click="showAdvancedOptions = !showAdvancedOptions">
+              <span class="text-[11px] font-semibold text-slate-400">安装选项<template v-if="options.useMtls !== Boolean(app.settings.agent.defaultMTLS) || options.verifyUpdateSignature">（已自定义）</template></span>
+              <svg viewBox="0 0 24 24" fill="none" class="h-3.5 w-3.5 text-slate-500 transition" :class="{ 'rotate-180': showAdvancedOptions }" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" /></svg>
+            </button>
+            <template v-if="showAdvancedOptions">
+              <label class="flex cursor-pointer items-start gap-2.5">
+                <input v-model="options.useMtls" type="checkbox" class="mt-0.5 h-4 w-4 shrink-0 accent-emerald-500" />
+                <span class="min-w-0 text-xs leading-5">
+                  <span class="font-medium text-slate-300">启用 mTLS 客户端证书（--mtls）</span>
+                  <span class="block text-[11px] text-slate-500">Agent 用注册时签发的证书与服务端双向认证；HTTPS 部署建议开启，HTTP 开发环境请关闭。</span>
+                </span>
+              </label>
+              <label class="flex cursor-pointer items-start gap-2.5">
+                <input v-model="options.verifyUpdateSignature" type="checkbox" class="mt-0.5 h-4 w-4 shrink-0 accent-emerald-500" />
+                <span class="min-w-0 text-xs leading-5">
+                  <span class="font-medium text-slate-300">校验 Agent 自更新签名</span>
+                  <span class="block text-[11px] text-slate-500">一键脚本会把服务端更新签名公钥写入 Agent 配置，强制校验更新包签名；服务端未配置签名密钥时自动忽略。</span>
+                </span>
+              </label>
+            </template>
           </div>
 
           <p v-if="error" class="mb-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300 ring-1 ring-red-500/30">{{ error }}</p>

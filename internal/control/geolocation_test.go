@@ -67,6 +67,25 @@ func TestRequestPublicIPPrefersAgentReportedAddress(t *testing.T) {
 	}
 }
 
+// TestRequestPublicIPPrefersIPv4OverIPv6：双栈主机经 IPv6 连接时，若无
+// Agent 自报地址，应优先使用连接源的 IPv4（与节点 IPv4 端点/GeoIP 一致），
+// 避免 IPv6 的 GeoIP 定位与 IPv4 不同。
+func TestRequestPublicIPPrefersIPv4OverIPv6(t *testing.T) {
+	// 直连来源为 IPv6 公网地址（无 IPv4 可选）→ 回退 IPv6
+	ipv6Only := httptest.NewRequest(http.MethodGet, "/", nil)
+	ipv6Only.RemoteAddr = "[2402:4e00:1420:800::1]:54321"
+	if got := requestPublicIP(ipv6Only); got != "2402:4e00:1420:800::1" {
+		t.Fatalf("IPv6-only source was not preserved: %q", got)
+	}
+	// 带有效 IPv4 的 X-Agent-Public-IP → 必须优先于 IPv6 连接源
+	withAgentIPv4 := httptest.NewRequest(http.MethodGet, "/", nil)
+	withAgentIPv4.RemoteAddr = "[2402:4e00:1420:800::1]:54321"
+	withAgentIPv4.Header.Set("X-Agent-Public-IP", "106.54.164.82")
+	if got := requestPublicIP(withAgentIPv4); got != "106.54.164.82" {
+		t.Fatalf("agent-reported IPv4 must win over IPv6 source: %q", got)
+	}
+}
+
 func TestAgentLocationEndpointReturnsObservedGeoIP(t *testing.T) {
 	app := testApp(t)
 	node := createGeolocationTestNode(t, app)

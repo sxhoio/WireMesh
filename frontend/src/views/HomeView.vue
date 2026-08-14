@@ -20,6 +20,22 @@ const stats = computed(() => mesh.stats)
 const lastUpdatedText = computed(() => (mesh.lastUpdated ? ago(mesh.lastUpdated) : '—'))
 const emptySetup = computed(() => !mesh.projects.length && !mesh.networks.length && !mesh.agents.length)
 
+// GeoIP 未配置警告：一次性（localStorage 记忆关闭），配置后消失；点击跳转设置
+const GEOIP_WARNING_KEY = 'wiremesh-geoip-warning-dismissed'
+const geoipWarningDismissed = ref(localStorage.getItem(GEOIP_WARNING_KEY) === '1')
+const showGeoIPWarning = computed(() => !mesh.geoip.dbPath && !geoipWarningDismissed.value)
+
+function dismissGeoIPWarning() {
+  geoipWarningDismissed.value = true
+  localStorage.setItem(GEOIP_WARNING_KEY, '1')
+}
+
+function goToGeoIPSettings() {
+  // 设置页按 sessionStorage 记忆的 tab 定位，预置为 GeoIP
+  sessionStorage.setItem('settings-tab', 'geoip')
+  router.push({ name: 'settings' })
+}
+
 const filterOptions: { value: 'all' | PeerState; label: string }[] = [
   { value: 'all', label: '全部状态' },
   { value: 'ok', label: '正常（绿）' },
@@ -85,6 +101,16 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
 
 <template>
   <div class="flex h-full flex-col gap-5">
+    <!-- GeoIP 未配置警告（一次性） -->
+    <div v-if="showGeoIPWarning" class="flex shrink-0 items-center gap-3 rounded-xl bg-amber-500/10 px-4 py-2.5 ring-1 ring-amber-500/30">
+      <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4 shrink-0 text-amber-400" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
+      <p class="min-w-0 flex-1 text-xs text-amber-300">尚未配置 GeoIP 数据库，节点将无法按 IP 自动定位（可依赖客户端上报的坐标）。</p>
+      <button class="shrink-0 rounded-lg px-3 py-1 text-xs font-medium text-amber-200 ring-1 ring-amber-500/40 transition hover:bg-amber-500/10" @click="goToGeoIPSettings">前往配置</button>
+      <button class="shrink-0 rounded-lg p-1 text-amber-400/70 transition hover:bg-amber-500/10 hover:text-amber-300" title="不再显示" aria-label="关闭 GeoIP 警告" @click="dismissGeoIPWarning">
+        <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+      </button>
+    </div>
+
     <!-- 统计卡片 -->
     <div class="grid shrink-0 grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
       <div class="panel px-4 py-3.5">
