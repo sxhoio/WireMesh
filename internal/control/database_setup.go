@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +23,26 @@ import (
 )
 
 var errDatabaseNotConfigured = errors.New("database is not configured")
+
+// RedactCredentials 从文本中剥离可能回显的数据库凭据（密码/口令），
+// 供服务端日志使用：驱动在 DSN 解析或连接失败时可能把 user:password@
+// 或 password=... 原样带进错误消息，直接打印会泄漏到日志（可观测性专项）。
+func RedactCredentials(text string) string {
+	// URL 风格 user:password@host
+	reURL := regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)([^/@:\s]+):([^@/\s]+)@`)
+	text = reURL.ReplaceAllString(text, "${1}***:***@")
+	// 键值风格 password=xxx / passwd=xxx / pwd=xxx（DSN 与连接串）
+	reKV := regexp.MustCompile(`(?i)(\b(?:password|passwd|pwd)\s*[=:]\s*)[^\s,;]+`)
+	text = reKV.ReplaceAllString(text, "${1}***")
+	return text
+}
+
+func redactCredentialsError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(RedactCredentials(err.Error()))
+}
 
 // DatabaseConfig is accepted only by the unauthenticated first-run setup API.
 // Password is encrypted before it is written to the bootstrap configuration file.
@@ -588,8 +609,9 @@ func (a *App) testDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.database.Test(r.Context(), cfg); err != nil {
-		// 细节写入服务端日志（供排障），响应保持通用，避免驱动差异被用作内网探测 oracle
-		log.Printf("database connectivity test failed: %v", err)
+		// 细节写入服务端日志（供排障，先脱敏以防 DSN 凭据回显），
+		// 响应保持通用，避免驱动差异被用作内网探测 oracle
+		log.Printf("database connectivity test failed: %s", RedactCredentials(err.Error()))
 		writeError(w, http.StatusBadRequest, "数据库连接失败，请检查主机、端口、凭据与网络配置")
 		return
 	}

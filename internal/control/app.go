@@ -71,6 +71,7 @@ type App struct {
 	trustProxyAgentID      bool
 	agentInsecureHTTP      bool
 	updateSigningKey       *ecdsa.PrivateKey
+	startTime              time.Time
 	loginMu                sync.Mutex
 	loginFailures          map[string][]time.Time
 	changePasswordMu       sync.Mutex
@@ -112,6 +113,7 @@ func NewApp(cfg Config) (*App, error) {
 		changePasswordFailures: map[string][]time.Time{},
 		setupAttempts:          map[string][]time.Time{},
 		setupToken:             strings.TrimSpace(cfg.SetupToken),
+		startTime:              time.Now(),
 	}
 	if strings.TrimSpace(cfg.UpdateSigningKey) != "" {
 		key, parseErr := parseECDSAPrivateKeyPEM(cfg.UpdateSigningKey)

@@ -46,7 +46,8 @@ func main() {
 		}
 		sqlStore, err := control.OpenSQLStore(databaseDriver, databaseDSN)
 		if err != nil {
-			log.Fatalf("open database: %v", err)
+			// 驱动错误可能回显 DSN 中的凭据，日志前脱敏
+			log.Fatalf("open database: %s", control.RedactCredentials(err.Error()))
 		}
 		defer sqlStore.Close()
 		databaseDriver = sqlStore.Driver()
