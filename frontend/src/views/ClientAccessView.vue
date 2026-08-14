@@ -248,7 +248,7 @@ function onEditClose() {
       <div class="panel flex min-h-0 flex-col p-3">
         <div class="mb-2 flex items-center justify-between px-2">
           <p class="text-xs font-semibold text-slate-400">客户端 <span class="text-cyan-300">{{ clientDevices.length }}</span> · 节点 <span class="text-slate-300">{{ serverNodes.length }}</span></p>
-          <button class="rounded-md p-1 text-slate-500 transition hover:bg-ink-800 hover:text-slate-300" :disabled="refreshing" title="刷新设备状态" @click="refreshDevices">
+          <button class="rounded-md p-1 text-slate-500 transition hover:bg-ink-800 hover:text-slate-300" :disabled="refreshing" title="刷新设备状态" aria-label="刷新设备状态" @click="refreshDevices">
             <svg viewBox="0 0 24 24" fill="none" class="h-3.5 w-3.5" :class="{ 'animate-spin': refreshing }" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
           </button>
         </div>

@@ -285,7 +285,7 @@ onUnmounted(() => window.clearInterval(refreshTimer))
             </span>
             <div class="flex items-center gap-1.5">
               <span class="chip shrink-0 bg-slate-500/10 text-slate-500 ring-1 ring-slate-600">自动</span>
-              <button class="rounded-md p-1 text-slate-500 transition hover:bg-ink-800 hover:text-slate-300" title="复制单条 hosts 记录" @click="copyRow(`${row.address}  ${row.name}`)">⧉</button>
+              <button class="rounded-md p-1 text-slate-500 transition hover:bg-ink-800 hover:text-slate-300" title="复制单条 hosts 记录" aria-label="复制单条 hosts 记录" @click="copyRow(`${row.address}  ${row.name}`)">⧉</button>
             </div>
           </div>
 
@@ -296,7 +296,7 @@ onUnmounted(() => window.clearInterval(refreshTimer))
             <span class="truncate text-xs text-slate-500" :title="`创建于 ${fmtDateTime(Date.parse(record.created_at))}`">{{ record.description || '—' }}</span>
             <div class="flex items-center gap-1.5">
               <button v-if="app.canOperate" class="chip shrink-0 bg-slate-500/10 text-slate-300 ring-1 ring-slate-500/30" @click="editRecord(record)">编辑</button>
-              <button class="rounded-md p-1 text-slate-500 transition hover:bg-ink-800 hover:text-slate-300" title="复制单条 hosts 记录" @click="copyRow(`${record.address}  ${record.name}`)">⧉</button>
+              <button class="rounded-md p-1 text-slate-500 transition hover:bg-ink-800 hover:text-slate-300" title="复制单条 hosts 记录" aria-label="复制单条 hosts 记录" @click="copyRow(`${record.address}  ${record.name}`)">⧉</button>
               <button v-if="app.canOperate" class="chip shrink-0 bg-red-500/10 text-red-300 ring-1 ring-red-500/30" @click="remove(record)">删除</button>
             </div>
           </div>

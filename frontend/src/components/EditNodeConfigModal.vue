@@ -67,7 +67,7 @@ async function save() {
     <form class="panel flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden" @submit.prevent="save">
       <div class="flex shrink-0 items-start justify-between border-b border-ink-700 px-6 py-5">
         <div><h3 class="text-base font-semibold text-white">编辑节点配置</h3><p class="mt-1 text-xs text-slate-500">保存后会立即生成配置版本并唤醒相关 Agent 应用；地理位置默认由客户端与服务器 GeoIP 自动维护。</p></div>
-        <button type="button" class="text-slate-500 hover:text-white" @click="emit('close')">✕</button>
+        <button type="button" class="text-slate-500 hover:text-white" aria-label="关闭编辑弹窗" @click="emit('close')">✕</button>
       </div>
       <div class="grid min-h-0 flex-1 gap-4 overflow-y-auto p-6 sm:grid-cols-2">
         <label class="space-y-1.5"><span class="text-xs text-slate-400">节点名称</span><input v-model="form.name" required class="input w-full" /></label>

@@ -4,6 +4,16 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.6`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.5.4（前端体验/可访问性专项）
+
+- 可访问性（WCAG）：icon-only 按钮补 `aria-label`（退出登录、汉堡菜单、
+  Peer 添加、复制、刷新、关闭等）；对话框补 `aria-label`（BaseModal/
+  ConfirmDialog/EditNodeConfigModal/PeerConfigEditorModal）；侧边栏
+  `aria-label`；toast 容器 `role="status" aria-live="polite"`
+- 键盘可达性：确认对话框打开时自动聚焦确认按钮（焦点不滞留背景页）；
+  移动端抽屉支持 Esc 关闭
+- 纯装饰 SVG 标记 `aria-hidden="true"`，避免屏幕阅读器朗读图标路径
+
 ## v0.5.3（Agent 侧专项）
 
 - Agent 错误分类：服务端 401/403（节点删除/证书吊销/身份失配）与 423

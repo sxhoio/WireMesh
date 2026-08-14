@@ -552,7 +552,7 @@ async function rotateKey(agent: Agent) {
               <div class="mt-3 border-t border-ink-700 pt-3">
                 <div class="mb-2 flex items-center justify-between gap-2">
                   <p class="text-[11px] font-medium text-slate-500">Peer（{{ peersOf(iface).length }}）</p>
-                  <button v-if="app.canOperate" class="rounded-md px-2 py-1 text-[11px] text-cyan-300 transition hover:bg-cyan-500/10" @click="openPeerEditor(a, 'form', iface.name)">+ 添加 Peer</button>
+                  <button v-if="app.canOperate" class="rounded-md px-2 py-1 text-[11px] text-cyan-300 transition hover:bg-cyan-500/10" aria-label="添加 Peer" @click="openPeerEditor(a, 'form', iface.name)">+ 添加 Peer</button>
                 </div>
                 <div class="space-y-1.5">
                   <div v-for="p in peersOf(iface)" :key="p.link.id" class="flex items-center gap-2.5 text-xs">

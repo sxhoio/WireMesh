@@ -935,7 +935,7 @@ onUnmounted(() => { if (savedTimer) window.clearTimeout(savedTimer) })
                 <div class="flex flex-wrap items-center gap-2.5">
                   <span class="chip ring-1" :class="channelTypeMeta[c.type].c">{{ channelTypeMeta[c.type].l }}</span>
                   <p class="min-w-0 flex-1 truncate text-sm font-medium text-slate-200">{{ c.name }}</p>
-                  <button class="relative h-5 w-9 shrink-0 rounded-full transition" :class="c.enabled ? 'bg-emerald-500' : 'bg-ink-600'" :title="c.enabled ? '点击停用' : '点击启用'" :disabled="!app.isAdmin" @click="mesh.updateNotifyChannel(c.id, { enabled: !c.enabled }, app.username)">
+                  <button class="relative h-5 w-9 shrink-0 rounded-full transition" :class="c.enabled ? 'bg-emerald-500' : 'bg-ink-600'" :title="c.enabled ? '点击停用' : '点击启用'" :aria-label="c.enabled ? '停用渠道' : '启用渠道'" :disabled="!app.isAdmin" @click="mesh.updateNotifyChannel(c.id, { enabled: !c.enabled }, app.username)">
                     <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" :class="c.enabled ? 'left-[18px]' : 'left-0.5'"></span>
                   </button>
                 </div>
@@ -1184,7 +1184,7 @@ onUnmounted(() => { if (savedTimer) window.clearTimeout(savedTimer) })
                 <option value="operator">Operator</option>
                 <option value="admin">Admin</option>
               </select>
-              <button class="relative h-5 w-9 shrink-0 rounded-full transition" :class="u.active ? 'bg-emerald-500' : 'bg-ink-600'" :title="u.active ? '点击停用' : '点击启用'" @click="toggleUserActive(u)">
+              <button class="relative h-5 w-9 shrink-0 rounded-full transition" :class="u.active ? 'bg-emerald-500' : 'bg-ink-600'" :title="u.active ? '点击停用' : '点击启用'" :aria-label="u.active ? '停用用户' : '启用用户'" @click="toggleUserActive(u)">
                 <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" :class="u.active ? 'left-[18px]' : 'left-0.5'"></span>
               </button>
               <button class="chip shrink-0 bg-red-500/10 text-red-300 ring-1 ring-red-500/30" @click="deleteUser(u)">删除</button>

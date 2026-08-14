@@ -206,7 +206,7 @@ const unknownTempPeers = computed(() => mesh.scopedTempPeers.filter((t) => !t.ge
                 <span class="chip" :class="selectedLink.displayState === 'ok' ? 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30' : selectedLink.displayState === 'degraded' ? 'bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/30' : 'bg-red-500/10 text-red-400 ring-1 ring-red-500/30'">
                   {{ stateMeta[selectedLink.displayState].label }}
                 </span>
-                <button class="rounded-lg p-1 text-slate-500 transition hover:bg-ink-800 hover:text-slate-200" title="关闭" @click="selectedLink = null">
+                <button class="rounded-lg p-1 text-slate-500 transition hover:bg-ink-800 hover:text-slate-200" title="关闭" aria-label="关闭链路详情" @click="selectedLink = null">
                   <svg viewBox="0 0 24 24" fill="none" class="h-4 w-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               </div>

@@ -55,12 +55,21 @@ watch(
   { flush: 'post', immediate: true },
 )
 
-onMounted(() => mesh.startPolling())
+onMounted(() => {
+  mesh.startPolling()
+  // 移动端抽屉支持 Esc 关闭（键盘可达性）
+  window.addEventListener('keydown', onDrawerKeydown)
+})
 onUnmounted(() => {
   mesh.stopPolling()
+  window.removeEventListener('keydown', onDrawerKeydown)
   toastTimers.forEach((timer) => window.clearTimeout(timer))
   toastTimers.clear()
 })
+
+function onDrawerKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && sidebarOpen.value) sidebarOpen.value = false
+}
 
 const nav = [
   { name: 'home', label: '首页', path: '/', icon: 'M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418' },
@@ -103,6 +112,7 @@ function logout() {
     <aside
       class="fixed inset-y-0 left-0 z-40 flex w-60 shrink-0 flex-col border-r border-ink-700 bg-ink-900/95 transition-transform duration-200 lg:static lg:z-auto lg:translate-x-0 lg:bg-ink-900/60"
       :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
+      aria-label="主导航"
     >
       <div class="flex items-center gap-3 px-5 py-5">
         <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/15 ring-1 ring-emerald-500/40">
@@ -142,8 +152,8 @@ function logout() {
             <p class="truncate text-sm font-medium text-white">{{ app.username }}</p>
             <p class="text-[11px] text-slate-500">{{ roleLabel }}</p>
           </div>
-          <button class="rounded-lg p-2 text-slate-500 transition hover:bg-ink-800 hover:text-red-400" title="退出登录" @click="logout">
-            <svg viewBox="0 0 24 24" fill="none" class="h-5 w-5" stroke="currentColor" stroke-width="1.8">
+          <button class="rounded-lg p-2 text-slate-500 transition hover:bg-ink-800 hover:text-red-400" type="button" title="退出登录" aria-label="退出登录" @click="logout">
+            <svg viewBox="0 0 24 24" fill="none" class="h-5 w-5" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
               <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
             </svg>
           </button>
@@ -155,8 +165,8 @@ function logout() {
     <div class="flex min-w-0 flex-1 flex-col">
       <header class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-ink-700 bg-ink-900/40 px-4 py-3 sm:px-6">
         <!-- 汉堡按钮（移动端） -->
-        <button class="rounded-lg p-2 text-slate-400 transition hover:bg-ink-800 hover:text-slate-200 lg:hidden" @click="sidebarOpen = true">
-          <svg viewBox="0 0 24 24" fill="none" class="h-5 w-5" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
+        <button class="rounded-lg p-2 text-slate-400 transition hover:bg-ink-800 hover:text-slate-200 lg:hidden" type="button" aria-label="打开导航菜单" @click="sidebarOpen = true">
+          <svg viewBox="0 0 24 24" fill="none" class="h-5 w-5" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
         </button>
 
         <!-- 项目 / 网络选择器 -->
@@ -201,6 +211,8 @@ function logout() {
     <TransitionGroup
       name="toast"
       tag="div"
+      role="status"
+      aria-live="polite"
       class="pointer-events-none fixed bottom-5 left-4 right-4 z-[80] flex flex-col items-end gap-2.5 sm:left-auto sm:w-[24rem]"
     >
       <button

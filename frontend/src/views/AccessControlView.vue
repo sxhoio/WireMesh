@@ -601,7 +601,7 @@ onUnmounted(() => window.clearInterval(refreshTimer))
               <div class="flex flex-wrap items-center gap-2.5">
                 <p class="min-w-0 flex-1 truncate text-sm font-medium text-slate-200">{{ policy.name }}</p>
                 <span class="chip shrink-0 ring-1" :class="policy.enabled ? 'bg-emerald-500/10 text-emerald-300 ring-emerald-500/30' : 'bg-slate-500/10 text-slate-400 ring-slate-500/30'">{{ policy.enabled ? '已启用' : '已停用' }}</span>
-                <button class="relative h-5 w-9 shrink-0 rounded-full transition" :class="policy.enabled ? 'bg-emerald-500' : 'bg-ink-600'" :disabled="!app.canOperate || togglingPolicyId === policy.id" :title="policy.enabled ? '点击停用' : '点击启用'" @click="togglePolicy(policy)">
+                <button class="relative h-5 w-9 shrink-0 rounded-full transition" :class="policy.enabled ? 'bg-emerald-500' : 'bg-ink-600'" :disabled="!app.canOperate || togglingPolicyId === policy.id" :title="policy.enabled ? '点击停用' : '点击启用'" :aria-label="policy.enabled ? '停用策略' : '启用策略'" @click="togglePolicy(policy)">
                   <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" :class="policy.enabled ? 'left-[18px]' : 'left-0.5'"></span>
                 </button>
                 <button v-if="app.canOperate" class="chip shrink-0 bg-slate-500/10 text-slate-300 ring-1 ring-slate-500/30" @click="editPolicy(policy)">编辑</button>

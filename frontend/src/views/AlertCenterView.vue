@@ -320,7 +320,7 @@ onUnmounted(() => window.clearInterval(refreshTimer))
           </div>
           <div class="flex shrink-0 items-center gap-2">
             <span class="chip bg-cyan-500/10 text-cyan-300 ring-1 ring-cyan-500/30">{{ rules.length }} 条规则</span>
-            <button class="rounded-md p-1 text-slate-500 transition hover:bg-ink-800 hover:text-slate-300" :disabled="loading" title="刷新规则与历史" @click="load(false)">
+            <button class="rounded-md p-1 text-slate-500 transition hover:bg-ink-800 hover:text-slate-300" :disabled="loading" title="刷新规则与历史" aria-label="刷新规则与历史" @click="load(false)">
               <svg viewBox="0 0 24 24" fill="none" class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
             </button>
           </div>
@@ -333,7 +333,7 @@ onUnmounted(() => window.clearInterval(refreshTimer))
               <span class="chip ring-1" :class="typeMeta[rule.type].chip">{{ typeMeta[rule.type].label }}</span>
               <p class="min-w-0 flex-1 truncate text-sm font-medium text-slate-200">{{ rule.name }}</p>
               <span class="chip shrink-0 bg-ink-900/70 text-slate-400 ring-1 ring-ink-600" :title="scopeNames(rule) || '租户内全部节点'">{{ scopeLabel(rule) }}</span>
-              <button class="relative h-5 w-9 shrink-0 rounded-full transition" :class="rule.enabled ? 'bg-emerald-500' : 'bg-ink-600'" :title="rule.enabled ? '点击停用' : '点击启用'" :disabled="!app.isAdmin" @click="toggleRule(rule)">
+              <button class="relative h-5 w-9 shrink-0 rounded-full transition" :class="rule.enabled ? 'bg-emerald-500' : 'bg-ink-600'" :title="rule.enabled ? '点击停用' : '点击启用'" :aria-label="rule.enabled ? '停用规则' : '启用规则'" :disabled="!app.isAdmin" @click="toggleRule(rule)">
                 <span class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" :class="rule.enabled ? 'left-[18px]' : 'left-0.5'"></span>
               </button>
             </div>

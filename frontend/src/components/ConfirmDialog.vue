@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { confirmState, resolveConfirm } from '../utils/confirm'
+
+const confirmButton = ref<HTMLButtonElement | null>(null)
 
 const toneClass = computed(() => {
   if (confirmState.variant === 'danger') return 'border-red-500/35 bg-red-500/15 text-red-300 ring-red-500/35'
@@ -13,6 +15,14 @@ const confirmClass = computed(() => {
   if (confirmState.variant === 'info') return 'bg-cyan-500 text-ink-950 hover:bg-cyan-400 focus:ring-cyan-500/30'
   return 'bg-amber-500 text-ink-950 hover:bg-amber-400 focus:ring-amber-500/30'
 })
+
+// 打开时聚焦确认按钮（键盘可达性：避免焦点留在被遮挡的背景页面）
+watch(
+  () => confirmState.open,
+  (open) => {
+    if (open) void nextTick(() => confirmButton.value?.focus())
+  },
+)
 
 function onKeydown(event: KeyboardEvent) {
   if (!confirmState.open) return
@@ -34,7 +44,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         class="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
         @click.self="resolveConfirm(false)"
       >
-        <div role="dialog" aria-modal="true" class="w-full max-w-md overflow-hidden rounded-2xl border border-ink-600 bg-ink-900 shadow-2xl shadow-black/50 ring-1 ring-white/5">
+        <div role="dialog" aria-modal="true" :aria-label="confirmState.title" class="w-full max-w-md overflow-hidden rounded-2xl border border-ink-600 bg-ink-900 shadow-2xl shadow-black/50 ring-1 ring-white/5">
           <div class="flex items-start gap-4 px-6 py-5">
             <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border ring-1" :class="toneClass">
               <svg v-if="confirmState.variant === 'danger'" viewBox="0 0 24 24" fill="none" class="h-5 w-5" stroke="currentColor" stroke-width="2">
@@ -61,6 +71,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
               {{ confirmState.cancelText }}
             </button>
             <button
+              ref="confirmButton"
               type="button"
               class="rounded-xl px-4 py-2 text-sm font-semibold transition focus:outline-none focus:ring-2 active:scale-[0.98]"
               :class="confirmClass"

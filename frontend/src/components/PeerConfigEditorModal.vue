@@ -516,7 +516,7 @@ onMounted(load)
                       <h4 class="text-sm font-semibold text-white">{{ peerFormTitle }}</h4>
                       <p class="mt-1 text-xs text-slate-500">填写写入本端的对端 Peer 信息，生成后会同时给出可复制到对端的 Peer 配置。</p>
                     </div>
-                    <button class="rounded-lg px-2 py-1 text-slate-500 transition hover:bg-ink-800 hover:text-white" @click="closePeerForm">✕</button>
+                    <button class="rounded-lg px-2 py-1 text-slate-500 transition hover:bg-ink-800 hover:text-white" aria-label="关闭 Peer 编辑" @click="closePeerForm">✕</button>
                   </div>
 
                   <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
