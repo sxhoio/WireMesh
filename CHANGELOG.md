@@ -4,6 +4,16 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.7`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.7.9（P2 安全专项 M-5：身份缺失 fail-closed）
+
+0day 审计 P2 修复：
+
+- Agent 证书指纹校验：身份记录缺失（errNotFound）时改为拒绝
+  （此前跳过校验放行）——证书未登记或身份被删（恢复备份/手工删表）
+  场景下已吊销证书不再"复活"
+- 新增 M-5 专项测试
+- go vet/go test 全绿
+
 ## v0.7.8（P2 安全专项 M-4：X-Agent-ID 信任收紧）
 
 0day 审计 P2 修复：

@@ -1223,13 +1223,18 @@ func (a *App) agentNode(w http.ResponseWriter, r *http.Request) (Node, bool) {
 		nodeID = certificateNodeID
 		// S9：吊销/轮换即时生效——证书指纹必须与当前登记身份一致。
 		// 证书续期会覆盖登记指纹，旧证书从此拒绝（等效 CRL，无需额外吊销列表）。
-		if identity, identityErr := a.store.GetIdentity(nodeID); identityErr == nil {
+		// M-5：身份记录缺失（errNotFound）同样 fail-closed——证书未登记或
+		// 身份被删（如恢复备份/手工删表）时不得放行，防已吊销证书"复活"。
+		if identity, identityErr := a.store.GetIdentity(nodeID); identityErr != nil {
+			if errors.Is(identityErr, errNotFound) {
+				return reject(http.StatusUnauthorized, "agent identity is not registered or was revoked")
+			}
+			return reject(http.StatusInternalServerError, "failed to verify agent certificate")
+		} else {
 			sha := sha256.Sum256(r.TLS.PeerCertificates[0].Raw)
 			if hex.EncodeToString(sha[:]) != identity.CertificateFingerprint {
 				return reject(http.StatusUnauthorized, "agent certificate was revoked or rotated")
 			}
-		} else if !errors.Is(identityErr, errNotFound) {
-			return reject(http.StatusInternalServerError, "failed to verify agent certificate")
 		}
 	}
 	if nodeID == "" {
