@@ -4,6 +4,15 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.7`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.7.13（README 重构为 GitHub 标准格式）
+
+- README 按 GitHub 流行规范重构：徽章区（Go/Vue/Vite/CI/License）、
+  特性清单、截图占位、目录 TOC、快速开始、数据库、Docker 部署、
+  Agent 接入、自动定位、环境变量参考表、安全、升级、架构图、
+  开发与 CI、FAQ、贡献与许可
+- 保留全部既有技术内容（安全边界、升级指引、GeoIP、SSO 等），
+  重组为清晰分节并补充环境变量速查表与 FAQ
+
 ## v0.7.12（P2 安全专项：其余 Low 项）
 
 0day 审计 P2 收尾：

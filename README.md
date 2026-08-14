@@ -1,108 +1,326 @@
+<div align="center">
+
 # WireMesh
 
-WireMesh is a Go control plane and Vue console for managing multi-tenant WireGuard networks. It creates versioned desired configuration from a topology, delivers it to enrolled agents, and records change history.
+**Multi-tenant WireGuard control plane & operations console**
 
-## Included vertical slice
+A Go control plane and Vue console for managing multi-tenant WireGuard networks — versioned desired configuration from topology, mTLS agent enrollment, delivery acknowledgement, and full change history.
 
-- Tenant-scoped users and RBAC (`viewer`, `operator`, `admin`) with bcrypt-protected database login. No built-in administrator account or password is created.
-- Projects, WireGuard networks, IPv4 address allocation, and Full Mesh, Hub-Spoke, or custom-peer topology compilation.
-- Managed WireGuard key creation with encrypted private-key storage. `WIREMESH_MASTER_KEY` must come from a KMS-backed secret in production.
-- One-time Agent enrollment tokens, issued Agent certificates, desired configuration versions, delivery acknowledgement, and audit records.
-- A Vue operations console for projects, networks, nodes, configuration release, enrollment-token creation, delivery status, and audit history.
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Vue](https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white)](frontend/package.json)
+[![Vite](https://img.shields.io/badge/Vite-8-646cff?logo=vite&logoColor=white)](frontend/package.json)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#license)
+[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)](.github/workflows/ci.yml)
+[![golangci](https://img.shields.io/badge/checks-govet%20%7C%20govulncheck-30D5C8)](#development)
 
-## Run locally
+</div>
 
-Start the API:
+---
 
-```powershell
+## ✨ Features
+
+- **Tenant-scoped users & RBAC** — `viewer` / `operator` / `admin` with bcrypt-protected login, TOTP MFA, SSO (OIDC), and no built-in default credentials.
+- **Topology compilation** — projects, networks, IPv4 allocation, and **Full Mesh / Hub-Spoke / custom-peer** modes with versioned config revisions.
+- **mTLS agent lifecycle** — one-time enrollment tokens, issued client certificates, automatic renewal before expiry, and instant revocation on rotation (no CRL needed).
+- **Secure key management** — WireGuard private keys encrypted with a master key (Argon2id-stretched), persisted CA, and encrypted database configuration.
+- **Delivery & audit** — configuration delivery acknowledgement, per-tenant audit trail, alerting (offline / link-down / config-failed) with webhook, DingTalk, WeCom, Feishu, Telegram, and email channels.
+- **GeoIP node location** — automatic city-level location via MaxMind, with manual override and public-IP discovery.
+- **Operations console** — a Vue 3 dashboard with a world map, traffic charts, batch node operations, DNS management, access policies, and API tokens.
+
+## 📸 Screenshots
+
+> _Coming soon — console screenshots (map dashboard, node list, settings)._
+
+## 📑 Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Database](#database)
+- [Docker Deployment](#docker-deployment)
+- [Agent Onboarding](#agent-onboarding)
+- [Automatic Node Location](#automatic-node-location)
+- [Environment Variables](#environment-variables)
+- [Security](#security)
+- [Upgrading](#upgrading)
+- [Architecture](#architecture)
+- [Development](#development)
+- [FAQ](#faq)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Go **1.26.6+** (older toolchains contain fixed standard-library vulnerabilities)
+- Node.js **22+** (frontend development only)
+- WireGuard tooling on agent hosts (`wg`, `wg-quick`, `ip`)
+
+### Run the control plane
+
+```bash
+# generate a strong master key (KEEP IT; it encrypts all private data)
+export WIREMESH_MASTER_KEY="$(openssl rand -base64 32)"
+
 go run ./cmd/wiremesh-server
 ```
 
-Start the console in another terminal:
+> On first run the onboarding wizard walks you through choosing **SQLite / MySQL / PostgreSQL**, creating the schema, and setting up the initial administrator. The wizard requires `X-Setup-Token`; if you did not set `WIREMESH_SETUP_TOKEN`, the server prints an auto-generated one to the log and saves it to `wiremesh-setup-token`.
 
-```powershell
-Set-Location frontend
+### Run the console (development)
+
+```bash
+cd frontend
 npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. On first run, the onboarding page asks you to choose SQLite, MySQL, or PostgreSQL, verifies the connection, creates the required tables, and then creates the initial administrator. Then sign in, create a project and network, add nodes, and publish a configuration version.
+Open <http://localhost:5173> — it proxies API requests to `http://localhost:8080` by default.
 
-## Database
+### Onboarding flow
 
-Without database environment variables, the first-run wizard defaults to SQLite and stores `wiremesh.db` beside `wiremesh-database.json`:
+1. Visit the console and complete the first-run wizard (database + initial admin).
+2. Create a **project**, then a **network** (CIDR, topology).
+3. Add **nodes** and publish a configuration version.
+4. Enroll Agents and watch them appear on the map.
 
-```powershell
+---
+
+## 🗄️ Database
+
+WireMesh supports **SQLite** (default), **PostgreSQL**, and **MySQL** through the same SQL layer with automatic migrations.
+
+### SQLite (default)
+
+The first-run wizard defaults to SQLite; the file lives beside `wiremesh-database.json` (encrypted config):
+
+```bash
 go run ./cmd/wiremesh-server
 ```
 
-PostgreSQL uses the same schema and automatic migrations:
+### PostgreSQL
 
-```powershell
-$env:WIREMESH_DATABASE_DRIVER = 'postgres'
-$env:WIREMESH_DATABASE_DSN = 'postgres://wiremesh:password@localhost:5432/wiremesh?sslmode=disable'
+```bash
+export WIREMESH_DATABASE_DRIVER=postgres
+export WIREMESH_DATABASE_DSN='postgres://wiremesh:password@localhost:5432/wiremesh?sslmode=disable'
 go run ./cmd/wiremesh-server
 ```
 
-`WIREMESH_DATABASE_DRIVER` accepts `sqlite`, `mysql`, or `postgres`. When `WIREMESH_DATABASE_DRIVER` / `WIREMESH_DATABASE_DSN` are omitted, the first-run web wizard lets an administrator choose SQLite, MySQL, or PostgreSQL, tests the connection, creates the schema, and stores the encrypted connection configuration in `wiremesh-database.json`. Set `WIREMESH_DATABASE_CONFIG` to change that bootstrap file path. Environment variables continue to take precedence and disable database changes from the web wizard.
+### MySQL
 
-> **Security**: the first-run wizard endpoints (`/api/v1/setup*`) are unauthenticated by design. If the instance may be reachable before initialization completes, set `WIREMESH_SETUP_TOKEN` — the wizard then requires the token in the `X-Setup-Token` header for database configuration and initial-admin creation. The wizard also refuses to connect to private/reserved/link-local database hosts (loopback allowed); set `WIREMESH_DATABASE_ALLOW_PRIVATE=1` only if you must point at an internal database.
+```bash
+export WIREMESH_DATABASE_DRIVER=mysql
+export WIREMESH_DATABASE_DSN='wiremesh:password@tcp(localhost:3306)/wiremesh'
+go run ./cmd/wiremesh-server
+```
 
-WireMesh does not seed an administrator. `GET /api/v1/setup/status` reports whether any user exists (plus `setup_token_required`), and the onboarding page calls the one-time `POST /api/v1/setup` endpoint to create the initial tenant and administrator. The endpoint returns `409 Conflict` after the first user exists.
+> `WIREMESH_DATABASE_DRIVER` accepts `sqlite`, `mysql`, or `postgres`. When set (with `WIREMESH_DATABASE_DSN`), environment variables take precedence and the web wizard is disabled. Otherwise the wizard stores the encrypted connection configuration in `wiremesh-database.json` — set `WIREMESH_DATABASE_CONFIG` to relocate it.
 
-## Docker
+---
 
-The multi-stage image caches npm and Go build inputs separately, compiles a static stripped server, and runs it as a non-root user in a distroless image. The Go process serves both the API and the compiled Vue console.
+## 🐳 Docker Deployment
 
-```powershell
+The multi-stage image caches npm and Go build inputs, compiles a static stripped server, and runs it as a non-root user in a distroless image. The Go process serves both the API and the compiled Vue console.
+
+```bash
 docker build -t wiremesh:local .
-docker run --rm -p 8080:8080 -v wiremesh-data:/data -e WIREMESH_MASTER_KEY=replace-with-a-secret wiremesh:local
+docker run --rm -p 8080:8080 \
+  -v wiremesh-data:/data \
+  -e WIREMESH_MASTER_KEY="$(openssl rand -base64 32)" \
+  wiremesh:local
 ```
 
-Open `http://localhost:8080`. The image starts the database-selection wizard and stores its encrypted database configuration and optional SQLite file in the `/data` volume. Server-side GeoIP is **optional** and provided by mounting a MaxMind database at `/data/GeoLite2-City.mmdb` (the image defaults `WIREMESH_GEOIP_DB` to that path, but the file is not baked in because MaxMind's license forbids redistribution). Mount `./data/GeoLite2-City.mmdb:/data/GeoLite2-City.mmdb:ro` when you want automatic location; without it, nodes fall back to Agent-reported coordinates and public-IP-only discovery. Override `WIREMESH_GEOIP_DB` when using an externally updated database. For production, inject `WIREMESH_MASTER_KEY` from a secret manager and mount the TLS certificate/key files referenced by `WIREMESH_TLS_CERT_FILE` and `WIREMESH_TLS_KEY_FILE`.
+Open <http://localhost:8080>.
 
-To exercise enrollment, create an Agent token in the Nodes view and run:
+> **Production notes**
+> - Mount `./secrets/master.key` via Docker secrets / a secret manager — never inline the master key in compose files.
+> - Mount TLS certificates via `WIREMESH_TLS_CERT_FILE` / `WIREMESH_TLS_KEY_FILE` for HTTPS + strict agent mTLS.
+> - GeoIP is **optional**: mount a MaxMind database at `/data/GeoLite2-City.mmdb` (the image sets `WIREMESH_GEOIP_DB=/data/GeoLite2-City.mmdb`; the file is not baked in because MaxMind's license forbids redistribution). Without it, nodes fall back to Agent-reported coordinates.
+> - See [docker-compose.example.yml](docker-compose.example.yml) for a TLS + secrets + GeoIP production reference.
 
-```powershell
-go run ./cmd/wiremesh-agent -server http://localhost:8080 -enroll-token <token> -name edge-01
+---
+
+## 🤖 Agent Onboarding
+
+Create an enrollment token in the console (**节点列表 → 接入节点**) and run the one-line installer on the target host:
+
+```bash
+curl -fsSL 'https://wiremesh.example.com/agent/install.sh' | sudo bash -s -- --token '<TOKEN>' --name 'edge-01'
 ```
 
-### Agent onboarding options (console)
+Or manually:
 
-The **接入新节点** dialog in the console pre-fills the generated one-line install command with per-environment options, so operators in different deployments can copy and run it directly:
+```bash
+curl -fL 'https://wiremesh.example.com/agent/download?os=linux&arch=amd64' -o wiremesh-agent
+chmod +x wiremesh-agent
+sudo ./wiremesh-agent \
+  --server 'https://wiremesh.example.com' \
+  --enroll-token '<TOKEN>' \
+  --name 'edge-01' \
+  --mtls=true
+```
 
-- **mTLS client certificate** (`--mtls`): the console defaults it to on for HTTPS and off for HTTP, and the install script accepts `mtls=true|false` query parameters to pin the choice. When on, the Agent authenticates with the enrolled certificate (see "Agent certificates" below).
-- **Verify self-update signature** (`update_public_key=true`): when the server is configured with `WIREMESH_UPDATE_SIGNING_KEY`, the install script embeds the signing public key into the Agent's environment, so the Agent enforces signature verification on every update manifest. If the server has no signing key configured, the option is ignored (script stays safe).
+### Console onboarding options
 
-The install script itself also accepts `--mtls`/`--no-mtls` and `--update-public-key` at runtime; console options simply pin the defaults. The manual-install command mirrors the mTLS toggle and prints a hint to append `--update-public-key "<PEM>"` when signature verification is desired.
+The **接入新节点** dialog pre-fills the generated command with per-environment options:
 
-## Automatic node location
+| Option | Default | Description |
+|--------|---------|-------------|
+| **mTLS client certificate** | HTTPS: on · HTTP: off | Agent authenticates with its enrolled certificate. The script accepts `mtls=true\|false` to pin the choice. |
+| **Verify self-update signature** | on | When the server has `WIREMESH_UPDATE_SIGNING_KEY`, the script embeds the signing public key and the Agent enforces signature verification on every update manifest. |
 
-At startup the Agent resolves its real public IPv4 address once from `https://ipv4.ip.sb` (override with `WIREMESH_PUBLIC_IP_URL`) and attaches it to every subsequent report as the `X-Agent-Public-IP` header. It is not refreshed on a timer — only when the Agent process restarts — so the node makes a single outbound request at boot rather than a periodic pattern that could be mistaken for C2. The control plane prefers this self-reported address for GeoIP, so nodes are located from their own public IP even when NAT or a proxy egress would otherwise show a different source address. When the header is absent (older Agents, or discovery failed), the control plane falls back to the reporting connection's observed source address; heartbeats from older Agents are located the same way, so server upgrades can improve existing nodes without waiting for every Agent to be replaced.
+The install script also accepts `--mtls` / `--no-mtls` and `--update-public-key` at runtime; console options simply pin the defaults.
 
-Manual coordinates always take priority. Clearing a manual location returns the node to automatic Agent/GeoIP discovery. When WireMesh is behind a reverse proxy, preserve the client address with `X-Forwarded-For` or `X-Real-IP`; forwarded headers are only trusted when the direct connection comes from a private, loopback, or link-local address.
+---
 
-The same public IPv4 also fills the node's public Endpoint automatically: when a node has no manually configured endpoint, the control plane records it as `public-ip:listen-port` from the heartbeat, so peers can reach the node without an operator typing the address by hand. A manually set endpoint is never overwritten.
+## 🌍 Automatic Node Location
 
-## Production boundaries
+At startup the Agent resolves its real public IPv4 address **once** from `https://ipv4.ip.sb` (override with `WIREMESH_PUBLIC_IP_URL`) and attaches it to every report as the `X-Agent-Public-IP` header. The control plane prefers this self-reported address for GeoIP, so nodes are located from their own public IP even behind NAT.
 
-SQLite, MySQL, and PostgreSQL are supported through the same SQL repository and automatic schema creation. Setting `WIREMESH_TLS_CERT_FILE` and `WIREMESH_TLS_KEY_FILE` starts HTTPS and verifies presented Agent certificates. The certificate authority is persisted (encrypted with the master key) in `wiremesh-ca.json`, so Agent certificates survive server restarts; keep `WIREMESH_MASTER_KEY` in a KMS-backed secret for production.
+- Manual coordinates always take priority.
+- Forwarded headers (`X-Forwarded-For` / `X-Real-IP`) are only trusted when the direct connection comes from a private/loopback/link-local address.
+- The same public IPv4 also fills the node's public Endpoint automatically (never overwriting a manually set one).
 
-> **Agent endpoint security**: Agent configuration endpoints (`/agent/v1/*`) refuse to run over plain HTTP by default — the `X-Agent-ID` header alone can impersonate a node and steal its WireGuard private key, so production must serve HTTPS with the strict mTLS mode (`RequireAgentClientCert`), or terminate TLS at a trusted reverse proxy and set `WIREMESH_TRUST_PROXY_AGENT_ID=true` while keeping the backend listener private. For local development only, set `WIREMESH_AGENT_INSECURE_HTTP=1` to re-enable the plain-HTTP adapter. Sessions are revoked persistently (database-backed blacklist), so disabling a user, downgrading a role, or force-logging-out a session takes effect immediately and survives server restarts.
+---
 
-> **Agent self-update integrity**: the one-click install script now refuses to proceed unless the downloaded binary's SHA-256 matches the server-provided value (`sha256sum` or `openssl` required). For defense in depth against a compromised control plane, configure update manifest signing: set `WIREMESH_UPDATE_SIGNING_KEY` on the server (PEM ECDSA P-256 private key) and pass the matching public key to each Agent via `--update-public-key`. When an Agent is configured with a public key, unsigned or invalidly signed update manifests are rejected. Generate a key pair with `openssl ecparam -name prime256v1 -genkey -noout -out update-sign.key && openssl ec -in update-sign.key -pubout -out update-sign.pub`.
+## ⚙️ Environment Variables
 
-> **Agent certificates**: enrolled client certificates are valid for one year and renew automatically 30 days before expiry (`POST /agent/v1/renew-cert`, mTLS-authenticated). Renewal overwrites the node's registered certificate fingerprint, so the previous certificate stops working immediately — rotation and revocation take effect without a CRL. Run Agents with `--mtls` so node identity comes from the certificate; if `--mtls` is requested but the enrolled material is missing, the Agent refuses to start instead of silently falling back to the `X-Agent-ID` header.
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `WIREMESH_MASTER_KEY` | ✅ | Root key that encrypts node private keys, the agent CA, database config, and signs session tokens. **Never change it after initialization.** |
+| `WIREMESH_SETUP_TOKEN` | — | First-run wizard token. If unset, an auto-generated random token is printed to the log and saved to `wiremesh-setup-token`. |
+| `WIREMESH_DATABASE_DRIVER` / `WIREMESH_DATABASE_DSN` | — | `sqlite` / `mysql` / `postgres` + connection string. When set, the web wizard is disabled. |
+| `WIREMESH_DATABASE_CONFIG` | — | Path to the encrypted bootstrap config (default `wiremesh-database.json`). |
+| `WIREMESH_TLS_CERT_FILE` / `WIREMESH_TLS_KEY_FILE` | — | Enables HTTPS and strict agent mTLS. |
+| `WIREMESH_CA_FILE` | — | Agent CA persistence file (default `wiremesh-ca.json`). |
+| `WIREMESH_TRUST_PROXY_AGENT_ID` | — | `true` when a trusted reverse proxy terminates TLS and keeps the backend private. |
+| `WIREMESH_AGENT_INSECURE_HTTP` | — | `1` to enable the plain-HTTP agent adapter (local development **only**). |
+| `WIREMESH_AGENT_BINARY` / `WIREMESH_AGENT_VERSION` | — | Agent update package metadata (enables remote self-update). |
+| `WIREMESH_UPDATE_SIGNING_KEY` | — | PEM ECDSA P-256 private key; when set, update manifests are signed and Agents can enforce signature verification. |
+| `WIREMESH_PUBLIC_URL` | — | Fixed public origin for the SSO `redirect_uri` (recommended; otherwise derived from a validated Host header). |
+| `WIREMESH_COOKIE_SECURE` | — | `true` to force `Secure` on session cookies behind a TLS-terminating proxy. |
+| `WIREMESH_GEOIP_DB` | — | Path to a MaxMind GeoIP database (optional). |
+| `WIREMESH_PUBLIC_IP_URL` | — | Public IPv4 discovery endpoint (default `https://ipv4.ip.sb`). |
+| `WIREMESH_CORS_ORIGIN` | — | Allowed origin for the console (default `http://localhost:5173`). |
+| `WIREMESH_DATABASE_ALLOW_PRIVATE` | — | `1` to allow private/reserved database hosts (SSRF guard escape hatch). |
+| `WIREMESH_SSO_ALLOW_PRIVATE` | — | `1` to allow private/loopback OIDC endpoints (local IdP only). |
 
-> **Credential & outbound hardening**: local passwords are hashed with bcrypt (cost 12), TOTP keys are 256-bit, and the master key is stretched with Argon2id before use (existing encrypted data stays readable through a legacy-key fallback). OIDC outbound calls (discovery, JWKS, token, userinfo) reject private/loopback targets to prevent SSRF — set `WIREMESH_SSO_ALLOW_PRIVATE=1` only for a local IdP. SSO `redirect_uri` is derived from the validated Host header and must match between login and callback. Notification messages are sanitized per channel (HTML-escaped for markup-capable chat channels, control characters stripped everywhere). SQLite files are created with 0600 permissions.
+---
 
-## Upgrading
+## 🔐 Security
 
-Upgrades are in-place and forward-compatible; the server applies schema migrations automatically on startup. Version history is tracked in `CHANGELOG.md`; the control-plane line is `v0.6.x` and the Agent binary has its own version line (`cmd/wiremesh-agent/main.go`, currently `0.3.7`).
+WireMesh applies defense in depth across transport, identity, data, and supply chain.
 
-1. **Back up first**: download `GET /api/v1/settings/backup` (SQLite) or use your PostgreSQL/MySQL dump tooling. Restore is available through `POST /api/v1/settings/backup/restore` (SQLite) and is atomic — it validates the file, replaces the live database, and survives restarts.
-2. **Keep the same `WIREMESH_MASTER_KEY`**: encrypted blobs (node private keys, agent CA, database configuration, notification secrets) are unwrapped with the master key. Changing it makes existing data undecryptable. Since v0.5.0 the master key is stretched with Argon2id; data encrypted by older versions remains readable through a legacy-key fallback, so no re-encryption pass is needed.
-3. **Database configuration is preserved**: `wiremesh-database.json` (encrypted) is reused when `WIREMESH_DATABASE_CONFIG` points at the same path; the server opens the configured database and migrates schema automatically. Environment-variable DSNs (`WIREMESH_DATABASE_DRIVER`/`WIREMESH_DATABASE_DSN`) take precedence and disable the web wizard.
-4. **Agents do not need to be reinstalled**: enrolled certificates survive restarts (CA persisted in `wiremesh-ca.json`) and renew automatically before expiry. Agent self-update (SHA-256 verified, optionally signature-verified) is driven from the console. Upgrade the control plane first, then update Agents at your own pace — the protocol is backward compatible for delivery state and heartbeats.
-5. **Run with Go 1.26.6+** (or the matching Docker image): older toolchains contain fixed standard-library vulnerabilities. The `go.mod` directive enforces the minimum.
-6. **Downgrade note**: schema migrations are additive, so going back to an older control plane version is generally safe; only the newest migration columns may be ignored by older binaries.
+### Transport
+
+- Agent endpoints (`/agent/v1/*`) **fail closed on plain HTTP** — production must serve HTTPS with strict mTLS (`RequireAgentClientCert`), or terminate TLS at a trusted reverse proxy (`WIREMESH_TRUST_PROXY_AGENT_ID=true`) while keeping the backend private.
+- With `WIREMESH_TRUST_PROXY_AGENT_ID`, the `X-Agent-ID` header is only accepted from **private/loopback** sources.
+- Session cookies: `HttpOnly` + `SameSite=Lax` (+ `Secure` on TLS or via `WIREMESH_COOKIE_SECURE`).
+
+### Identity
+
+- Local passwords: **bcrypt (cost 12)**; TOTP secrets are 256-bit; MFA setup/enable/disable require current-password re-verification.
+- Session tokens: HMAC-signed; every request re-checks the user against the DB (role changes & deactivation take effect immediately); logout/change-password/disable revoke tokens **persistently** (survive restarts).
+- SSO (OIDC): ID-token signature/issuer/audience/exp/nonce validation, **PKCE**, and a fixed `redirect_uri` source.
+- Agent certificates: enrolled with one-time tokens, **renew automatically**, revoked instantly on rotation via fingerprint binding.
+
+### Data
+
+- WireGuard private keys and database configuration are **encrypted** with an Argon2id-stretched master key (legacy-SHA-256 fallback keeps old data readable).
+- SQL is fully parameterized; all `/{id}` routes are tenant-scoped.
+- Notification/OIDC outbound calls reject private/loopback targets (SSRF guard); database hosts are resolved to validated IPs before connecting.
+
+### Supply chain
+
+- Agent install script verifies the binary SHA-256; with a signing key configured, update manifests are **signature-verified** and Agents **fail closed** on unsigned updates.
+- `govulncheck` runs in CI; the `go.mod` directive enforces Go 1.26.6+.
+
+---
+
+## 🔄 Upgrading
+
+Upgrades are in-place and forward-compatible; the server applies schema migrations automatically on startup. Version history: [CHANGELOG.md](CHANGELOG.md) — control-plane line `v0.7.x`, Agent line `0.3.7`.
+
+1. **Back up first** — `GET /api/v1/settings/backup` (SQLite) or your DB dump tooling. Restore is atomic and **requires password + MFA re-authentication**; it clears all in-memory sessions.
+2. **Keep the same `WIREMESH_MASTER_KEY`** — encrypted blobs are unwrapped with it. Changing it makes existing data undecryptable (old data stays readable through the legacy-key fallback, no re-encryption needed).
+3. **Database configuration is preserved** — `wiremesh-database.json` is reused; migrations run automatically.
+4. **Agents do not need reinstall** — certificates survive restarts and renew before expiry; Agent self-update (SHA-256 + optional signature) is driven from the console.
+5. **Run with Go 1.26.6+** — older toolchains contain fixed standard-library vulnerabilities.
+6. **Downgrade note** — schema migrations are additive; older binaries ignore the newest columns.
+
+---
+
+## 🧱 Architecture
+
+```
+┌────────────────────────────┐       ┌─────────────────────────────┐
+│        Vue 3 Console        │       │        Go control plane     │
+│  (map, nodes, settings…)    │◄─────►│  HTTP API + Agent endpoints │
+└────────────────────────────┘       └──────────────┬──────────────┘
+                                                    │ mTLS / enrollment
+                                          ┌─────────▼─────────┐
+                                          │  WireGuard Agents  │
+                                          │  (per-node mesh)   │
+                                          └───────────────────┘
+```
+
+- **`cmd/wiremesh-server`** — control-plane entrypoint and frontend static-file serving.
+- **`cmd/wiremesh-agent`** — node Agent command-line client.
+- **`internal/control`** — domain models, auth, topology compilation, persistence, HTTP API, tests.
+- **`frontend`** — Vue 3 + TypeScript operations console built with Vite.
+
+---
+
+## 🛠️ Development
+
+```bash
+# backend: format, vet, test
+gofmt -w <changed-files>
+go vet ./...
+go test -count=1 ./...
+
+# frontend: install, type-check & build
+cd frontend
+npm ci
+npm run build
+```
+
+### CI
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs `go vet`, `go test`, `go build`, `govulncheck`, and the frontend build + `npm audit` on every push/PR.
+
+---
+
+## ❓ FAQ
+
+**Q: I see `WIREMESH_MASTER_KEY is required` at startup — what do I do?**
+Set a strong key (`openssl rand -base64 32`) via the environment or `WIREMESH_MASTER_KEY_FILE`, and keep it unchanged for the life of the deployment.
+
+**Q: `decrypt database configuration: cipher: message authentication failed`?**
+The configured `WIREMESH_MASTER_KEY` does not match the one that encrypted `wiremesh-database.json`. Either restore the original key (keep data) or delete the stale config (fresh start).
+
+**Q: My Agent is rejected with `agent identity was rejected`?**
+Check the server log for the specific reason (certificate required / unknown identity / not registered). Common causes: TLS terminated before the backend (mTLS missing), or the node was deleted/rotated. Re-enroll with a fresh token after fixing the transport.
+
+**Q: `agent endpoints require TLS`?**
+The backend is on plain HTTP. Configure TLS, or use the trusted-proxy mode while keeping the backend private.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please:
+
+1. Open an issue to discuss significant changes.
+2. Keep `internal/control.Store` implementations behaviorally consistent across SQLite / PostgreSQL / MySQL.
+3. Add tests for new resource paths (tenant isolation) and run the full suite (`go vet`, `go test`, `npm run build`).
+
+---
+
+## 📄 License
+
+WireMesh is released under the [MIT License](LICENSE).
+
+_Note: A `LICENSE` file is not yet present in the repository — add one before publishing, or replace this section with your chosen license._
