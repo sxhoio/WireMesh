@@ -91,8 +91,11 @@ func TestAgentInstallScriptEmbedsUpdatePublicKey(t *testing.T) {
 	if !strings.Contains(body, "WIREMESH_UPDATE_PUBLIC_KEY_B64=") {
 		t.Fatal("script must write the base64 public key into agent.env")
 	}
-	if !strings.Contains(body, "--update-public-key-file=/etc/wiremesh-agent/update-public-key.pem") {
-		t.Fatal("script must pass --update-public-key-file to the Agent service")
+	if !strings.Contains(body, "UPDATE_PUBLIC_KEY_ARGS=\" --update-public-key-file=/etc/wiremesh-agent/update-public-key.pem\"") {
+		t.Fatal("script must assign UPDATE_PUBLIC_KEY_ARGS when the key is configured")
+	}
+	if !strings.Contains(body, "${UPDATE_PUBLIC_KEY_ARGS}") {
+		t.Fatal("script must expand UPDATE_PUBLIC_KEY_ARGS in ExecStart")
 	}
 	if !strings.Contains(body, "base64 -d > /etc/wiremesh-agent/update-public-key.pem") {
 		t.Fatal("script must decode the public key into a file")
@@ -108,6 +111,24 @@ func TestAgentInstallScriptEmbedsUpdatePublicKey(t *testing.T) {
 	plainBody := response.Body.String()
 	if !strings.Contains(plainBody, `UPDATE_PUBLIC_KEY_B64=""`) {
 		t.Fatalf("script must leave the public key empty when no signing key is configured")
+	}
+	// 无公钥时 ExecStart 行通过 ${UPDATE_PUBLIC_KEY_ARGS} 条件展开，
+	// 生成文本中不得出现字面的 update-public-key-file 路径。
+	execStartLine := ""
+	for _, line := range strings.Split(plainBody, "\n") {
+		if strings.Contains(line, "ExecStart=") {
+			execStartLine = line
+			break
+		}
+	}
+	if execStartLine == "" {
+		t.Fatal("script must contain an ExecStart line")
+	}
+	if strings.Contains(execStartLine, "--update-public-key-file") {
+		t.Fatalf("ExecStart must not hard-code the public key file: %s", execStartLine)
+	}
+	if !strings.Contains(execStartLine, "${UPDATE_PUBLIC_KEY_ARGS}") {
+		t.Fatalf("ExecStart must expand UPDATE_PUBLIC_KEY_ARGS conditionally: %s", execStartLine)
 	}
 }
 

@@ -4,6 +4,14 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.6`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.5.8-fix2（安装脚本：公钥文件引用条件化）
+
+- 修复 Agent 启动失败重启循环：未配置签名公钥时，ExecStart 不再无条件
+  引用不存在的 `/etc/wiremesh-agent/update-public-key.pem`（改为
+  `${UPDATE_PUBLIC_KEY_ARGS}` 条件展开，仅公钥非空时追加参数）
+- service 段 heredoc 从 `<<'EOF'` 改为 `<<EOF` 并转义 `${WIREMESH_*}`，
+  使条件变量能正确展开
+
 ## v0.5.8-fix（安装脚本引号与公钥注入修复）
 
 - 修复 `USE_MTLS="'false'"` 双重引号 bug：模板自带双引号，替换值改为

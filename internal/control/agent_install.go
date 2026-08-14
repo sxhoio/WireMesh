@@ -196,7 +196,14 @@ if [ -n "$UPDATE_PUBLIC_KEY_B64" ]; then
   fi
 fi
 
-cat > /etc/systemd/system/wiremesh-agent.service <<'EOF'
+# 仅在公钥非空时追加 --update-public-key-file，避免引用不存在的文件
+# 导致 Agent 启动失败（fail-closed 只应在确实配置了公钥时启用）。
+UPDATE_PUBLIC_KEY_ARGS=""
+if [ -n "$UPDATE_PUBLIC_KEY_B64" ]; then
+  UPDATE_PUBLIC_KEY_ARGS=" --update-public-key-file=/etc/wiremesh-agent/update-public-key.pem"
+fi
+
+cat > /etc/systemd/system/wiremesh-agent.service <<EOF
 [Unit]
 Description=WireMesh Agent
 After=network-online.target
@@ -205,7 +212,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/wiremesh-agent/agent.env
-ExecStart=/usr/local/bin/wiremesh-agent --server "${WIREMESH_SERVER}" --token-file /etc/wiremesh-agent/enrollment-token --state-dir /var/lib/wiremesh-agent --name "${WIREMESH_NAME}" --labels "${WIREMESH_LABELS}" --interfaces "${WIREMESH_INTERFACES}" --report-interval "${WIREMESH_REPORT_INTERVAL}" --probe-interval "${WIREMESH_PROBE_INTERVAL}" --mtls="${WIREMESH_MTLS}" --update-public-key-file=/etc/wiremesh-agent/update-public-key.pem
+ExecStart=/usr/local/bin/wiremesh-agent --server "\${WIREMESH_SERVER}" --token-file /etc/wiremesh-agent/enrollment-token --state-dir /var/lib/wiremesh-agent --name "\${WIREMESH_NAME}" --labels "\${WIREMESH_LABELS}" --interfaces "\${WIREMESH_INTERFACES}" --report-interval "\${WIREMESH_REPORT_INTERVAL}" --probe-interval "\${WIREMESH_PROBE_INTERVAL}" --mtls="\${WIREMESH_MTLS}"${UPDATE_PUBLIC_KEY_ARGS}
 Restart=on-failure
 RestartSec=5s
 UMask=0077
