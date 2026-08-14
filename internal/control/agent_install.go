@@ -3,6 +3,7 @@ package control
 import (
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
@@ -49,7 +50,7 @@ INTERFACES="auto"
 REPORT_INTERVAL="10s"
 PROBE_INTERVAL="15s"
 USE_MTLS="__WIREMESH_MTLS_DEFAULT__"
-UPDATE_PUBLIC_KEY="__WIREMESH_UPDATE_PUBLIC_KEY__"
+UPDATE_PUBLIC_KEY_B64="__WIREMESH_UPDATE_PUBLIC_KEY_B64__"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -64,7 +65,7 @@ while [ "$#" -gt 0 ]; do
     --probe-interval) PROBE_INTERVAL="$2"; shift 2 ;;
     --mtls) USE_MTLS="true"; shift ;;
     --no-mtls) USE_MTLS="false"; shift ;;
-    --update-public-key) UPDATE_PUBLIC_KEY="$2"; shift 2 ;;
+    --update-public-key) UPDATE_PUBLIC_KEY_B64="$(printf '%s' "$2" | base64 -w0)"; shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
@@ -179,9 +180,21 @@ WIREMESH_INTERFACES="$(escape_env "$INTERFACES")"
 WIREMESH_REPORT_INTERVAL="$(escape_env "$REPORT_INTERVAL")"
 WIREMESH_PROBE_INTERVAL="$(escape_env "$PROBE_INTERVAL")"
 WIREMESH_MTLS="$(escape_env "$USE_MTLS")"
-WIREMESH_UPDATE_PUBLIC_KEY="$(escape_env "$UPDATE_PUBLIC_KEY")"
+WIREMESH_UPDATE_PUBLIC_KEY_B64="$(escape_env "$UPDATE_PUBLIC_KEY_B64")"
 EOF
 chmod 0600 /etc/wiremesh-agent/agent.env
+
+# 更新签名公钥以 base64 单行存储，避免多行 PEM 破坏 env 文件；
+# 安装时解码写入独立公钥文件，Agent 通过 --update-public-key-file 读取。
+if [ -n "$UPDATE_PUBLIC_KEY_B64" ]; then
+  if command -v base64 >/dev/null 2>&1; then
+    printf '%s' "$UPDATE_PUBLIC_KEY_B64" | base64 -d > /etc/wiremesh-agent/update-public-key.pem
+    chmod 0600 /etc/wiremesh-agent/update-public-key.pem
+  else
+    echo "配置了更新签名公钥但缺少 base64 命令，拒绝安装（可改走 --no-update-public-key）" >&2
+    exit 1
+  fi
+fi
 
 cat > /etc/systemd/system/wiremesh-agent.service <<'EOF'
 [Unit]
@@ -192,7 +205,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/wiremesh-agent/agent.env
-ExecStart=/usr/local/bin/wiremesh-agent --server "${WIREMESH_SERVER}" --token-file /etc/wiremesh-agent/enrollment-token --state-dir /var/lib/wiremesh-agent --name "${WIREMESH_NAME}" --labels "${WIREMESH_LABELS}" --interfaces "${WIREMESH_INTERFACES}" --report-interval "${WIREMESH_REPORT_INTERVAL}" --probe-interval "${WIREMESH_PROBE_INTERVAL}" --mtls="${WIREMESH_MTLS}" --update-public-key="${WIREMESH_UPDATE_PUBLIC_KEY}"
+ExecStart=/usr/local/bin/wiremesh-agent --server "${WIREMESH_SERVER}" --token-file /etc/wiremesh-agent/enrollment-token --state-dir /var/lib/wiremesh-agent --name "${WIREMESH_NAME}" --labels "${WIREMESH_LABELS}" --interfaces "${WIREMESH_INTERFACES}" --report-interval "${WIREMESH_REPORT_INTERVAL}" --probe-interval "${WIREMESH_PROBE_INTERVAL}" --mtls="${WIREMESH_MTLS}" --update-public-key-file=/etc/wiremesh-agent/update-public-key.pem
 Restart=on-failure
 RestartSec=5s
 UMask=0077
@@ -233,22 +246,16 @@ func (a *App) agentInstallScript(w http.ResponseWriter, r *http.Request) {
 	case "0", "false", "off":
 		mtlsDefault = "false"
 	}
-	if mtlsDefault == "" {
-		script = strings.Replace(script, "__WIREMESH_MTLS_DEFAULT__", `""`, 1)
-	} else {
-		script = strings.Replace(script, "__WIREMESH_MTLS_DEFAULT__", shellSingleQuote(mtlsDefault), 1)
-	}
+	script = strings.Replace(script, "__WIREMESH_MTLS_DEFAULT__", mtlsDefault, 1)
 
-	// 更新签名公钥：查询参数要求且服务端配置了签名密钥时注入 PEM
-	updatePublicKey := ""
+	// 更新签名公钥：查询参数要求且服务端配置了签名密钥时注入。
+	// PEM 是多行文本，直接嵌入双引号环境变量会破坏 shell 语法，
+	// 因此以 base64 单行传递，脚本内解码写入独立公钥文件再传给 Agent。
+	updatePublicKeyB64 := ""
 	if enabled := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("update_public_key"))); (enabled == "1" || enabled == "true" || enabled == "on") && a.updateSigningKey != nil {
-		updatePublicKey = a.updateSigningPublicKeyPEM()
+		updatePublicKeyB64 = base64.StdEncoding.EncodeToString([]byte(a.updateSigningPublicKeyPEM()))
 	}
-	if updatePublicKey == "" {
-		script = strings.Replace(script, "__WIREMESH_UPDATE_PUBLIC_KEY__", `""`, 1)
-	} else {
-		script = strings.Replace(script, "__WIREMESH_UPDATE_PUBLIC_KEY__", shellSingleQuote(updatePublicKey), 1)
-	}
+	script = strings.Replace(script, "__WIREMESH_UPDATE_PUBLIC_KEY_B64__", updatePublicKeyB64, 1)
 	_, _ = io.WriteString(w, script)
 }
 

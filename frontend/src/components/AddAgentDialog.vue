@@ -43,6 +43,7 @@ const installScript = computed(() => {
   if (options.useMtls) query.set('mtls', 'true')
   else query.set('mtls', 'false')
   if (options.verifyUpdateSignature) query.set('update_public_key', 'true')
+  // URL 含 & 查询参数，必须加引号避免被 shell 后台化
   const scriptUrl = `${serverUrl.value}/agent/install.sh?${query.toString()}`
   const args = [
     `  --token ${shellQuote(enrollmentToken.value)}`,
@@ -50,7 +51,7 @@ const installScript = computed(() => {
   ]
   if (form.labels.trim()) args.push(`  --labels ${shellQuote(form.labels.trim())}`)
   const continuation = ` ${String.fromCharCode(92)}\n`
-  return `curl -fsSL ${scriptUrl} | sudo bash -s --${continuation}${args.join(continuation)}`
+  return `curl -fsSL '${scriptUrl}' | sudo bash -s --${continuation}${args.join(continuation)}`
 })
 
 const uninstallScript = computed(() => `curl -fsSL ${serverUrl.value}/agent/uninstall.sh | sudo bash`)

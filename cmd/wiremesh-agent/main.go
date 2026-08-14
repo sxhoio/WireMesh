@@ -62,12 +62,23 @@ func main() {
 	probeInterval := flag.Duration("probe-interval", 15*time.Second, "configuration polling interval")
 	useMTLS := flag.Bool("mtls", false, "use the enrolled client certificate for HTTPS")
 	updatePublicKeyText := flag.String("update-public-key", "", "PEM ECDSA public key to verify signed update manifests (recommended for production)")
+	updatePublicKeyFile := flag.String("update-public-key-file", "", "path to a PEM ECDSA public key file for update manifest verification")
 	flag.Parse()
 
 	if strings.TrimSpace(*updatePublicKeyText) != "" {
 		key, keyErr := parseUpdatePublicKeyPEM(*updatePublicKeyText)
 		if keyErr != nil {
 			log.Fatalf("parse update public key: %v", keyErr)
+		}
+		updatePublicKey = key
+	} else if strings.TrimSpace(*updatePublicKeyFile) != "" {
+		raw, readErr := os.ReadFile(*updatePublicKeyFile)
+		if readErr != nil {
+			log.Fatalf("read update public key file: %v", readErr)
+		}
+		key, keyErr := parseUpdatePublicKeyPEM(string(raw))
+		if keyErr != nil {
+			log.Fatalf("parse update public key file: %v", keyErr)
 		}
 		updatePublicKey = key
 	}
