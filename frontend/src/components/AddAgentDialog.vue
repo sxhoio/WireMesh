@@ -27,36 +27,55 @@ const networks = computed(() => mesh.networks.filter((network) => network.projec
 const serverUrl = computed(() => (apiBase || location.origin).replace(/\/$/, ''))
 const isInsecure = computed(() => serverUrl.value.toLowerCase().startsWith('http://'))
 
+// 安装开关：预置进生成的一键脚本 / 手动命令，不同环境直接复制即用
+const options = reactive({
+  useMtls: !isInsecure.value, // 默认 HTTPS 开、HTTP 关（与脚本自动判断一致）
+  verifyUpdateSignature: true,
+})
+
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'"'"'`)}'`
 }
 
 const installScript = computed(() => {
   if (!enrollmentToken.value) return '# 请先填写节点信息，然后生成一次性接入命令'
+  const query = new URLSearchParams()
+  if (options.useMtls) query.set('mtls', 'true')
+  else query.set('mtls', 'false')
+  if (options.verifyUpdateSignature) query.set('update_public_key', 'true')
+  const scriptUrl = `${serverUrl.value}/agent/install.sh?${query.toString()}`
   const args = [
     `  --token ${shellQuote(enrollmentToken.value)}`,
     `  --name ${shellQuote(form.name.trim() || '<节点名称>')}`,
   ]
   if (form.labels.trim()) args.push(`  --labels ${shellQuote(form.labels.trim())}`)
   const continuation = ` ${String.fromCharCode(92)}\n`
-  return `curl -fsSL ${serverUrl.value}/agent/install.sh | sudo bash -s --${continuation}${args.join(continuation)}`
+  return `curl -fsSL ${scriptUrl} | sudo bash -s --${continuation}${args.join(continuation)}`
 })
 
 const uninstallScript = computed(() => `curl -fsSL ${serverUrl.value}/agent/uninstall.sh | sudo bash`)
 
-const manualCommand = computed(() => enrollmentToken.value
-  ? `# 手动下载 Linux amd64 Agent（arm64 主机请将 arch 改为 arm64）
-curl -fL ${shellQuote(serverUrl.value + '/agent/download?os=linux&arch=amd64')} -o wiremesh-agent
-chmod +x wiremesh-agent
-sudo ./wiremesh-agent \\
-  --server ${shellQuote(serverUrl.value)} \\
-  --enroll-token ${shellQuote(enrollmentToken.value)} \\
-  --name ${shellQuote(form.name.trim() || '<节点名称>')} \\
-  --labels ${shellQuote(form.labels.trim())} \\
-  --report-interval ${app.settings.collect.reportSec}s \\
-  --probe-interval ${app.settings.collect.probeSec}s \\
-  --mtls`
-  : '# 请先填写节点信息，然后生成一次性接入命令')
+const manualCommand = computed(() => {
+  if (!enrollmentToken.value) return '# 请先填写节点信息，然后生成一次性接入命令'
+  const lines = [
+    '# 手动下载 Linux amd64 Agent（arm64 主机请将 arch 改为 arm64）',
+    `curl -fL ${shellQuote(serverUrl.value + '/agent/download?os=linux&arch=amd64')} -o wiremesh-agent`,
+    'chmod +x wiremesh-agent',
+    'sudo ./wiremesh-agent \\',
+    `  --server ${shellQuote(serverUrl.value)} \\`,
+    `  --enroll-token ${shellQuote(enrollmentToken.value)} \\`,
+    `  --name ${shellQuote(form.name.trim() || '<节点名称>')} \\`,
+    `  --labels ${shellQuote(form.labels.trim())} \\`,
+    `  --report-interval ${app.settings.collect.reportSec}s \\`,
+    `  --probe-interval ${app.settings.collect.probeSec}s \\`,
+    `  --mtls=${options.useMtls}`,
+  ]
+  if (options.verifyUpdateSignature) {
+    // 手动安装无法由服务端自动注入公钥：提示用户索取后自行追加参数
+    lines.push('# 如需强制校验更新签名，追加：--update-public-key "<服务端更新签名公钥 PEM>"')
+  }
+  return lines.join('\n')
+})
 
 watch(
   () => mesh.projects,
@@ -195,6 +214,24 @@ async function copy(kind: 'script' | 'manual' | 'uninstall') {
             <button class="btn-primary shrink-0" :disabled="issuing || !form.networkId || !form.name.trim()" @click="issueToken">
               {{ issuing ? '生成中…' : enrollmentToken ? '重新生成接入命令' : '生成接入命令' }}
             </button>
+          </div>
+
+          <div class="mb-4 space-y-2 rounded-xl bg-ink-900/60 p-3 ring-1 ring-ink-700">
+            <p class="text-[11px] font-semibold text-slate-400">安装选项（预置进生成的命令，按目标环境调整）</p>
+            <label class="flex cursor-pointer items-start gap-2.5">
+              <input v-model="options.useMtls" type="checkbox" class="mt-0.5 h-4 w-4 shrink-0 accent-emerald-500" />
+              <span class="min-w-0 text-xs leading-5">
+                <span class="font-medium text-slate-300">启用 mTLS 客户端证书（--mtls）</span>
+                <span class="block text-[11px] text-slate-500">Agent 用注册时签发的证书与服务端双向认证；HTTPS 部署建议开启，HTTP 开发环境请关闭。</span>
+              </span>
+            </label>
+            <label class="flex cursor-pointer items-start gap-2.5">
+              <input v-model="options.verifyUpdateSignature" type="checkbox" class="mt-0.5 h-4 w-4 shrink-0 accent-emerald-500" />
+              <span class="min-w-0 text-xs leading-5">
+                <span class="font-medium text-slate-300">校验 Agent 自更新签名</span>
+                <span class="block text-[11px] text-slate-500">一键脚本会把服务端更新签名公钥写入 Agent 配置，强制校验更新包签名；服务端未配置签名密钥时自动忽略。</span>
+              </span>
+            </label>
           </div>
 
           <p v-if="error" class="mb-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300 ring-1 ring-red-500/30">{{ error }}</p>

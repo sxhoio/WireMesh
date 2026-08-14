@@ -67,6 +67,15 @@ To exercise enrollment, create an Agent token in the Nodes view and run:
 go run ./cmd/wiremesh-agent -server http://localhost:8080 -enroll-token <token> -name edge-01
 ```
 
+### Agent onboarding options (console)
+
+The **接入新节点** dialog in the console pre-fills the generated one-line install command with per-environment options, so operators in different deployments can copy and run it directly:
+
+- **mTLS client certificate** (`--mtls`): the console defaults it to on for HTTPS and off for HTTP, and the install script accepts `mtls=true|false` query parameters to pin the choice. When on, the Agent authenticates with the enrolled certificate (see "Agent certificates" below).
+- **Verify self-update signature** (`update_public_key=true`): when the server is configured with `WIREMESH_UPDATE_SIGNING_KEY`, the install script embeds the signing public key into the Agent's environment, so the Agent enforces signature verification on every update manifest. If the server has no signing key configured, the option is ignored (script stays safe).
+
+The install script itself also accepts `--mtls`/`--no-mtls` and `--update-public-key` at runtime; console options simply pin the defaults. The manual-install command mirrors the mTLS toggle and prints a hint to append `--update-public-key "<PEM>"` when signature verification is desired.
+
 ## Automatic node location
 
 At startup the Agent resolves its real public IPv4 address once from `https://ipv4.ip.sb` (override with `WIREMESH_PUBLIC_IP_URL`) and attaches it to every subsequent report as the `X-Agent-Public-IP` header. It is not refreshed on a timer — only when the Agent process restarts — so the node makes a single outbound request at boot rather than a periodic pattern that could be mistaken for C2. The control plane prefers this self-reported address for GeoIP, so nodes are located from their own public IP even when NAT or a proxy egress would otherwise show a different source address. When the header is absent (older Agents, or discovery failed), the control plane falls back to the reporting connection's observed source address; heartbeats from older Agents are located the same way, so server upgrades can improve existing nodes without waiting for every Agent to be replaced.

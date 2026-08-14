@@ -2,7 +2,9 @@ package control
 
 import (
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -46,7 +48,8 @@ LABELS=""
 INTERFACES="auto"
 REPORT_INTERVAL="10s"
 PROBE_INTERVAL="15s"
-USE_MTLS=""
+USE_MTLS="__WIREMESH_MTLS_DEFAULT__"
+UPDATE_PUBLIC_KEY="__WIREMESH_UPDATE_PUBLIC_KEY__"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -61,6 +64,7 @@ while [ "$#" -gt 0 ]; do
     --probe-interval) PROBE_INTERVAL="$2"; shift 2 ;;
     --mtls) USE_MTLS="true"; shift ;;
     --no-mtls) USE_MTLS="false"; shift ;;
+    --update-public-key) UPDATE_PUBLIC_KEY="$2"; shift 2 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
@@ -81,7 +85,7 @@ case "$SERVER$NAME$LABELS$PROJECT$NETWORK" in
   *$'\n'*|*$'\r'*) echo "参数中不能包含换行符" >&2; exit 2 ;;
 esac
 SERVER="${SERVER%/}"
-if [ -z "$USE_MTLS" ]; then
+if [ "$USE_MTLS" != "true" ] && [ "$USE_MTLS" != "false" ]; then
   case "$SERVER" in
     https://*) USE_MTLS="true" ;;
     *) USE_MTLS="false" ;;
@@ -175,6 +179,7 @@ WIREMESH_INTERFACES="$(escape_env "$INTERFACES")"
 WIREMESH_REPORT_INTERVAL="$(escape_env "$REPORT_INTERVAL")"
 WIREMESH_PROBE_INTERVAL="$(escape_env "$PROBE_INTERVAL")"
 WIREMESH_MTLS="$(escape_env "$USE_MTLS")"
+WIREMESH_UPDATE_PUBLIC_KEY="$(escape_env "$UPDATE_PUBLIC_KEY")"
 EOF
 chmod 0600 /etc/wiremesh-agent/agent.env
 
@@ -187,7 +192,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/wiremesh-agent/agent.env
-ExecStart=/usr/local/bin/wiremesh-agent --server "${WIREMESH_SERVER}" --token-file /etc/wiremesh-agent/enrollment-token --state-dir /var/lib/wiremesh-agent --name "${WIREMESH_NAME}" --labels "${WIREMESH_LABELS}" --interfaces "${WIREMESH_INTERFACES}" --report-interval "${WIREMESH_REPORT_INTERVAL}" --probe-interval "${WIREMESH_PROBE_INTERVAL}" --mtls="${WIREMESH_MTLS}"
+ExecStart=/usr/local/bin/wiremesh-agent --server "${WIREMESH_SERVER}" --token-file /etc/wiremesh-agent/enrollment-token --state-dir /var/lib/wiremesh-agent --name "${WIREMESH_NAME}" --labels "${WIREMESH_LABELS}" --interfaces "${WIREMESH_INTERFACES}" --report-interval "${WIREMESH_REPORT_INTERVAL}" --probe-interval "${WIREMESH_PROBE_INTERVAL}" --mtls="${WIREMESH_MTLS}" --update-public-key="${WIREMESH_UPDATE_PUBLIC_KEY}"
 Restart=on-failure
 RestartSec=5s
 UMask=0077
@@ -209,11 +214,54 @@ echo "Agent 将自动上报公网 IP，并由 WireMesh GeoIP 数据库解析地�
 echo "查看状态: systemctl status wiremesh-agent --no-pager"
 `
 
+// agentInstallScript 生成一键安装脚本。支持查询参数让控制台按部署环境
+// 预置开关（不同用户/环境直接复制即用）：
+//
+//	mtls=true|false        预置 mTLS 开关（缺省时脚本按 https/http 自动判断）
+//	update_public_key=true 内嵌服务端更新签名公钥（配置了签名密钥时生效），
+//	                       Agent 将强制校验更新清单签名
 func (a *App) agentInstallScript(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	script := strings.Replace(agentInstallerScript, "__WIREMESH_SERVER__", shellSingleQuote(agentInstallerServerURL(r)), 1)
+
+	// mTLS 默认值：查询参数显式指定时采用，否则留空交由脚本按协议自动判断
+	mtlsDefault := ""
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mtls"))) {
+	case "1", "true", "on":
+		mtlsDefault = "true"
+	case "0", "false", "off":
+		mtlsDefault = "false"
+	}
+	if mtlsDefault == "" {
+		script = strings.Replace(script, "__WIREMESH_MTLS_DEFAULT__", `""`, 1)
+	} else {
+		script = strings.Replace(script, "__WIREMESH_MTLS_DEFAULT__", shellSingleQuote(mtlsDefault), 1)
+	}
+
+	// 更新签名公钥：查询参数要求且服务端配置了签名密钥时注入 PEM
+	updatePublicKey := ""
+	if enabled := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("update_public_key"))); (enabled == "1" || enabled == "true" || enabled == "on") && a.updateSigningKey != nil {
+		updatePublicKey = a.updateSigningPublicKeyPEM()
+	}
+	if updatePublicKey == "" {
+		script = strings.Replace(script, "__WIREMESH_UPDATE_PUBLIC_KEY__", `""`, 1)
+	} else {
+		script = strings.Replace(script, "__WIREMESH_UPDATE_PUBLIC_KEY__", shellSingleQuote(updatePublicKey), 1)
+	}
 	_, _ = io.WriteString(w, script)
+}
+
+// updateSigningPublicKeyPEM 返回更新签名公钥的 PEM 编码，供安装脚本内嵌。
+func (a *App) updateSigningPublicKeyPEM() string {
+	if a.updateSigningKey == nil {
+		return ""
+	}
+	der, err := x509.MarshalPKIXPublicKey(&a.updateSigningKey.PublicKey)
+	if err != nil {
+		return ""
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
 }
 
 const agentUninstallerScript = `#!/usr/bin/env bash

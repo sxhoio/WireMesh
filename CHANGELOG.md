@@ -4,6 +4,18 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.6`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.5.8（Agent 接入开关可配置化 + 文档同步）
+
+- 控制台「接入新节点」弹窗新增安装选项开关，按部署环境预置生成命令：
+  - mTLS：默认 HTTPS 开 / HTTP 关，可手动切换；一键脚本与手动命令同步
+  - 更新签名校验：开启后一键脚本由服务端自动注入更新签名公钥，
+    Agent 强制校验更新清单签名；服务端未配置签名密钥时自动忽略
+- 安装脚本支持查询参数预置：`mtls=true|false`、`update_public_key=true`；
+  脚本运行时仍可 `--mtls/--no-mtls/--update-public-key` 覆盖
+- 服务端导出更新签名公钥（`updateSigningPublicKeyPEM`）供脚本内嵌
+- README 新增「Agent onboarding options」小节，同步安装开关说明
+- 新增安装脚本选项专项测试（默认跟随协议 / mtls 参数 / 公钥内嵌）
+
 ## v0.5.7-fix（CI 构建修复：GeoIP 数据库不再内置镜像）
 
 - 移除 Dockerfile 中 `COPY GeoLite2-City.mmdb`：该文件受 MaxMind 许可
