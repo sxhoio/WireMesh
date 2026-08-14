@@ -4,6 +4,18 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.6`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.5.6（依赖与供应链专项）
+
+- Go 工具链升级至 1.26.6：修复 7 个标准库漏洞（net/url、crypto/tls、
+  net/http、encoding/xml、encoding/asn1、html/template），govulncheck
+  从 7 个受影响降至 0
+- `go.mod` 声明 go 1.26.6，CI setup-go 固定该版本（构建工具链不得低于
+  漏洞修复版本）；`go mod tidy` 清理 31 行冗余 go.sum 条目
+- 前端依赖升级至 wanted 版本（ol/pinia/vue/vue-router/vite/vue-tsc），
+  npm audit 保持 0 漏洞
+- 唯一残留提示：x/crypto 的 openpgp 包不受维护（代码未使用 openpgp，
+  仅 bcrypt/argon2），模块级告警可忽略
+
 ## v0.5.5（可观测性专项）
 
 - 日志脱敏：数据库连接失败与打开数据库的错误日志统一经
