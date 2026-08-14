@@ -609,7 +609,13 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
-	a.revokeCurrentSession(requestToken(r))
+	// M-6：从令牌解析租户 ID 用于持久化吊销（重启后仍生效）
+	token := requestToken(r)
+	tenant := ""
+	if claims, parseErr := a.auth.Parse(token); parseErr == nil {
+		tenant = claims.TenantID
+	}
+	a.revokeCurrentSession(token, tenant)
 	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	w.WriteHeader(http.StatusNoContent)
 }

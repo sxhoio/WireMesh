@@ -116,16 +116,22 @@ func (a *App) revokeSessionByID(tenant, id string) bool {
 	return true
 }
 
-func (a *App) revokeCurrentSession(token string) {
+// revokeCurrentSession 吊销当前会话令牌（logout）。M-6：吊销记录必须携带
+// 租户 ID，否则重启后 loadRevokedTokens 会跳过空租户行导致令牌"复活"。
+// tenant 为空时（令牌解析失败）仅清内存态，不写库。
+func (a *App) revokeCurrentSession(token, tenant string) {
 	if token == "" || strings.HasPrefix(token, apiTokenPrefix) {
 		return
 	}
 	hash := sessionTokenHash(token)
+	at := time.Now()
 	a.sessionMu.Lock()
 	delete(a.sessions, hash)
-	a.revokedTokens[hash] = time.Now()
+	a.revokedTokens[hash] = at
 	a.sessionMu.Unlock()
-	_ = a.store.AddRevokedToken(RevokedToken{TokenHash: hash, RevokedAt: time.Now()})
+	if tenant != "" {
+		_ = a.store.AddRevokedToken(RevokedToken{TokenHash: hash, TenantID: tenant, RevokedAt: at})
+	}
 }
 
 // revokeUserSessions 吊销某用户的全部会话令牌（停用或删除用户时调用）。

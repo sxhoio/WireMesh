@@ -4,6 +4,15 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.7`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.7.7（P1 安全专项 M-6：logout 吊销重启失效）
+
+0day 审计 P1 修复（P1 全部完成）：
+
+- logout 的吊销记录现在携带租户 ID（从令牌解析），重启后
+  loadRevokedTokens 不再跳过该行——登出令牌不会"复活"至原 TTL
+- 新增 M-6 专项测试（logout 带租户吊销、重启后仍拒绝）
+- go vet/go test 全绿
+
 ## v0.7.6（P1 安全专项 M-3：停用/降级级联删除 API 令牌）
 
 0day 审计 P1 修复：
