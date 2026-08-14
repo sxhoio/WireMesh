@@ -59,7 +59,7 @@ docker build -t wiremesh:local .
 docker run --rm -p 8080:8080 -v wiremesh-data:/data -e WIREMESH_MASTER_KEY=replace-with-a-secret wiremesh:local
 ```
 
-Open `http://localhost:8080`. The image starts the database-selection wizard and stores its encrypted database configuration and optional SQLite file in the `/data` volume. The image also includes `/app/GeoLite2-City.mmdb` and sets `WIREMESH_GEOIP_DB` to that path, so newly configured tenants can use server-side node geolocation without an extra mount. Override `WIREMESH_GEOIP_DB` when using an externally updated database. For production, inject `WIREMESH_MASTER_KEY` from a secret manager and mount the TLS certificate/key files referenced by `WIREMESH_TLS_CERT_FILE` and `WIREMESH_TLS_KEY_FILE`.
+Open `http://localhost:8080`. The image starts the database-selection wizard and stores its encrypted database configuration and optional SQLite file in the `/data` volume. Server-side GeoIP is **optional** and provided by mounting a MaxMind database at `/data/GeoLite2-City.mmdb` (the image defaults `WIREMESH_GEOIP_DB` to that path, but the file is not baked in because MaxMind's license forbids redistribution). Mount `./data/GeoLite2-City.mmdb:/data/GeoLite2-City.mmdb:ro` when you want automatic location; without it, nodes fall back to Agent-reported coordinates and public-IP-only discovery. Override `WIREMESH_GEOIP_DB` when using an externally updated database. For production, inject `WIREMESH_MASTER_KEY` from a secret manager and mount the TLS certificate/key files referenced by `WIREMESH_TLS_CERT_FILE` and `WIREMESH_TLS_KEY_FILE`.
 
 To exercise enrollment, create an Agent token in the Nodes view and run:
 

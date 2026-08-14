@@ -4,6 +4,17 @@
 版本号规则：`v主.次.修订`；Agent 二进制有独立版本线（当前 `0.3.6`，
 见 `cmd/wiremesh-agent/main.go`），Docker 构建默认值与其一致。
 
+## v0.5.7-fix（CI 构建修复：GeoIP 数据库不再内置镜像）
+
+- 移除 Dockerfile 中 `COPY GeoLite2-City.mmdb`：该文件受 MaxMind 许可
+  约束被 `.gitignore` 排除、不在 git 仓库，CI 从源码构建时上下文无此
+  文件导致 `docker build` 失败
+- GeoIP 改为运行时 volume 挂载（可选）：镜像默认
+  `WIREMESH_GEOIP_DB=/data/GeoLite2-City.mmdb`，由部署方挂载
+  `./data/GeoLite2-City.mmdb:/data/GeoLite2-City.mmdb:ro`；
+  未挂载时节点优雅回退到 Agent 上报坐标（loadGeoIP 失败仅降级，不崩溃）
+- README / docker-compose 示例同步说明
+
 ## v0.5.7（文档/部署专项）
 
 - README 新增「Upgrading」章节：备份优先、master key 保持不变的加密
