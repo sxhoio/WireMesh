@@ -12,3 +12,5 @@ GeoLite2-City.mmdb
 *.key
 .claude
 .reasonix
+# 服务端自动生成的初始化口令（H-4）
+wiremesh-setup-token
